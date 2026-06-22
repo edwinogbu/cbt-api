@@ -18,8 +18,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godototenv"  // ✅ ADD THIS IMPORT
-
+	// "github.com/joho/godototenv"  // ✅ ADD THIS IMPORT
+    "github.com/joho/godotenv"
 	_ "cbt-api/api/docs"
 )
 
