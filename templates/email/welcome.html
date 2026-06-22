@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Welcome to {{.SiteName}}</title>
+    {{template "styles" .}}
+</head>
+<body>
+    {{template "header" .}}
+    
+    <div class="container">
+        <h1>Welcome, {{.FirstName}}! 👋</h1>
+        
+        <p>Thank you for registering with {{.SiteName}}.</p>
+        
+        <p>Please verify your email address by entering the code below:</p>
+        
+        <div class="code-box">
+            <strong>{{.Code}}</strong>
+        </div>
+        
+        <p>This code will expire in <strong>10 minutes</strong>.</p>
+        
+        <p>If you didn't create an account with us, please ignore this email.</p>
+        
+        <hr>
+        
+        <p class="small">
+            Need help? Contact us at <a href="mailto:{{.SupportEmail}}">{{.SupportEmail}}</a>
+        </p>
+    </div>
+    
+    {{template "footer" .}}
+</body>
+</html>
+

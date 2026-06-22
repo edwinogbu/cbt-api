@@ -1,0 +1,3325 @@
+basePath: /api/v1
+definitions:
+  dto.BulkDeleteRequest:
+    properties:
+      question_ids:
+        items:
+          type: string
+        type: array
+    required:
+    - question_ids
+    type: object
+  dto.CancelSubscriptionRequest:
+    properties:
+      cancel_immediately:
+        type: boolean
+      reason:
+        type: string
+    type: object
+  dto.ChangePasswordRequest:
+    properties:
+      current_password:
+        type: string
+      new_password:
+        minLength: 6
+        type: string
+    required:
+    - current_password
+    - new_password
+    type: object
+  dto.CreateClassArmRequest:
+    properties:
+      arm_code:
+        type: string
+      capacity:
+        type: integer
+      name:
+        type: string
+      room_number:
+        type: string
+      school_id:
+        type: string
+      sort_order:
+        type: integer
+    required:
+    - name
+    - school_id
+    type: object
+  dto.CreateClassLevelRequest:
+    properties:
+      category:
+        enum:
+        - JSS
+        - SSS
+        - PRIMARY
+        type: string
+      level_number:
+        type: integer
+      name:
+        type: string
+      promotion_to:
+        type: string
+      school_id:
+        type: string
+      sort_order:
+        type: integer
+    required:
+    - category
+    - level_number
+    - name
+    - school_id
+    type: object
+  dto.CreateClassRequest:
+    properties:
+      class_arm_id:
+        type: string
+      class_level_id:
+        type: string
+      room_number:
+        type: string
+      school_id:
+        type: string
+      session_id:
+        type: string
+      teacher_id:
+        type: string
+    required:
+    - class_arm_id
+    - class_level_id
+    - school_id
+    - session_id
+    type: object
+  dto.CreatePaymentIntentRequest:
+    properties:
+      cancel_url:
+        type: string
+      subscription_id:
+        type: string
+      success_url:
+        type: string
+    required:
+    - subscription_id
+    type: object
+  dto.CreateQuestionRequest:
+    properties:
+      bloom_level:
+        enum:
+        - remember
+        - understand
+        - apply
+        - analyse
+        - evaluate
+        - create
+        type: string
+      correct_answer:
+        type: string
+      difficulty:
+        enum:
+        - easy
+        - medium
+        - hard
+        - expert
+        type: string
+      explanation:
+        type: string
+      marks:
+        minimum: 1
+        type: integer
+      options:
+        additionalProperties:
+          type: string
+        type: object
+      question_text:
+        type: string
+      question_type:
+        enum:
+        - single_choice
+        - multiple_choice
+        - true_false
+        - essay
+        - fill_blank
+        type: string
+      sub_topic:
+        type: string
+      subject_id:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+      time_limit_seconds:
+        type: integer
+      topic:
+        type: string
+    required:
+    - bloom_level
+    - correct_answer
+    - difficulty
+    - marks
+    - question_text
+    - question_type
+    - subject_id
+    type: object
+  dto.CreateSchoolRequest:
+    properties:
+      address:
+        type: string
+      code:
+        description: 'changed: required → omitempty'
+        maxLength: 50
+        minLength: 2
+        type: string
+      email:
+        type: string
+      logo:
+        type: string
+      name:
+        maxLength: 255
+        minLength: 2
+        type: string
+      phone:
+        type: string
+      website:
+        type: string
+    required:
+    - name
+    type: object
+  dto.CreateSessionRequest:
+    properties:
+      end_date:
+        type: string
+      is_current:
+        type: boolean
+      name:
+        type: string
+      school_id:
+        type: string
+      start_date:
+        type: string
+    required:
+    - end_date
+    - name
+    - school_id
+    - start_date
+    type: object
+  dto.CreateStudentRequest:
+    properties:
+      address:
+        type: string
+      admission_no:
+        type: string
+      class_id:
+        type: string
+      date_of_birth:
+        type: string
+      gender:
+        enum:
+        - Male
+        - Female
+        - Other
+        type: string
+      guardian_email:
+        type: string
+      guardian_name:
+        type: string
+      guardian_phone:
+        type: string
+      school_id:
+        type: string
+      user_id:
+        type: string
+    required:
+    - admission_no
+    - school_id
+    - user_id
+    type: object
+  dto.CreateSubscriptionRequest:
+    properties:
+      auto_renew:
+        type: boolean
+      callback_url:
+        type: string
+      cancel_url:
+        type: string
+      email:
+        type: string
+      gateway:
+        enum:
+        - stripe
+        - paystack
+        - flutterwave
+        type: string
+      interval:
+        enum:
+        - monthly
+        - quarterly
+        - yearly
+        type: string
+      metadata:
+        additionalProperties: true
+        type: object
+      payment_method:
+        enum:
+        - card
+        - bank_transfer
+        - wallet
+        - ussd
+        - qr
+        type: string
+      school_id:
+        type: string
+      success_url:
+        type: string
+      tier:
+        enum:
+        - basic
+        - premium
+        - enterprise
+        type: string
+    required:
+    - email
+    - gateway
+    - interval
+    - school_id
+    - tier
+    type: object
+  dto.CreateTagRequest:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  dto.CreateTermRequest:
+    properties:
+      end_date:
+        type: string
+      is_current:
+        type: boolean
+      name:
+        type: string
+      session_id:
+        type: string
+      start_date:
+        type: string
+      term_number:
+        maximum: 3
+        minimum: 1
+        type: integer
+    required:
+    - end_date
+    - session_id
+    - start_date
+    - term_number
+    type: object
+  dto.Disable2FARequest:
+    properties:
+      code:
+        type: string
+    required:
+    - code
+    type: object
+  dto.Enable2FARequest:
+    properties:
+      code:
+        type: string
+    required:
+    - code
+    type: object
+  dto.FilterQuestionsRequest:
+    properties:
+      bloom_level:
+        items:
+          type: string
+        type: array
+      difficulty:
+        items:
+          type: string
+        type: array
+      limit:
+        type: integer
+      page:
+        type: integer
+      question_type:
+        items:
+          type: string
+        type: array
+      search:
+        type: string
+      status:
+        type: string
+      subject_id:
+        type: string
+      tags:
+        items:
+          type: string
+        type: array
+      topic:
+        type: string
+    type: object
+  dto.ForgotPasswordRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  dto.LoginRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  dto.RefreshTokenRequest:
+    properties:
+      refresh_token:
+        type: string
+    required:
+    - refresh_token
+    type: object
+  dto.RegisterRequest:
+    properties:
+      email:
+        type: string
+      first_name:
+        type: string
+      last_name:
+        type: string
+      password:
+        minLength: 6
+        type: string
+      phone_number:
+        type: string
+    required:
+    - email
+    - first_name
+    - last_name
+    - password
+    type: object
+  dto.RenewSubscriptionRequest:
+    properties:
+      interval:
+        enum:
+        - monthly
+        - quarterly
+        - yearly
+        type: string
+    required:
+    - interval
+    type: object
+  dto.ResetPasswordRequest:
+    properties:
+      code:
+        type: string
+      email:
+        type: string
+      new_password:
+        minLength: 6
+        type: string
+    required:
+    - code
+    - email
+    - new_password
+    type: object
+  dto.SaveAnswerRequest:
+    properties:
+      attempt_id:
+        type: string
+      question_id:
+        type: string
+      selected_answer:
+        enum:
+        - A
+        - B
+        - C
+        - D
+        type: string
+      time_spent:
+        type: integer
+    required:
+    - attempt_id
+    - question_id
+    - selected_answer
+    type: object
+  dto.SendOTPRequest:
+    properties:
+      email:
+        type: string
+      type:
+        enum:
+        - email_verification
+        - password_reset
+        type: string
+    required:
+    - email
+    - type
+    type: object
+  dto.StartExamRequest:
+    properties:
+      device_info:
+        type: string
+      exam_id:
+        type: string
+      ip_address:
+        type: string
+      student_id:
+        type: string
+    required:
+    - exam_id
+    - student_id
+    type: object
+  dto.SubmitExamRequest:
+    properties:
+      attempt_id:
+        type: string
+    required:
+    - attempt_id
+    type: object
+  dto.UpdateClassArmRequest:
+    properties:
+      arm_code:
+        type: string
+      capacity:
+        type: integer
+      is_active:
+        type: boolean
+      name:
+        type: string
+      room_number:
+        type: string
+      sort_order:
+        type: integer
+    type: object
+  dto.UpdateClassLevelRequest:
+    properties:
+      category:
+        type: string
+      is_active:
+        type: boolean
+      level_number:
+        type: integer
+      name:
+        type: string
+      promotion_to:
+        type: string
+      sort_order:
+        type: integer
+    type: object
+  dto.UpdateClassRequest:
+    properties:
+      is_active:
+        type: boolean
+      room_number:
+        type: string
+      teacher_id:
+        type: string
+    type: object
+  dto.UpdateQuestionRequest:
+    properties:
+      bloom_level:
+        type: string
+      correct_answer:
+        type: string
+      difficulty:
+        type: string
+      explanation:
+        type: string
+      marks:
+        type: integer
+      options:
+        additionalProperties:
+          type: string
+        type: object
+      question_text:
+        type: string
+      status:
+        type: string
+      time_limit_seconds:
+        type: integer
+    type: object
+  dto.UpdateSchoolRequest:
+    properties:
+      address:
+        type: string
+      email:
+        type: string
+      is_active:
+        type: boolean
+      logo:
+        type: string
+      name:
+        maxLength: 255
+        minLength: 2
+        type: string
+      phone:
+        type: string
+      website:
+        type: string
+    type: object
+  dto.UpdateSessionRequest:
+    properties:
+      end_date:
+        type: string
+      is_active:
+        type: boolean
+      is_current:
+        type: boolean
+      name:
+        type: string
+      start_date:
+        type: string
+    type: object
+  dto.UpdateStudentRequest:
+    properties:
+      address:
+        type: string
+      class_id:
+        type: string
+      date_of_birth:
+        type: string
+      gender:
+        type: string
+      guardian_email:
+        type: string
+      guardian_name:
+        type: string
+      guardian_phone:
+        type: string
+      is_active:
+        type: boolean
+    type: object
+  dto.UpdateSubscriptionRequest:
+    properties:
+      auto_renew:
+        type: boolean
+      cancel_at_end_date:
+        type: boolean
+      status:
+        enum:
+        - active
+        - cancelled
+        - pending
+        - trial
+        type: string
+      tier:
+        enum:
+        - basic
+        - premium
+        - enterprise
+        type: string
+    type: object
+  dto.UpdateTermRequest:
+    properties:
+      end_date:
+        type: string
+      is_active:
+        type: boolean
+      is_current:
+        type: boolean
+      name:
+        type: string
+      start_date:
+        type: string
+    type: object
+  dto.VerifyEmailRequest:
+    properties:
+      code:
+        type: string
+      email:
+        type: string
+    required:
+    - code
+    - email
+    type: object
+  dto.VerifyPaymentRequest:
+    properties:
+      gateway:
+        enum:
+        - stripe
+        - paystack
+        - flutterwave
+        type: string
+      reference:
+        type: string
+    required:
+    - gateway
+    - reference
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@cbt-api.com
+    name: API Support
+  description: Computer‑Based Testing API with subscriptions, academic management,
+    and CBT modules.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: http://swagger.io/terms/
+  title: CBT API
+  version: "1.0"
+paths:
+  /auth/2fa/disable:
+    post:
+      consumes:
+      - application/json
+      description: Disable 2FA for the account after verifying the TOTP code.
+      parameters:
+      - description: TOTP code
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.Disable2FARequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Disable two‑factor authentication
+      tags:
+      - Authentication
+  /auth/2fa/enable:
+    post:
+      consumes:
+      - application/json
+      description: Verify a TOTP code and enable 2FA for the account.
+      parameters:
+      - description: TOTP code
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.Enable2FARequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Enable two‑factor authentication
+      tags:
+      - Authentication
+  /auth/2fa/generate:
+    post:
+      description: Generate a TOTP secret and QR code for Google Authenticator.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (TwoFactorResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Generate 2FA secret (authenticated)
+      tags:
+      - Authentication
+  /auth/change-password:
+    post:
+      consumes:
+      - application/json
+      description: Requires current password and new password.
+      parameters:
+      - description: Current and new password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ChangePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Change current user's password (authenticated)
+      tags:
+      - Authentication
+  /auth/forgot-password:
+    post:
+      consumes:
+      - application/json
+      description: Send a password reset OTP to the registered email (if exists).
+      parameters:
+      - description: Email address
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ForgotPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message (always same for security)
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Request password reset OTP
+      tags:
+      - Authentication
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate with email and password. If 2FA is enabled, a 2FA
+        token is required.
+      parameters:
+      - description: Login credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (LoginResponse or 2FA_REQUIRED)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Login user
+      tags:
+      - Authentication
+  /auth/logout:
+    post:
+      description: Invalidate the current session (access token). Requires authentication.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Logout from current session
+      tags:
+      - Authentication
+  /auth/logout-all:
+    post:
+      description: Invalidate all sessions for the authenticated user, except the
+        current one.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Logout from all devices
+      tags:
+      - Authentication
+  /auth/profile:
+    delete:
+      description: Permanently soft‑delete the authenticated user's account.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete user account (soft delete)
+      tags:
+      - Authentication
+    get:
+      description: Retrieve the authenticated user's profile information.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (UserDTO)
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get user profile
+      tags:
+      - Authentication
+    put:
+      consumes:
+      - application/json
+      description: Update the authenticated user's profile (first name, last name,
+        phone number).
+      parameters:
+      - description: Profile fields
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update user profile
+      tags:
+      - Authentication
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Obtain a new access token using a valid refresh token.
+      parameters:
+      - description: Refresh token
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RefreshTokenRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (TokenResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Refresh access token
+      tags:
+      - Authentication
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Create a new user account (student role by default). An email verification
+        OTP will be sent.
+      parameters:
+      - description: Registration details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data (LoginResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Register a new user
+      tags:
+      - Authentication
+  /auth/reset-password:
+    post:
+      consumes:
+      - application/json
+      description: Change password after verifying the reset OTP.
+      parameters:
+      - description: Reset details (email, code, new_password)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ResetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reset password using OTP
+      tags:
+      - Authentication
+  /auth/send-otp:
+    post:
+      consumes:
+      - application/json
+      description: Send a one‑time passcode to the user's email address.
+      parameters:
+      - description: OTP request (email, type)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.SendOTPRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Send OTP for email verification or password reset
+      tags:
+      - Authentication
+  /auth/sessions:
+    get:
+      description: List all active sessions for the authenticated user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list of sessions)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all active sessions
+      tags:
+      - Authentication
+  /auth/sessions/{sessionId}:
+    delete:
+      description: Force logout a device by revoking its session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revoke a specific session
+      tags:
+      - Authentication
+  /auth/verify-2fa:
+    post:
+      consumes:
+      - application/json
+      description: Complete 2FA authentication after login returned "2FA_REQUIRED".
+      parameters:
+      - description: 2FA verification
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (LoginResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Verify 2FA code during login
+      tags:
+      - Authentication
+  /auth/verify-email:
+    post:
+      consumes:
+      - application/json
+      description: Confirm the user's email using the code received via /send-otp.
+      parameters:
+      - description: Verification code
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.VerifyEmailRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Verify email address with OTP
+      tags:
+      - Authentication
+  /class-arms:
+    post:
+      consumes:
+      - application/json
+      description: Add a class arm (e.g., "Section A") for a school.
+      parameters:
+      - description: Class arm details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateClassArmRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new class arm
+      tags:
+      - Academic
+  /class-arms/{id}:
+    delete:
+      description: Soft‑delete a class arm.
+      parameters:
+      - description: Class Arm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a class arm
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single class arm.
+      parameters:
+      - description: Class Arm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get class arm by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing class arm.
+      parameters:
+      - description: Class Arm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateClassArmRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a class arm
+      tags:
+      - Academic
+  /class-levels:
+    post:
+      consumes:
+      - application/json
+      description: Add a class level (e.g., "Grade 10") for a school.
+      parameters:
+      - description: Class level details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateClassLevelRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new class level
+      tags:
+      - Academic
+  /class-levels/{id}:
+    delete:
+      description: Soft‑delete a class level.
+      parameters:
+      - description: Class Level ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a class level
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single class level.
+      parameters:
+      - description: Class Level ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get class level by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing class level.
+      parameters:
+      - description: Class Level ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateClassLevelRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a class level
+      tags:
+      - Academic
+  /class-students/{classId}:
+    get:
+      description: List students belonging to a class, with pagination.
+      parameters:
+      - description: Class ID
+        in: path
+        name: classId
+        required: true
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page (default 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list), meta
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all students in a class
+      tags:
+      - Academic
+  /classes:
+    post:
+      consumes:
+      - application/json
+      description: Create a class combining a class level and a class arm.
+      parameters:
+      - description: Class details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateClassRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new class
+      tags:
+      - Academic
+  /classes/{id}:
+    delete:
+      description: Soft‑delete a class.
+      parameters:
+      - description: Class ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a class
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single class.
+      parameters:
+      - description: Class ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get class by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing class.
+      parameters:
+      - description: Class ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateClassRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a class
+      tags:
+      - Academic
+  /exams/practice/{studentId}/{subjectId}:
+    get:
+      description: Generate random questions for a student to practice on a given
+        subject.
+      parameters:
+      - description: Student UUID
+        in: path
+        name: studentId
+        required: true
+        type: string
+      - description: Subject UUID
+        in: path
+        name: subjectId
+        required: true
+        type: string
+      - description: Number of questions (default 10)
+        in: query
+        name: count
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains PracticeSessionResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Start a practice session
+      tags:
+      - Exams
+  /exams/save-answer:
+    post:
+      consumes:
+      - application/json
+      description: Save or update the student's answer for a question during an active
+        exam attempt.
+      parameters:
+      - description: Save answer request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.SaveAnswerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains SaveAnswerResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Save a single answer
+      tags:
+      - Exams
+  /exams/start:
+    post:
+      consumes:
+      - application/json
+      description: Create a new exam attempt for a student. Returns exam details and
+        questions.
+      parameters:
+      - description: Start exam request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.StartExamRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains StartExamResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Start an exam attempt
+      tags:
+      - Exams
+  /exams/submit:
+    post:
+      consumes:
+      - application/json
+      description: Finalise the exam attempt, calculate score and store the result.
+      parameters:
+      - description: Submit exam request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.SubmitExamRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains SubmitExamResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Submit an exam
+      tags:
+      - Exams
+  /health:
+    get:
+      description: Check if the API is running.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: status, message, timestamp
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Health check endpoint
+      tags:
+      - System
+  /questions/{id}:
+    get:
+      description: Retrieve a question by its ID
+      parameters:
+      - description: Question UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains QuestionBankResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a single question
+      tags:
+      - Questions
+  /questions/bulk-delete:
+    post:
+      consumes:
+      - application/json
+      description: Permanently delete a list of questions by their IDs
+      parameters:
+      - description: List of question IDs
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.BulkDeleteRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete multiple questions
+      tags:
+      - Questions
+  /questions/create:
+    post:
+      consumes:
+      - application/json
+      description: Add a question to the bank (supports multiple types, options, tags)
+      parameters:
+      - description: Question details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateQuestionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: data contains QuestionBankResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new question
+      tags:
+      - Questions
+  /questions/delete/{id}:
+    delete:
+      description: Soft‑delete a question (it will not be returned in lists)
+      parameters:
+      - description: Question UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a question
+      tags:
+      - Questions
+  /questions/filter:
+    post:
+      consumes:
+      - application/json
+      description: Filter questions by subject, topic, difficulty, bloom level, type,
+        tags, etc.
+      parameters:
+      - description: Filter criteria
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.FilterQuestionsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data, total, page, limit
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Advanced filter for questions
+      tags:
+      - Questions
+  /questions/list:
+    get:
+      description: Get paginated list of questions for a subject
+      parameters:
+      - description: Subject UUID
+        in: query
+        name: subject_id
+        required: true
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data, total, page, limit
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List questions by subject
+      tags:
+      - Questions
+  /questions/statistics:
+    get:
+      description: Retrieve statistics about questions (total, by difficulty, bloom
+        level, etc.) optionally filtered by subject.
+      parameters:
+      - description: Subject UUID (optional)
+        in: query
+        name: subject_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (statistics)
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get question statistics
+      tags:
+      - Questions
+  /questions/tags/create:
+    post:
+      consumes:
+      - application/json
+      description: Add a tag that can be used to categorise questions.
+      parameters:
+      - description: Tag name and description
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateTagRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: data contains TagResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new tag
+      tags:
+      - Questions
+  /questions/tags/list:
+    get:
+      description: Get a list of all tags and their usage counts.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list of tags)
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: List all tags
+      tags:
+      - Questions
+  /questions/update/{id}:
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing question's fields (only provided fields are
+        updated)
+      parameters:
+      - description: Question UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateQuestionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data contains updated QuestionBankResponse
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a question
+      tags:
+      - Questions
+  /school-class-arms/{schoolId}:
+    get:
+      description: List all class arms belonging to a school.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all class arms for a school
+      tags:
+      - Academic
+  /school-class-levels/{schoolId}:
+    get:
+      description: List all class levels belonging to a school.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all class levels for a school
+      tags:
+      - Academic
+  /school-classes/{schoolId}:
+    get:
+      description: List classes belonging to a specific school.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all classes for a school
+      tags:
+      - Academic
+  /school-session-classes/{schoolId}/{sessionId}:
+    get:
+      description: List classes for a given school and academic session.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      - description: Session ID
+        in: path
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get classes by school and session
+      tags:
+      - Academic
+  /school-sessions/{schoolId}:
+    get:
+      description: List all academic sessions belonging to a school.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all sessions for a school
+      tags:
+      - Academic
+  /school-sessions/{schoolId}/current:
+    get:
+      description: Retrieve the currently active academic session.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current session for a school
+      tags:
+      - Academic
+  /school-students/{schoolId}:
+    get:
+      description: List students belonging to a school, with pagination.
+      parameters:
+      - description: School ID
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page (default 20)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list), meta
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all students in a school
+      tags:
+      - Academic
+  /schools:
+    get:
+      parameters:
+      - description: Page number
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all schools
+      tags:
+      - Schools
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: School details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateSchoolRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a new school
+      tags:
+      - Schools
+  /schools/{id}:
+    delete:
+      parameters:
+      - description: School ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete school
+      tags:
+      - Schools
+    get:
+      parameters:
+      - description: School ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get school by ID
+      tags:
+      - Schools
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: School ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: School details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateSchoolRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update school
+      tags:
+      - Schools
+  /session-classes/{sessionId}:
+    get:
+      description: List classes belonging to a specific academic session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all classes for a session
+      tags:
+      - Academic
+  /session-terms/{sessionId}:
+    get:
+      description: List terms belonging to an academic session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data (list)
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all terms for a session
+      tags:
+      - Academic
+  /session-terms/{sessionId}/current:
+    get:
+      description: Retrieve the currently active term within a session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: sessionId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current term for a session
+      tags:
+      - Academic
+  /sessions:
+    post:
+      consumes:
+      - application/json
+      description: Add an academic session (e.g., "2025/2026") for a school.
+      parameters:
+      - description: Session details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateSessionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new academic session
+      tags:
+      - Academic
+  /sessions/{id}:
+    delete:
+      description: Soft‑delete an academic session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a session
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single academic session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get session by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing academic session.
+      parameters:
+      - description: Session ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateSessionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a session
+      tags:
+      - Academic
+  /students:
+    post:
+      consumes:
+      - application/json
+      description: Associate a user as a student in a school and class.
+      parameters:
+      - description: Student details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateStudentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new student
+      tags:
+      - Academic
+  /students/{id}:
+    delete:
+      description: Soft‑delete a student record.
+      parameters:
+      - description: Student ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a student
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single student record.
+      parameters:
+      - description: Student ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get student by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify a student's details (e.g., admission number, class).
+      parameters:
+      - description: Student ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateStudentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a student
+      tags:
+      - Academic
+  /students/{studentId}/transfer:
+    post:
+      consumes:
+      - application/json
+      description: Move a student from their current class to a new class.
+      parameters:
+      - description: Student ID
+        in: path
+        name: studentId
+        required: true
+        type: string
+      - description: new_class_id
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Transfer a student to another class
+      tags:
+      - Academic
+  /subscriptions:
+    get:
+      description: List all subscriptions (including inactive) belonging to a school.
+      parameters:
+      - description: School ID (UUID)
+        in: query
+        name: school_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (array of SubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get all subscriptions for a school
+      tags:
+      - subscriptions
+    post:
+      consumes:
+      - application/json
+      description: Creates a pending subscription and returns a one‑time payment link
+        (Paystack/Flutterwave/Stripe).
+      parameters:
+      - description: Subscription details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data (CreateSubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new subscription
+      tags:
+      - subscriptions
+  /subscriptions/{id}:
+    get:
+      description: Retrieve a single subscription by its UUID.
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (SubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get subscription by ID
+      tags:
+      - subscriptions
+    put:
+      consumes:
+      - application/json
+      description: Update tier, auto‑renew, cancel‑at‑end, or status.
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update fields
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (SubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a subscription
+      tags:
+      - subscriptions
+  /subscriptions/{id}/cancel:
+    post:
+      consumes:
+      - application/json
+      description: Cancel immediately or at the end of the current period.
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Cancel options
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CancelSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Cancel a subscription
+      tags:
+      - subscriptions
+  /subscriptions/{id}/invoices:
+    get:
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (array of InvoiceResponse)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get invoices for a subscription
+      tags:
+      - invoices
+  /subscriptions/{id}/payment-intent:
+    post:
+      consumes:
+      - application/json
+      description: Generate a new payment link for a subscription (e.g., manual renewal
+        or upgrade).
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Payment intent options (success/cancel URLs)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreatePaymentIntentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (PaymentIntentResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a one‑time payment intent for a subscription
+      tags:
+      - payments
+  /subscriptions/{id}/renew:
+    post:
+      consumes:
+      - application/json
+      description: Extend an active subscription for a new interval (generates a new
+        payment link).
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Renewal interval
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.RenewSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (SubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Renew a subscription
+      tags:
+      - subscriptions
+  /subscriptions/{id}/transactions:
+    get:
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (array of PaymentTransactionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get payment transactions for a subscription
+      tags:
+      - payments
+  /subscriptions/{id}/usage:
+    get:
+      description: Current usage vs limits (students, teachers, exams, storage).
+      parameters:
+      - description: Subscription ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (SubscriptionUsageResponse)
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get usage statistics for a subscription
+      tags:
+      - subscriptions
+  /subscriptions/payment-intent/{id}/confirm:
+    post:
+      description: Manual verification of a payment intent – usually not needed because
+        webhook handles it.
+      parameters:
+      - description: Payment Intent ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Confirm a payment intent (verify with gateway)
+      tags:
+      - payments
+  /subscriptions/school/{schoolId}/current:
+    get:
+      description: Returns the currently active (or trial/pending) subscription for
+        a school.
+      parameters:
+      - description: School ID (UUID)
+        in: path
+        name: schoolId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data (SubscriptionResponse)
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get current active subscription for a school
+      tags:
+      - subscriptions
+  /subscriptions/verify:
+    post:
+      consumes:
+      - application/json
+      description: Manually verify a payment using the gateway's reference.
+      parameters:
+      - description: Verification details (reference, gateway)
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.VerifyPaymentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Verify a payment by gateway reference
+      tags:
+      - payments
+  /terms:
+    post:
+      consumes:
+      - application/json
+      description: Add a term (e.g., "First Term") for an academic session.
+      parameters:
+      - description: Term details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateTermRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a new term
+      tags:
+      - Academic
+  /terms/{id}:
+    delete:
+      description: Soft‑delete a term.
+      parameters:
+      - description: Term ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete a term
+      tags:
+      - Academic
+    get:
+      description: Retrieve a single term.
+      parameters:
+      - description: Term ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get term by ID
+      tags:
+      - Academic
+    put:
+      consumes:
+      - application/json
+      description: Modify an existing term.
+      parameters:
+      - description: Term ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateTermRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: message + data
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a term
+      tags:
+      - Academic
+  /user-student/{userId}:
+    get:
+      description: Find student record using the associated user ID.
+      parameters:
+      - description: User ID
+        in: path
+        name: userId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: data
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get student by user ID
+      tags:
+      - Academic
+  /webhook/{gateway}:
+    post:
+      consumes:
+      - application/json
+      description: Paystack, Flutterwave, or Stripe webhook endpoint. No authentication.
+      parameters:
+      - description: 'Gateway name: stripe, paystack, flutterwave'
+        in: path
+        name: gateway
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: status
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Webhook receiver for payment gateways
+      tags:
+      - webhooks
+securityDefinitions:
+  BearerAuth:
+    description: 'Enter **Bearer &lt;token&gt;**. Example: `Bearer eyJhbGciOiJIUzI1NiIs...`'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
