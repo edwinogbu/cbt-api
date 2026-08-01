@@ -167,7 +167,209 @@ func (h *SessionHandler) DeleteSession(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"message": "Session deleted successfully"})
 }
 
+// internal/academic/handler/session_handler.go
 
+// Add these new handler methods
+
+// ListSessions godoc
+// @Summary      List all sessions with pagination and filters
+// @Description  Get a paginated list of sessions with filtering and sorting
+// @Tags         Academic
+// @Produce      json
+// @Param        page query int false "Page number (default: 1)"
+// @Param        limit query int false "Items per page (default: 20, max: 100)"
+// @Param        search query string false "Search by name"
+// @Param        school_id query string false "Filter by school ID"
+// @Param        status query string false "Filter by status (active, upcoming, ended, inactive, all)" Enums(active, upcoming, ended, inactive, all)
+// @Param        sort_by query string false "Sort by field (name, start_date, end_date, created_at)"
+// @Param        sort_order query string false "Sort order (asc, desc)"
+// @Param        start_date query string false "Filter by start date (YYYY-MM-DD)"
+// @Param        end_date query string false "Filter by end date (YYYY-MM-DD)"
+// @Param        is_active query boolean false "Filter by active status"
+// @Success      200  {object}  dto.SessionListResponse
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions [get]
+func (h *SessionHandler) ListSessions(c *gin.Context) {
+    var req dto.ListSessionsRequest
+    if err := c.ShouldBindQuery(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    response, err := h.service.ListSessions(&req)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   response,
+    })
+}
+
+// GetSessionStats godoc
+// @Summary      Get session statistics
+// @Description  Get statistics for sessions (total, active, upcoming, ended, inactive)
+// @Tags         Academic
+// @Produce      json
+// @Param        school_id query string false "School ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions/stats [get]
+func (h *SessionHandler) GetSessionStats(c *gin.Context) {
+    schoolID := c.Query("school_id")
+
+    stats, err := h.service.GetSessionStats(schoolID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   stats,
+    })
+}
+
+// BulkDeleteSessions godoc
+// @Summary      Bulk delete sessions
+// @Description  Delete multiple sessions by IDs
+// @Tags         Academic
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.BulkDeleteRequest true "Session IDs to delete"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions/bulk [delete]
+func (h *SessionHandler) BulkDeleteSessions(c *gin.Context) {
+    var req dto.BulkDeleteRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    if len(req.IDs) == 0 {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "no session IDs provided"})
+        return
+    }
+
+    count, err := h.service.BulkDeleteSessions(req.IDs)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":  "success",
+        "message": "Sessions deleted successfully",
+        "data": gin.H{
+            "deleted_count": count,
+        },
+    })
+}
+
+// GetSessionTimeline godoc
+// @Summary      Get session timeline
+// @Description  Get all sessions ordered by start date for timeline visualization
+// @Tags         Academic
+// @Produce      json
+// @Param        school_id query string false "School ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions/timeline [get]
+func (h *SessionHandler) GetSessionTimeline(c *gin.Context) {
+    schoolID := c.Query("school_id")
+
+    timeline, err := h.service.GetSessionTimeline(schoolID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   timeline,
+    })
+}
+
+// GetSessionSummary godoc
+// @Summary      Get session summary for dashboard
+// @Description  Get a summary of sessions including current, stats, and timeline
+// @Tags         Academic
+// @Produce      json
+// @Param        school_id query string false "School ID"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions/summary [get]
+func (h *SessionHandler) GetSessionSummary(c *gin.Context) {
+    schoolID := c.Query("school_id")
+
+    summary, err := h.service.GetSessionSummary(schoolID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   summary,
+    })
+}
+
+// SearchSessions godoc
+// @Summary      Search sessions
+// @Description  Search sessions by name with pagination
+// @Tags         Academic
+// @Produce      json
+// @Param        q query string true "Search query"
+// @Param        page query int false "Page number (default: 1)"
+// @Param        limit query int false "Items per page (default: 20)"
+// @Param        school_id query string false "School ID"
+// @Success      200  {object}  dto.SessionListResponse
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /sessions/search [get]
+func (h *SessionHandler) SearchSessions(c *gin.Context) {
+    query := c.Query("q")
+    if query == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "search query is required"})
+        return
+    }
+
+    req := &dto.ListSessionsRequest{
+        Page:     1,
+        Limit:    20,
+        Search:   query,
+        SchoolID: c.Query("school_id"),
+    }
+
+    if page := c.Query("page"); page != "" {
+        // Parse page
+    }
+    if limit := c.Query("limit"); limit != "" {
+        // Parse limit
+    }
+
+    response, err := h.service.ListSessions(req)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   response,
+    })
+}
 
 
 // package handler

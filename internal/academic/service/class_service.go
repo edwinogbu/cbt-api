@@ -1,6 +1,7 @@
 package service
 
 import (
+     "context"  // ✅ ADD THIS
     "errors"
     "fmt"
     "time"
@@ -193,4 +194,94 @@ func (s *ClassService) toResponseList(classes []models.Class) []dto.ClassRespons
         responses = append(responses, *s.toResponse(&class))
     }
     return responses
+}
+
+// ============================================================
+// NEW SERVICE METHODS FOR MISSING ENDPOINTS
+// ============================================================
+
+// ListClasses - ALL PARAMETERS OPTIONAL
+func (s *ClassService) ListClasses(ctx context.Context, req *dto.ListClassesRequest) (*dto.ClassListResponse, error) {
+    classes, total, err := s.classRepo.ListWithFilters(ctx, req)
+    if err != nil {
+        return nil, err
+    }
+
+    responses := s.toResponseList(classes)
+
+    totalPages := int((total + int64(req.Limit) - 1) / int64(req.Limit))
+    if totalPages < 1 {
+        totalPages = 1
+    }
+
+    return &dto.ClassListResponse{
+        Items:      responses,
+        Total:      total,
+        Page:       req.Page,
+        Limit:      req.Limit,
+        TotalPages: totalPages,
+    }, nil
+}
+
+// GetByTeacher - get classes by teacher ID
+func (s *ClassService) GetByTeacher(ctx context.Context, teacherID string) ([]dto.ClassResponse, error) {
+    classes, err := s.classRepo.FindByTeacher(teacherID)
+    if err != nil {
+        return nil, err
+    }
+    return s.toResponseList(classes), nil
+}
+
+// GetByArm - get classes by class arm ID
+func (s *ClassService) GetByArm(ctx context.Context, classArmID string) ([]dto.ClassResponse, error) {
+    classes, err := s.classRepo.FindByArm(ctx, classArmID)
+    if err != nil {
+        return nil, err
+    }
+    return s.toResponseList(classes), nil
+}
+
+// GetByLevel - get classes by class level ID
+func (s *ClassService) GetByLevel(ctx context.Context, classLevelID string) ([]dto.ClassResponse, error) {
+    classes, err := s.classRepo.FindByLevel(ctx, classLevelID)
+    if err != nil {
+        return nil, err
+    }
+    return s.toResponseList(classes), nil
+}
+
+// BulkDeleteClasses - bulk delete
+func (s *ClassService) BulkDeleteClasses(ctx context.Context, ids []string) (int64, error) {
+    if len(ids) == 0 {
+        return 0, errors.New("no IDs provided")
+    }
+    return s.classRepo.BulkDeleteClasses(ctx, ids)
+}
+
+// GetClassStats - statistics
+func (s *ClassService) GetClassStats(ctx context.Context, schoolID string) (*dto.ClassStatsResponse, error) {
+    return s.classRepo.GetClassStats(ctx, schoolID)
+}
+
+// SearchClasses - search
+func (s *ClassService) SearchClasses(ctx context.Context, query string, schoolID string, page, limit int) (*dto.ClassListResponse, error) {
+    classes, total, err := s.classRepo.SearchClasses(ctx, query, schoolID, page, limit)
+    if err != nil {
+        return nil, err
+    }
+
+    responses := s.toResponseList(classes)
+
+    totalPages := int((total + int64(limit) - 1) / int64(limit))
+    if totalPages < 1 {
+        totalPages = 1
+    }
+
+    return &dto.ClassListResponse{
+        Items:      responses,
+        Total:      total,
+        Page:       page,
+        Limit:      limit,
+        TotalPages: totalPages,
+    }, nil
 }

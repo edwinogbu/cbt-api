@@ -1,0 +1,59 @@
+{{define "payment_link.html"}}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complete Your Payment</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1a202c; background-color: #f7fafc; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        .header { background: linear-gradient(135deg, #ed8936, #dd6b20); padding: 40px 30px; text-align: center; }
+        .header h1 { color: #ffffff; font-size: 28px; font-weight: 700; }
+        .header p { color: rgba(255, 255, 255, 0.9); font-size: 16px; }
+        .content { padding: 40px 30px; }
+        .content p { margin-bottom: 20px; font-size: 16px; color: #4a5568; }
+        .payment-box { background: linear-gradient(135deg, #fffaf0, #fefcbf); border: 2px solid #ed8936; border-radius: 8px; padding: 25px; margin: 20px 0; text-align: center; }
+        .payment-amount { font-size: 32px; font-weight: 700; color: #dd6b20; }
+        .payment-tier { font-size: 18px; color: #4a5568; }
+        .button { display: inline-block; background: linear-gradient(135deg, #ed8936, #dd6b20); color: #ffffff; padding: 16px 40px; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 15px 0; font-size: 18px; }
+        .button:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(237, 137, 54, 0.3); }
+        .footer { background-color: #f7fafc; padding: 30px; text-align: center; border-top: 1px solid #e2e8f0; }
+        .footer p { font-size: 14px; color: #718096; margin-bottom: 8px; }
+        @media (max-width: 480px) { .content { padding: 25px 20px; } .payment-amount { font-size: 24px; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💳 Complete Your Payment</h1>
+            <p>Activate your {{.Tier}} plan</p>
+        </div>
+        <div class="content">
+            <p>Hello <strong>{{.FirstName}}</strong>,</p>
+            <p>You're almost there! To activate your <strong>{{.SiteName}}</strong> account, please complete your subscription payment.</p>
+            
+            <div class="payment-box">
+                <p class="payment-tier">Plan: <strong>{{.Tier}}</strong></p>
+                <p class="payment-amount">₦{{.Amount}}</p>
+                <p style="font-size: 14px; color: #718096;">One-time payment for your subscription</p>
+            </div>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{{.Code}}" class="button">Pay Now</a>
+            </div>
+            
+            <p style="font-size: 14px; color: #718096;">This payment link will expire in 48 hours.</p>
+            
+            <p>If you have any questions or issues with payment, contact us at <a href="mailto:{{.SupportEmail}}" style="color: #ed8936;">{{.SupportEmail}}</a>.</p>
+            <p>Best regards,<br><strong>The {{.SiteName}} Team</strong></p>
+        </div>
+        <div class="footer">
+            <p>&copy; {{.Year}} {{.SiteName}}. All rights reserved.</p>
+            <p style="font-size: 12px; color: #a0aec0;">This is an automated payment notification.</p>
+        </div>
+    </div>
+</body>
+</html>
+{{end}}

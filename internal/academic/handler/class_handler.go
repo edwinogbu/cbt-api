@@ -2,6 +2,7 @@ package handler
 
 import (
     "net/http"
+    "strconv"  // ✅ ADD THIS
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
@@ -191,6 +192,293 @@ func (h *ClassHandler) DeleteClass(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"message": "Class deleted successfully"})
 }
 
+// ============================================================
+// NEW HANDLER METHODS FOR MISSING ENDPOINTS
+// ============================================================
+
+// ListClasses godoc
+// @Summary      List all classes with pagination, filtering, sorting
+// @Description  Get paginated list of classes with optional filters.
+// @Description  ALL parameters are optional - returns all classes if no params.
+// @Tags         Academic
+// @Produce      json
+// @Param        page query int false "Page number" default(1)
+// @Param        limit query int false "Items per page" default(20) max(100)
+// @Param        search query string false "Search by class code or room number"
+// @Param        school_id query string false "Filter by school ID"
+// @Param        session_id query string false "Filter by session ID"
+// @Param        class_level_id query string false "Filter by class level ID"
+// @Param        class_arm_id query string false "Filter by class arm ID"
+// @Param        teacher_id query string false "Filter by teacher ID"
+// @Param        is_active query bool false "Filter by active status"
+// @Param        sort_by query string false "Sort by field (class_code, room_number, created_at)" default(created_at)
+// @Param        sort_order query string false "Sort order (asc, desc)" default(desc)
+// @Success      200  {object}  dto.ClassListResponse
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes [get]
+func (h *ClassHandler) ListClasses(c *gin.Context) {
+    page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+    limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+    if page < 1 {
+        page = 1
+    }
+    if limit < 1 || limit > 100 {
+        limit = 20
+    }
+
+    req := &dto.ListClassesRequest{
+        Page:         page,
+        Limit:        limit,
+        Search:       c.Query("search"),
+        SchoolID:     c.Query("school_id"),
+        SessionID:    c.Query("session_id"),
+        ClassLevelID: c.Query("class_level_id"),
+        ClassArmID:   c.Query("class_arm_id"),
+        TeacherID:    c.Query("teacher_id"),
+        SortBy:       c.DefaultQuery("sort_by", "classes.created_at"),
+        SortOrder:    c.DefaultQuery("sort_order", "DESC"),
+        IsActive:     nil,
+    }
+
+    if isActive := c.Query("is_active"); isActive != "" {
+        val := isActive == "true"
+        req.IsActive = &val
+    }
+
+    ctx := c.Request.Context()
+    resp, err := h.service.ListClasses(ctx, req)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "failed to list classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   resp,
+    })
+}
+
+// GetClassesByTeacher godoc
+// @Summary      Get classes by teacher
+// @Description  List classes assigned to a specific teacher.
+// @Tags         Academic
+// @Produce      json
+// @Param        teacherId path string true "Teacher ID"
+// @Success      200  {object}  map[string]interface{}  "data (list)"
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/teacher/{teacherId} [get]
+func (h *ClassHandler) GetClassesByTeacher(c *gin.Context) {
+    teacherID := c.Param("teacherId")
+    ctx := c.Request.Context()
+
+    classes, err := h.service.GetByTeacher(ctx, teacherID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "failed to fetch classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   classes,
+        "count":  len(classes),
+    })
+}
+
+// GetClassesByArm godoc
+// @Summary      Get classes by class arm
+// @Description  List classes belonging to a specific class arm.
+// @Tags         Academic
+// @Produce      json
+// @Param        classArmId path string true "Class Arm ID"
+// @Success      200  {object}  map[string]interface{}  "data (list)"
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/arm/{classArmId} [get]
+func (h *ClassHandler) GetClassesByArm(c *gin.Context) {
+    classArmID := c.Param("classArmId")
+    ctx := c.Request.Context()
+
+    classes, err := h.service.GetByArm(ctx, classArmID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "failed to fetch classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   classes,
+        "count":  len(classes),
+    })
+}
+
+// GetClassesByLevel godoc
+// @Summary      Get classes by class level
+// @Description  List classes belonging to a specific class level.
+// @Tags         Academic
+// @Produce      json
+// @Param        classLevelId path string true "Class Level ID"
+// @Success      200  {object}  map[string]interface{}  "data (list)"
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/level/{classLevelId} [get]
+func (h *ClassHandler) GetClassesByLevel(c *gin.Context) {
+    classLevelID := c.Param("classLevelId")
+    ctx := c.Request.Context()
+
+    classes, err := h.service.GetByLevel(ctx, classLevelID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "failed to fetch classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   classes,
+        "count":  len(classes),
+    })
+}
+
+// BulkDeleteClasses godoc
+// @Summary      Bulk delete classes
+// @Description  Delete multiple classes by IDs
+// @Tags         Academic
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.ClassBulkDeleteRequest true "List of IDs to delete"
+// @Success      200  {object}  map[string]interface{}  "message + deleted_count"
+// @Failure      400  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/bulk [delete]
+func (h *ClassHandler) BulkDeleteClasses(c *gin.Context) {
+    var req dto.ClassBulkDeleteRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{
+            "error":   "Invalid request payload",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    if len(req.IDs) == 0 {
+        c.JSON(http.StatusBadRequest, gin.H{
+            "error": "No IDs provided for bulk delete",
+        })
+        return
+    }
+
+    ctx := c.Request.Context()
+    deletedCount, err := h.service.BulkDeleteClasses(ctx, req.IDs)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{
+            "error":   "Failed to delete classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":        "success",
+        "message":       "Classes deleted successfully",
+        "deleted_count": deletedCount,
+    })
+}
+
+// GetClassStats godoc
+// @Summary      Get class statistics
+// @Description  Get statistics about classes (total, active, by school, by level, etc.)
+// @Description  Optional school_id filter - if not provided, returns stats for all schools
+// @Tags         Academic
+// @Produce      json
+// @Param        school_id query string false "Filter by school ID"
+// @Success      200  {object}  map[string]interface{}  "data (stats)"
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/stats [get]
+func (h *ClassHandler) GetClassStats(c *gin.Context) {
+    schoolID := c.Query("school_id")
+    ctx := c.Request.Context()
+
+    stats, err := h.service.GetClassStats(ctx, schoolID)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "Failed to fetch class statistics",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":  "success",
+        "message": "Statistics retrieved successfully",
+        "data":    stats,
+    })
+}
+
+// SearchClasses godoc
+// @Summary      Search classes
+// @Description  Search classes by class code or room number
+// @Tags         Academic
+// @Produce      json
+// @Param        q query string true "Search query"
+// @Param        school_id query string false "Filter by school ID"
+// @Param        page query int false "Page number" default(1)
+// @Param        limit query int false "Items per page" default(20)
+// @Success      200  {object}  dto.ClassListResponse
+// @Failure      500  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /classes/search [get]
+func (h *ClassHandler) SearchClasses(c *gin.Context) {
+    query := c.Query("q")
+    if query == "" {
+        c.JSON(http.StatusBadRequest, gin.H{
+            "error": "Search query is required",
+        })
+        return
+    }
+
+    page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+    limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+    if page < 1 {
+        page = 1
+    }
+    if limit < 1 || limit > 100 {
+        limit = 20
+    }
+
+    schoolID := c.Query("school_id")
+    ctx := c.Request.Context()
+
+    resp, err := h.service.SearchClasses(ctx, query, schoolID, page, limit)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{
+            "error":   "Failed to search classes",
+            "details": err.Error(),
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status":  "success",
+        "message": "Search completed successfully",
+        "data":    resp,
+    })
+}
 
 
 

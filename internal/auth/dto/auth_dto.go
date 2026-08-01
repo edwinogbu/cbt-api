@@ -11,6 +11,7 @@ type RegisterRequest struct {
 	PhoneNumber     string `json:"phone_number"`
 	Role            string `json:"role" binding:"required,oneof=student teacher admin parent"`
 	AdmissionNumber string `json:"admission_number"` // required if role == "parent"
+	SchoolCode      string `json:"school_code"`      // Required for teacher, admin, parent (not for student)
 }
 
 type LoginRequest struct {
@@ -91,6 +92,7 @@ type UserDTO struct {
 	Status           string    `json:"status"`
 	EmailVerified    bool      `json:"email_verified"`
 	TwoFactorEnabled bool      `json:"two_factor_enabled"`
+	SchoolID         *string   `json:"school_id,omitempty"` // ADDED
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -113,6 +115,183 @@ type TwoFactorResponse struct {
 type MessageResponse struct {
 	Message string `json:"message"`
 }
+
+// ============================================
+// SUBSCRIPTION CHECK DTOs - ADDED
+// ============================================
+
+// SubscriptionCheckResponse - Response for subscription check endpoint
+type SubscriptionCheckResponse struct {
+	HasSubscription bool                 `json:"has_subscription"`
+	IsActive        bool                 `json:"is_active"`
+	SchoolID        string               `json:"school_id"`
+	Subscription    *SubscriptionDetail  `json:"subscription,omitempty"`
+	Message         string               `json:"message"`
+}
+
+// SubscriptionDetail - Subscription details for check endpoint
+type SubscriptionDetail struct {
+	ID       string                 `json:"id"`
+	Tier     string                 `json:"tier"`
+	EndDate  time.Time              `json:"end_date"`
+	Status   string                 `json:"status"`
+	Features map[string]interface{} `json:"features"`
+}
+
+
+// SchoolIDResponse - For determining school ID from user
+type SchoolIDResponse struct {
+	SchoolID string `json:"school_id"`
+	Role     string `json:"role"`
+}
+
+
+
+type AuthStatusResponse struct {
+    Authenticated       bool       `json:"authenticated"`
+    UserID              string     `json:"user_id"`
+    Username            string     `json:"username"`
+    Email               string     `json:"email"`
+    Role                string     `json:"role"`
+    Status              string     `json:"status"`
+    EmailVerified       bool       `json:"email_verified"`
+
+    HasSchool           bool       `json:"has_school"`
+    SchoolID            *string    `json:"school_id,omitempty"`
+    SchoolStatus        string     `json:"school_status,omitempty"`
+    SchoolName          string     `json:"school_name,omitempty"`
+
+    HasSubscription     bool       `json:"has_subscription"`
+    SubscriptionStatus  string     `json:"subscription_status,omitempty"`
+    SubscriptionTier    string     `json:"subscription_tier,omitempty"`
+    SubscriptionEndsAt  *time.Time `json:"subscription_ends_at,omitempty"`
+    DaysRemaining       int        `json:"days_remaining,omitempty"`
+
+    OnboardingSessionID string     `json:"onboarding_session_id,omitempty"`
+    OnboardingStep      string     `json:"onboarding_step,omitempty"`
+
+    DashboardRoute      string     `json:"dashboard_route"`
+}
+
+
+
+
+// package dto
+
+// import "time"
+
+// type RegisterRequest struct {
+// 	Username        string `json:"username"`
+// 	Email           string `json:"email"`
+// 	Password        string `json:"password" binding:"required,min=6"`
+// 	FirstName       string `json:"first_name" binding:"required"`
+// 	LastName        string `json:"last_name" binding:"required"`
+// 	PhoneNumber     string `json:"phone_number"`
+// 	Role            string `json:"role" binding:"required,oneof=student teacher admin parent"`
+// 	AdmissionNumber string `json:"admission_number"` // required if role == "parent"
+// 	SchoolCode      string `json:"school_code" binding:"required"` // NEW: Required for all roles
+// }
+
+// type LoginRequest struct {
+// 	Username string `json:"username"`
+// 	Email    string `json:"email"`
+// 	Password string `json:"password" binding:"required"`
+// }
+
+// type RefreshTokenRequest struct {
+// 	RefreshToken string `json:"refresh_token" binding:"required"`
+// }
+
+// type ForgotPasswordRequest struct {
+// 	Email string `json:"email" binding:"required,email"`
+// }
+
+// type ResetPasswordRequest struct {
+// 	Email       string `json:"email" binding:"required,email"`
+// 	Code        string `json:"code" binding:"required,len=6"`
+// 	NewPassword string `json:"new_password" binding:"required,min=6"`
+// }
+
+// type ChangePasswordRequest struct {
+// 	CurrentPassword string `json:"current_password" binding:"required"`
+// 	NewPassword     string `json:"new_password" binding:"required,min=6"`
+// }
+
+// type VerifyEmailRequest struct {
+// 	Email string `json:"email" binding:"required,email"`
+// 	Code  string `json:"code" binding:"required,len=6"`
+// }
+
+// type SendOTPRequest struct {
+// 	Email string `json:"email" binding:"required,email"`
+// 	Type  string `json:"type" binding:"required,oneof=email_verification password_reset"`
+// }
+
+// type Enable2FARequest struct {
+// 	Code string `json:"code" binding:"required,len=6"`
+// }
+
+// type Disable2FARequest struct {
+// 	Code string `json:"code" binding:"required,len=6"`
+// }
+
+// type Verify2FARequest struct {
+// 	Code string `json:"code" binding:"required,len=6"`
+// }
+
+// type RevokeSessionRequest struct {
+// 	SessionID string `json:"session_id" binding:"required"`
+// }
+
+// // Responses
+// type LoginResponse struct {
+// 	AccessToken  string    `json:"access_token"`
+// 	RefreshToken string    `json:"refresh_token"`
+// 	ExpiresAt    time.Time `json:"expires_at"`
+// 	TokenType    string    `json:"token_type"`
+// 	User         UserDTO   `json:"user"`
+// }
+
+// type TokenResponse struct {
+// 	AccessToken  string    `json:"access_token"`
+// 	RefreshToken string    `json:"refresh_token"`
+// 	ExpiresAt    time.Time `json:"expires_at"`
+// 	TokenType    string    `json:"token_type"`
+// }
+
+// type UserDTO struct {
+// 	ID               string    `json:"id"`
+// 	Username         string    `json:"username"`
+// 	Email            string    `json:"email"`
+// 	FirstName        string    `json:"first_name"`
+// 	LastName         string    `json:"last_name"`
+// 	PhoneNumber      string    `json:"phone_number"`
+// 	Role             string    `json:"role"`
+// 	Status           string    `json:"status"`
+// 	EmailVerified    bool      `json:"email_verified"`
+// 	TwoFactorEnabled bool      `json:"two_factor_enabled"`
+// 	CreatedAt        time.Time `json:"created_at"`
+// }
+
+// type SessionDTO struct {
+// 	ID        string    `json:"id"`
+// 	UserAgent string    `json:"user_agent"`
+// 	ClientIP  string    `json:"client_ip"`
+// 	CreatedAt time.Time `json:"created_at"`
+// 	ExpiresAt time.Time `json:"expires_at"`
+// 	IsCurrent bool      `json:"is_current"`
+// }
+
+// type TwoFactorResponse struct {
+// 	Secret     string `json:"secret"`
+// 	QRCodeURL  string `json:"qr_code_url"`
+// 	Enabled    bool   `json:"enabled"`
+// 	Message    string `json:"message"`
+// }
+
+// type MessageResponse struct {
+// 	Message string `json:"message"`
+// }
 
 
 

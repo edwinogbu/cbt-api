@@ -168,6 +168,32 @@ type SubscriptionUsageResponse struct {
     StoragePercent   float64 `json:"storage_percent"`
 }
 
+// Add this to the existing dto file
+
+// // CheckSubscriptionResponse - Response for subscription check endpoint
+// type CheckSubscriptionResponse struct {
+// 	HasSubscription bool                    `json:"has_subscription"`
+// 	IsActive        bool                    `json:"is_active"`
+// 	SchoolID        string                  `json:"school_id"`
+// 	Subscription    *SubscriptionCheckData  `json:"subscription,omitempty"`
+// 	Message         string                  `json:"message"`
+// }
+
+// // SubscriptionCheckData - Subscription details for check endpoint
+// type SubscriptionCheckData struct {
+// 	ID        string                 `json:"id"`
+// 	Tier      string                 `json:"tier"`
+// 	EndDate   time.Time              `json:"end_date"`
+// 	Status    string                 `json:"status"`
+// 	Features  map[string]interface{} `json:"features"`
+// }
+
+// // SchoolIDResponse - For determining school ID from user
+// type SchoolIDResponse struct {
+// 	SchoolID string `json:"school_id"`
+// 	Role     string `json:"role"`
+// }
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================

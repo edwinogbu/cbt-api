@@ -57,3 +57,4 @@ type UserBriefDTO struct {
     LastName    string `json:"last_name"`
     PhoneNumber string `json:"phone_number"`
 }
+

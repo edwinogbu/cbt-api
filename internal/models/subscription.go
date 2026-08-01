@@ -39,12 +39,17 @@ const (
 	SubStatusPending   SubscriptionStatus = "pending"
 	SubStatusTrial     SubscriptionStatus = "trial"
 	SubStatusActive    SubscriptionStatus = "active"
+	SubStatusGrace      SubscriptionStatus = "grace_period"  
 	SubStatusPastDue   SubscriptionStatus = "past_due"
 	SubStatusExpired   SubscriptionStatus = "expired"
 	SubStatusCancelled SubscriptionStatus = "cancelled"
+	SubStatusFailed     SubscriptionStatus = "failed"       
+
 
 	// Payment transaction statuses
 	PaymentPending   PaymentStatus = "pending"
+	PaymentProcessing PaymentStatus = "processing"  // ← ADDED
+	PaymentSuccess    PaymentStatus = "success"
 	PaymentPaid      PaymentStatus = "paid"
 	PaymentFailed    PaymentStatus = "failed"
 	PaymentRefunded  PaymentStatus = "refunded"

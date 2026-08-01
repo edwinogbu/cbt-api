@@ -1,0 +1,55 @@
+{{define "admin_welcome.html"}}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Account Created</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #1a202c; background-color: #f7fafc; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        .header { background: linear-gradient(135deg, #4a6cf7, #6a4cf7); padding: 40px 30px; text-align: center; }
+        .header h1 { color: #ffffff; font-size: 28px; font-weight: 700; }
+        .header p { color: rgba(255, 255, 255, 0.9); font-size: 16px; }
+        .content { padding: 40px 30px; }
+        .content p { margin-bottom: 20px; font-size: 16px; color: #4a5568; }
+        .info-box { background-color: #ebf8ff; border-left: 4px solid #4a6cf7; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+        .footer { background-color: #f7fafc; padding: 30px; text-align: center; border-top: 1px solid #e2e8f0; }
+        .footer p { font-size: 14px; color: #718096; margin-bottom: 8px; }
+        .button { display: inline-block; background: linear-gradient(135deg, #4a6cf7, #6a4cf7); color: #ffffff; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 10px 0; }
+        @media (max-width: 480px) { .content { padding: 25px 20px; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎉 Admin Account Created</h1>
+            <p>Welcome to {{.SiteName}}</p>
+        </div>
+        <div class="content">
+            <p>Hello <strong>{{.FirstName}} {{.LastName}}</strong>,</p>
+            <p>Your administrator account has been successfully created for <strong>{{.SiteName}}</strong>.</p>
+            
+            <div class="info-box">
+                <p><strong>Account Details:</strong></p>
+                <p>📧 Email: <strong>{{.Email}}</strong></p>
+                <p>👤 Name: <strong>{{.FirstName}} {{.LastName}}</strong></p>
+            </div>
+            
+            <p>To complete your registration, please verify your email address using the OTP code sent to your email.</p>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{{.AppURL}}" class="button">Go to Dashboard</a>
+            </div>
+            
+            <p>If you have any questions, contact us at <a href="mailto:{{.SupportEmail}}" style="color: #4a6cf7;">{{.SupportEmail}}</a>.</p>
+            <p>Best regards,<br><strong>The {{.SiteName}} Team</strong></p>
+        </div>
+        <div class="footer">
+            <p>&copy; {{.Year}} {{.SiteName}}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
+{{end}}

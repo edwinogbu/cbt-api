@@ -614,3 +614,65 @@ func (h *AuthHandler) HealthCheck(c *gin.Context) {
 		"timestamp": time.Now().Unix(),
 	})
 }
+
+// ============================================
+// SUBSCRIPTION CHECK METHOD
+// ============================================
+
+// CheckSubscription godoc
+// @Summary      Check user's subscription status
+// @Description  Get subscription status for the authenticated user's school
+// @Tags         Authentication
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}  "Subscription status"
+// @Failure      401  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Security     BearerAuth
+// @Router       /auth/subscription/check [get]
+func (h *AuthHandler) CheckSubscription(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	response, err := h.service.CheckSubscription(userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Subscription status retrieved successfully",
+		"data":    response,
+	})
+}
+
+
+// GetAuthStatus godoc
+// @Summary      Get authentication status
+// @Description  Get user role, school status, subscription status for middleware
+// @Tags         Authentication
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200  {object}  map[string]interface{}  "data (AuthStatusResponse)"
+// @Failure      401  {object}  map[string]interface{}
+// @Router       /auth/status [get]
+func (h *AuthHandler) GetAuthStatus(c *gin.Context) {
+    userID := middleware.GetUserID(c)
+    if userID == "" {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+        return
+    }
+
+    response, err := h.service.GetAuthStatus(userID)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "message": "Status retrieved successfully",
+        "data":    response,
+    })
+}

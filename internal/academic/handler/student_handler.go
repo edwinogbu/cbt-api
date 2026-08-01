@@ -18,6 +18,39 @@ func NewStudentHandler(service *service.StudentService) *StudentHandler {
     return &StudentHandler{service: service}
 }
 
+
+// GetStudentProfile godoc
+// @Summary Get current student's complete profile
+// @Description Get the authenticated student's complete profile including user details
+// @Tags Students
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /student/profile [get]
+func (h *StudentHandler) GetStudentProfile(c *gin.Context) {
+    // Get authenticated user ID from context (set by AuthMiddleware)
+    userID, exists := c.Get("user_id")
+    if !exists {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+        return
+    }
+    
+    userIDStr, ok := userID.(string)
+    if !ok {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid user ID format"})
+        return
+    }
+    
+    // Get student by user ID
+    student, err := h.service.GetByUserID(userIDStr)
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+        return
+    }
+    
+    c.JSON(http.StatusOK, gin.H{"data": student})
+}
+
+
 // CreateStudent godoc
 // @Summary      Create a new student
 // @Description  Associate a user as a student in a school and class.
@@ -243,6 +276,8 @@ func (h *StudentHandler) TransferClass(c *gin.Context) {
     
     c.JSON(http.StatusOK, gin.H{"message": "Student transferred successfully"})
 }
+
+
 
 
 

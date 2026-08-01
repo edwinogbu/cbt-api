@@ -35,6 +35,17 @@ func (r *SchoolRepository) FindByCode(code string) (*models.School, error) {
     return &school, nil
 }
 
+//  ADD THIS METHOD - FindByName
+func (r *SchoolRepository) FindByName(name string) (*models.School, error) {
+    var school models.School
+    err := r.db.Where("name = ? AND deleted_at IS NULL", name).First(&school).Error
+    if err != nil {
+        return nil, err
+    }
+    return &school, nil
+}
+
+
 func (r *SchoolRepository) FindAll(page, limit int) ([]models.School, int64, error) {
     var schools []models.School
     var total int64

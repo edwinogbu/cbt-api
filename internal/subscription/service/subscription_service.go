@@ -727,6 +727,69 @@ func (s *SubscriptionService) sendRenewalEmail(sub *models.Subscription, inv *mo
     log.Printf("[EMAIL] Renewal payment link to %s: %s", email, pi.AuthorizationURL)
 }
 
+// ============================================
+// WEBHOOK PROCESSING - UPDATED
+// ============================================
+
+// func (s *SubscriptionService) ProcessWebhook(ctx context.Context, gateway models.PaymentGateway, payload []byte, signature string) error {
+//     log.Printf("[WEBHOOK] Received for gateway %s", gateway)
+
+//     gw, err := s.paymentService.GetGateway(gateway)
+//     if err != nil {
+//         return err
+//     }
+
+//     event, err := gw.ParseWebhook(ctx, payload, signature)
+//     if err != nil {
+//         return err
+//     }
+
+//     // ✅ Idempotency
+//     existing, _ := s.repo.FindWebhookEventByIdempotencyKey(event.Reference)
+//     if existing != nil {
+//         log.Printf("[WEBHOOK] Already processed: %s", event.Reference)
+//         return nil
+//     }
+
+//     webhookEvent := &models.WebhookEvent{
+//         ID:             uuid.New().String(),
+//         Gateway:        gateway,
+//         EventType:      event.Type,
+//         Payload:        event.RawData,
+//         IdempotencyKey: event.Reference,
+//         Status:         models.WebhookPending,
+//         CreatedAt:      time.Now(),
+//     }
+//     s.repo.CreateWebhookEvent(webhookEvent)
+
+//     if event.Type == "payment_success" {
+//         log.Printf("[WEBHOOK] Payment success for %s", event.Reference)
+
+//         pi, err := s.repo.FindPaymentIntentByReference(event.Reference)
+//         if err != nil {
+//             s.repo.UpdateWebhookEventStatus(webhookEvent.ID, models.WebhookFailed, "payment intent not found")
+//             return nil
+//         }
+
+//         //  Check if onboarding payment
+//         if isOnboarding, ok := pi.Metadata["onboarding"]; ok && isOnboarding.(bool) {
+//             log.Printf("[WEBHOOK] Onboarding payment - delegating to onboarding service")
+//             // Call onboarding activation
+//             s.onboardingService.ActivateSchoolOnPayment(event.Reference)
+//         } else {
+//             // Regular subscription payment
+//             s.processSubscriptionPayment(pi)
+//         }
+
+//         s.repo.UpdateWebhookEventStatus(webhookEvent.ID, models.WebhookProcessed, "")
+//     } else {
+//         log.Printf("[WEBHOOK] Ignoring event type %s", event.Type)
+//         s.repo.UpdateWebhookEventStatus(webhookEvent.ID, "ignored", "")
+//     }
+
+//     return nil
+// }
+
 
 
 
