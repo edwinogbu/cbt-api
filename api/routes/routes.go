@@ -37,6 +37,11 @@ import (
 	onboardingRepo "cbt-api/internal/onboarding/repository"
 	onboardingService "cbt-api/internal/onboarding/service"
 
+	// OFFLINE-FIRST SYNC
+	syncHandler "cbt-api/internal/sync/handler"
+	syncRepo "cbt-api/internal/sync/repository"
+	syncService "cbt-api/internal/sync/service"
+
 	"cbt-api/pkg/email"
 	"cbt-api/pkg/payment"
 	"cbt-api/pkg/database"
@@ -84,6 +89,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 	// ✅ ONBOARDING INITIALIZATION
 	onboardingH := initOnboardingHandler()
 
+	// OFFLINE-FIRST SYNC INITIALIZATION
+	syncH := initSyncHandler()
+
 	// API version 1 group
 	v1 := r.Group("/api/v1")
 	{
@@ -124,6 +132,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== NEW ACTOR ROUTES ====================
 		setupActorRoutes(v1, adminH, teacherH, parentH)
+
+		// ==================== OFFLINE-FIRST SYNC ROUTES ====================
+		setupSyncRoutes(v1, syncH, studentRepo)
 	}
 
 	// Swagger UI endpoint (no version prefix, accessible directly)
@@ -524,6 +535,33 @@ func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.Que
 		q.GET("/by-session-grouped", handler.GetQuestionsBySessionGrouped)
 		q.GET("/all-grouped", handler.GetAllQuestionsGrouped)
 	}
+}
+
+// ============================================
+// OFFLINE-FIRST SYNC ROUTES
+// ============================================
+// Implements the endpoint the frontend's offline-first sync engine
+// (src/lib/storage/sync/{lanSync,cloudSync}.ts) already calls but which
+// did not previously exist server-side. See internal/sync/service for the
+// sessionId/attemptId convention and idempotency contract.
+func setupSyncRoutes(rg *gin.RouterGroup, handler *syncHandler.SyncHandler, studentRepo *academicRepo.StudentRepository) {
+	sync := rg.Group("/sync")
+	sync.Use(middleware.AuthMiddleware())
+	sync.Use(middleware.StudentContextMiddleware(studentRepo))
+	{
+		sync.POST("/:type", handler.Sync)
+	}
+}
+
+func initSyncHandler() *syncHandler.SyncHandler {
+	examRepo := cbtExamRepo.NewExamRepository(database.DB)
+	questionRepo := cbtQuestionRepo.NewQuestionRepository(database.DB)
+	examSvc := cbtExamService.NewExamService(examRepo, questionRepo, database.DB)
+
+	syncRepository := syncRepo.NewSyncRepository(database.DB)
+	syncSvc := syncService.NewSyncService(syncRepository, examSvc)
+
+	return syncHandler.NewSyncHandler(syncSvc)
 }
 
 // ============================================

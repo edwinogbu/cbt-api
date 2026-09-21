@@ -78,6 +78,12 @@ func init() {
 	Register(&ExamAttempt{})       // ✅ Exam attempts
 	Register(&StudentAnswer{})     // ✅ Student answers
 	Register(&Result{})            // ✅ Results
+
+	// ============================================
+	// OFFLINE-FIRST SYNC MODELS
+	// ============================================
+	Register(&SyncOperation{})
+	Register(&ExamEventLog{})
 }
 
 
