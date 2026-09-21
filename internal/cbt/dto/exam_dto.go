@@ -218,6 +218,19 @@ type StartExamResponse struct {
 	ProctoringID string               `json:"proctoring_id,omitempty"`
 }
 
+// ExamPackageResponse is the read-only "download for offline" payload:
+// exam + all questions/options up front, authorized but WITHOUT creating
+// an attempt or starting the exam clock (unlike StartExamResponse, which
+// does both). ContentHash lets the client detect a changed package on a
+// later re-download without comparing every field.
+type ExamPackageResponse struct {
+	Exam           *ExamDetailResponse `json:"exam"`
+	Questions      []QuestionResponse  `json:"questions"`
+	PackageVersion int64               `json:"package_version"`
+	ContentHash    string              `json:"content_hash"`
+	GeneratedAt    time.Time           `json:"generated_at"`
+}
+
 type ExamDetailResponse struct {
 	ID               string     `json:"id"`
 	Title            string     `json:"title"`

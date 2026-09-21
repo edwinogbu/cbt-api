@@ -760,6 +760,51 @@ func (h *ExamHandler) StartExamForUser(c *gin.Context) {
     })
 }
 
+// GetExamPackageForUser godoc
+// @Summary      Download an exam package for offline use (no attempt created)
+// @Tags         Student Exams
+// @Produce      json
+// @Param        examId path string true "Exam ID"
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Failure      404 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/package/{examId} [get]
+func (h *ExamHandler) GetExamPackageForUser(c *gin.Context) {
+    examID := c.Param("examId")
+    if examID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "exam id is required in the URL path"})
+        return
+    }
+
+    studentID := middleware.GetStudentID(c)
+    if studentID == "" {
+        c.JSON(http.StatusNotFound, gin.H{"error": "student context not found"})
+        return
+    }
+
+    resp, err := h.examService.GetExamPackageForStudent(c.Request.Context(), examID, studentID)
+    if err != nil {
+        status := http.StatusInternalServerError
+        switch err.Error() {
+        case "exam has already ended":
+            status = http.StatusForbidden
+        case "exam not found", "student not found":
+            status = http.StatusNotFound
+        case "exam not assigned to your class":
+            status = http.StatusForbidden
+        }
+        c.JSON(status, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   resp,
+    })
+}
+
 // GetStudentExamResultForUser godoc
 // @Summary      Get exam result for authenticated student
 // @Tags         Student Results

@@ -238,6 +238,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 	{
 		student.GET("/dashboard", handler.GetStudentDashboardForUser)
 		student.GET("/performance", handler.GetStudentPerformanceForUser)
+		student.GET("/package/:examId", handler.GetExamPackageForUser)
 		student.POST("/start/:examId", handler.StartExamForUser)
 		student.GET("/attempt/:attemptId", handler.GetAttemptState)
 		student.POST("/answer", handler.SaveAnswer)

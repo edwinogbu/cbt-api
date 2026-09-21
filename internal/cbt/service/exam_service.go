@@ -3,11 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"  
+	"strings"
 	"time"
 
 	"cbt-api/internal/cbt/dto"
@@ -3593,6 +3595,86 @@ func (s *ExamService) StartExamForStudent(ctx context.Context, examID string, st
     )
 
     return s.buildStartExamResponse(ctx, attempt)
+}
+
+// GetExamPackageForStudent authorizes and returns a full exam package
+// (exam detail + every question/option, no correct answers) for offline
+// download, WITHOUT creating an ExamAttempt or starting the exam clock -
+// unlike StartExamForStudent, which does both. This is what lets a
+// student download an exam ahead of time while still online, per the
+// offline-first plan's "download exam package before the exam" flow.
+func (s *ExamService) GetExamPackageForStudent(ctx context.Context, examID string, studentID string) (*dto.ExamPackageResponse, error) {
+    if studentID == "" {
+        return nil, errors.New("student ID is required")
+    }
+
+    student, err := s.examRepo.GetStudentByID(ctx, studentID)
+    if err != nil {
+        return nil, errors.New("student not found")
+    }
+
+    exam, questions, err := s.examRepo.FindExamWithQuestionsWithContext(ctx, examID)
+    if err != nil {
+        return nil, errors.New("exam not found")
+    }
+
+    if exam.ClassID != "" && exam.ClassID != student.ClassID {
+        return nil, errors.New("exam not assigned to your class")
+    }
+
+    // Deliberately NOT checking "has not started yet" here - downloading
+    // ahead of the exam's start time is the entire point of this
+    // endpoint. Still block downloads once the exam window has closed.
+    if exam.EndTime != nil && time.Now().After(*exam.EndTime) {
+        return nil, errors.New("exam has already ended")
+    }
+
+    var subject models.Subject
+    subjectName := ""
+    if err := s.db.WithContext(ctx).Where("id = ?", exam.SubjectID).First(&subject).Error; err == nil {
+        subjectName = subject.Name
+    }
+
+    examDetail := &dto.ExamDetailResponse{
+        ID:               exam.ID,
+        Title:            exam.Title,
+        SubjectID:        exam.SubjectID,
+        SubjectName:      subjectName,
+        DurationMinutes:  exam.DurationMinutes,
+        TotalMarks:       exam.TotalMarks,
+        PassMark:         exam.PassMark,
+        Instructions:     exam.Instructions,
+        StartTime:        exam.StartTime,
+        EndTime:          exam.EndTime,
+        ShuffleQuestions: exam.ShuffleQuestions,
+        ShuffleOptions:   exam.ShuffleOptions,
+    }
+
+    var qResponses []dto.QuestionResponse
+    hasher := sha256.New()
+    for i, q := range questions {
+        qr := dto.QuestionResponse{
+            ID:           q.ID,
+            QuestionText: q.QuestionText,
+            OptionA:      s.extractOptionFromStorage(q.Options, "A"),
+            OptionB:      s.extractOptionFromStorage(q.Options, "B"),
+            OptionC:      s.extractOptionFromStorage(q.Options, "C"),
+            OptionD:      s.extractOptionFromStorage(q.Options, "D"),
+            Marks:        q.Marks,
+            SortOrder:    i + 1,
+        }
+        qResponses = append(qResponses, qr)
+        fmt.Fprintf(hasher, "%s|%s|%s|%s|%s|%s|%d|%d;",
+            qr.ID, qr.QuestionText, qr.OptionA, qr.OptionB, qr.OptionC, qr.OptionD, qr.Marks, qr.SortOrder)
+    }
+
+    return &dto.ExamPackageResponse{
+        Exam:           examDetail,
+        Questions:      qResponses,
+        PackageVersion: exam.UpdatedAt.Unix(),
+        ContentHash:    hex.EncodeToString(hasher.Sum(nil)),
+        GeneratedAt:    time.Now(),
+    }, nil
 }
 
 // ============================================
