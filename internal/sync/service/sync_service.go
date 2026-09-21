@@ -248,6 +248,15 @@ func httpStatusForCode(code string) int {
 		return 403
 	case "VALIDATION_ERROR", "INVALID_TYPE":
 		return 400
+	case "CONFLICT_STATE":
+		// A legitimate business-rule rejection (e.g. "exam already
+		// submitted" on a genuine second submission attempt, as opposed
+		// to a same-idempotencyKey retry, which is handled separately by
+		// ALREADY_PROCESSED) - a 4xx the client should not retry, not a
+		// server fault. Caught by live testing: this fell through to the
+		// 500 default before this case existed, which would have paged
+		// on-call for a routine, expected student action.
+		return 409
 	default:
 		return 500
 	}
@@ -265,7 +274,7 @@ func classifyDispatchError(err error) *dto.SyncResult {
 		return rejected("VALIDATION_ERROR", vErr.msg, false)
 	}
 	switch err.Error() {
-	case "attempt not found", "question not found":
+	case "attempt not found", "question not found", "exam not found":
 		return rejected("NOT_FOUND", err.Error(), false)
 	case "unauthorized":
 		return rejected("FORBIDDEN", err.Error(), false)
