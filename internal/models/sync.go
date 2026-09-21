@@ -43,7 +43,20 @@ type ExamEventLog struct {
 	ClientSequence  int       `gorm:"type:integer" json:"client_sequence"`
 	PayloadJSON     string    `gorm:"type:jsonb" json:"payload_json"`
 	ClientTimestamp string    `gorm:"type:varchar(64)" json:"client_timestamp"`
+	SyncedToCloudAt *time.Time `json:"synced_to_cloud_at,omitempty"` // see models.ExamAttempt.SyncedToCloudAt
 	CreatedAt       time.Time `json:"created_at"`
 }
 
 func (ExamEventLog) TableName() string { return "exam_event_logs" }
+
+// NodeSyncState is a singleton row (ID always "default") holding a School
+// CBT Node's own last-successful-pull cursor for the Cloud->School half of
+// nodesync, so a restart resumes from where it left off instead of
+// re-pulling everything.
+type NodeSyncState struct {
+	ID              string    `gorm:"type:varchar(20);primaryKey" json:"id"`
+	LastPullCursor  time.Time `json:"last_pull_cursor"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (NodeSyncState) TableName() string { return "node_sync_state" }

@@ -74,6 +74,7 @@ func init() {
 	Register(&ExamAssignment{})
 	Register(&Subject{})           // ✅ Subjects
 	Register(&Exam{})              // ✅ Exams
+	Register(&ExamQuestion{})      // ✅ Exam<->question pivot - was never registered, so AUTO_MIGRATE never created this table on a fresh database
 	// REMOVED: Register(&Question{}) - This model doesn't exist
 	Register(&ExamAttempt{})       // ✅ Exam attempts
 	Register(&StudentAnswer{})     // ✅ Student answers
@@ -84,6 +85,12 @@ func init() {
 	// ============================================
 	Register(&SyncOperation{})
 	Register(&ExamEventLog{})
+
+	// ============================================
+	// SCHOOL NODE SYNC MODELS
+	// ============================================
+	Register(&SchoolNodeCredential{})
+	Register(&NodeSyncState{})
 }
 
 

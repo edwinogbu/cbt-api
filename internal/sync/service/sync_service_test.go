@@ -48,7 +48,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
 			start_time DATETIME, end_time DATETIME, score INTEGER, percentage REAL,
 			status TEXT DEFAULT 'in_progress', device_info TEXT, ip_address TEXT,
-			signature TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+			signature TEXT, synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE proctoring_sessions (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), attempt_id TEXT NOT NULL, student_id TEXT NOT NULL,
@@ -63,7 +63,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE exam_event_logs (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), attempt_id TEXT NOT NULL, student_id TEXT NOT NULL,
 			event_type TEXT NOT NULL, client_sequence INTEGER, payload_json TEXT,
-			client_timestamp TEXT, created_at DATETIME
+			client_timestamp TEXT, synced_to_cloud_at DATETIME, created_at DATETIME
 		)`,
 		`CREATE TABLE sync_operations (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), idempotency_key TEXT NOT NULL UNIQUE, operation_id TEXT,

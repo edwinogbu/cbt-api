@@ -42,6 +42,12 @@ import (
 	syncRepo "cbt-api/internal/sync/repository"
 	syncService "cbt-api/internal/sync/service"
 
+	// SCHOOL NODE <-> CLOUD SYNC
+	nodeSyncHandler "cbt-api/internal/nodesync/handler"
+	nodeSyncMiddleware "cbt-api/internal/nodesync/middleware"
+	nodeSyncRepo "cbt-api/internal/nodesync/repository"
+	nodeSyncService "cbt-api/internal/nodesync/service"
+
 	"cbt-api/pkg/email"
 	"cbt-api/pkg/payment"
 	"cbt-api/pkg/database"
@@ -92,6 +98,11 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 	// OFFLINE-FIRST SYNC INITIALIZATION
 	syncH := initSyncHandler()
 
+	// SCHOOL NODE <-> CLOUD SYNC INITIALIZATION
+	nodeSyncRepository := nodeSyncRepo.NewNodeSyncRepository(database.DB)
+	nodeSyncSvc := nodeSyncService.NewNodeSyncService(nodeSyncRepository)
+	nodeSyncH := nodeSyncHandler.NewNodeSyncHandler(nodeSyncSvc)
+
 	// API version 1 group
 	v1 := r.Group("/api/v1")
 	{
@@ -135,6 +146,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== OFFLINE-FIRST SYNC ROUTES ====================
 		setupSyncRoutes(v1, syncH, studentRepo)
+
+		// ==================== SCHOOL NODE <-> CLOUD SYNC ROUTES ====================
+		setupNodeSyncRoutes(v1, nodeSyncH, nodeSyncSvc)
 	}
 
 	// Swagger UI endpoint (no version prefix, accessible directly)
@@ -551,6 +565,31 @@ func setupSyncRoutes(rg *gin.RouterGroup, handler *syncHandler.SyncHandler, stud
 	sync.Use(middleware.StudentContextMiddleware(studentRepo))
 	{
 		sync.POST("/:type", handler.Sync)
+	}
+}
+
+// ============================================
+// SCHOOL NODE <-> CLOUD SYNC ROUTES
+// ============================================
+// Go-to-Go sync between a School CBT Node (see Dockerfile/
+// docker-compose.school-node.yml) and this cloud instance, using the same
+// idempotent-upsert conventions as the device sync routes above.
+// /nodesync/* authenticates via a node's own API key (nodeSyncMiddleware.
+// NodeAuthMiddleware), never the human-user JWT - a node is a long-lived
+// server-to-server caller. Credential issuance is a human-admin action,
+// so it sits under the existing /admin group instead.
+func setupNodeSyncRoutes(rg *gin.RouterGroup, handler *nodeSyncHandler.NodeSyncHandler, svc *nodeSyncService.NodeSyncService) {
+	nodesync := rg.Group("/nodesync")
+	nodesync.Use(nodeSyncMiddleware.NodeAuthMiddleware(svc))
+	{
+		nodesync.POST("/push", handler.Push)
+		nodesync.GET("/pull", handler.Pull)
+	}
+
+	adminNodes := rg.Group("/admin/school-nodes")
+	adminNodes.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	{
+		adminNodes.POST("/credentials", handler.CreateCredential)
 	}
 }
 

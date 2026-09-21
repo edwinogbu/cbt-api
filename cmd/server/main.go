@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"cbt-api/internal/ai/providers"
 	"cbt-api/internal/ai/queue"
 	"cbt-api/internal/middleware"
+	nodeSyncClient "cbt-api/internal/nodesync/client"
+	nodeSyncRepo "cbt-api/internal/nodesync/repository"
 	"cbt-api/pkg/database"
 
 	"github.com/gin-contrib/cors"
@@ -147,6 +151,33 @@ func main() {
 			log.Fatal("Failed to start server:", err)
 		}
 	}()
+
+	// ============================================
+	// SCHOOL NODE <-> CLOUD SYNC (opt-in)
+	// ============================================
+	// Only a School CBT Node deployment sets these - the cloud instance
+	// itself never runs this loop. Same binary, two roles, per the
+	// offline-first plan.
+	nodeSyncCtx, stopNodeSync := context.WithCancel(context.Background())
+	defer stopNodeSync()
+	if os.Getenv("CLOUD_SYNC_ENABLED") == "true" {
+		cloudAPIURL := os.Getenv("CLOUD_API_URL")
+		nodeAPIKey := os.Getenv("NODE_API_KEY")
+		if cloudAPIURL == "" || nodeAPIKey == "" {
+			log.Println("⚠️ CLOUD_SYNC_ENABLED=true but CLOUD_API_URL/NODE_API_KEY not set - School<->Cloud sync NOT started")
+		} else {
+			intervalSeconds := 60
+			if v := os.Getenv("CLOUD_SYNC_INTERVAL_SECONDS"); v != "" {
+				if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+					intervalSeconds = parsed
+				}
+			}
+			nodeSyncRepository := nodeSyncRepo.NewNodeSyncRepository(database.DB)
+			syncClient := nodeSyncClient.NewSyncClient(nodeSyncRepository, cloudAPIURL, nodeAPIKey)
+			go syncClient.RunSyncLoop(nodeSyncCtx, time.Duration(intervalSeconds)*time.Second)
+			log.Printf("🔄 School<->Cloud sync started: pushing/pulling every %ds against %s", intervalSeconds, cloudAPIURL)
+		}
+	}
 
 	// ============================================
 	// GRACEFUL SHUTDOWN

@@ -414,6 +414,13 @@ type ExamAttempt struct {
 	DeviceInfo JSONMap        `gorm:"type:jsonb;default:'{}'" json:"device_info"`
 	IPAddress  string         `gorm:"type:varchar(50)" json:"ip_address"`
 	Signature  string         `gorm:"type:text" json:"signature"`
+	// SyncedToCloudAt is set once a School CBT Node has pushed this row to
+	// the cloud instance (internal/nodesync) - distinct from any
+	// device-to-node sync concept elsewhere, since this is the node's own
+	// outbox cursor for the separate School<->Cloud sync job. NULL means
+	// not yet pushed (or this row lives in the cloud instance itself,
+	// which never sets it).
+	SyncedToCloudAt *time.Time     `json:"synced_to_cloud_at,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
@@ -458,6 +465,7 @@ type StudentAnswer struct {
 	IsMarked           bool           `gorm:"type:boolean;default:false" json:"is_marked"`
 	TimeSpent          int            `gorm:"type:integer" json:"time_spent"`
 	SyncedAt           *time.Time     `json:"synced_at,omitempty"`
+	SyncedToCloudAt    *time.Time     `json:"synced_to_cloud_at,omitempty"` // see ExamAttempt.SyncedToCloudAt
 	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt          time.Time      `json:"updated_at"`
 	DeletedAt          gorm.DeletedAt `gorm:"index" json:"-"`
@@ -474,6 +482,7 @@ type Result struct {
 	Remarks     string         `gorm:"type:text" json:"remarks"`
 	Passed      bool       `gorm:"index"` // ✅ Make sure this field exists
 	PublishedAt *time.Time     `json:"published_at"`
+	SyncedToCloudAt *time.Time `json:"synced_to_cloud_at,omitempty"` // see ExamAttempt.SyncedToCloudAt
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
