@@ -1200,11 +1200,20 @@ func (s *ExamService) buildStartExamResponse(ctx context.Context, attempt *model
 	answered, _ := s.examRepo.GetAnsweredCountWithContext(ctx, attempt.ID)
 	timeRemaining := s.calculateRemainingTime(attempt.StartTime, exam.DurationMinutes)
 
+	// Subject name isn't on the Exam model itself - same lookup pattern
+	// used in StartExamForStudent's new-attempt path.
+	var subject models.Subject
+	subjectName := ""
+	if err := s.db.WithContext(ctx).Where("id = ?", exam.SubjectID).First(&subject).Error; err == nil {
+		subjectName = subject.Name
+	}
+
 	// Build exam detail
 	examDetail := &dto.ExamDetailResponse{
 		ID:               exam.ID,
 		Title:            exam.Title,
 		SubjectID:        exam.SubjectID,
+		SubjectName:      subjectName,
 		DurationMinutes:  exam.DurationMinutes,
 		TotalMarks:       exam.TotalMarks,
 		PassMark:         exam.PassMark,
