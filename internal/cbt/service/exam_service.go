@@ -418,12 +418,16 @@ func (s *ExamService) convertOptionsToPreview(storage models.OptionStorage) []dt
 }
 
 // AutoSave auto-saves answers for offline support
-func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest) (*dto.AutoSaveResponse, error) {
+func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest, studentID string) (*dto.AutoSaveResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
 	}
-	_ = attempt // Use attempt
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
+	}
 
 	savedCount := 0
 	for _, item := range req.Answers {
@@ -1253,10 +1257,15 @@ func (s *ExamService) buildStartExamResponse(ctx context.Context, attempt *model
 }
 
 // GetAttemptState gets the current state of an attempt
-func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string) (*dto.GetAttemptStateResponse, error) {
+func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string, studentID string) (*dto.GetAttemptStateResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, attemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
@@ -1368,10 +1377,15 @@ func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string) (*d
 }
 
 // SaveAnswer saves a student's answer
-func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest) (*dto.SaveAnswerResponse, error) {
+func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest, studentID string) (*dto.SaveAnswerResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1452,10 +1466,15 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 }
 
 // BulkSaveAnswers saves multiple answers (for offline sync)
-func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnswerRequest) (*dto.BulkSaveAnswerResponse, error) {
+func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnswerRequest, studentID string) (*dto.BulkSaveAnswerResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1531,10 +1550,15 @@ func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnsw
 }
 
 // MarkReview marks a question for review
-func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest) (*dto.MarkReviewResponse, error) {
+func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest, studentID string) (*dto.MarkReviewResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1586,10 +1610,15 @@ func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest
 }
 
 // SubmitExam submits an exam for grading
-func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest) (*dto.SubmitExamResponse, error) {
+func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest, studentID string) (*dto.SubmitExamResponse, error) {
     attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
     if err != nil {
         return nil, errors.New("attempt not found")
+    }
+
+    // Verify ownership
+    if attempt.StudentID != studentID {
+        return nil, errors.New("unauthorized")
     }
 
     if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1691,10 +1720,15 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
 }
 
 // OfflineSubmit submits an exam offline
-func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitRequest) (*dto.OfflineSubmitResponse, error) {
+func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitRequest, studentID string) (*dto.OfflineSubmitResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1880,10 +1914,15 @@ func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitR
 
 
 // SyncOfflineAnswers syncs offline answers when online
-func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswersRequest) (*dto.SyncAnswersResponse, error) {
+func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswersRequest, studentID string) (*dto.SyncAnswersResponse, error) {
     attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
     if err != nil {
         return nil, errors.New("attempt not found")
+    }
+
+    // Verify ownership
+    if attempt.StudentID != studentID {
+        return nil, errors.New("unauthorized")
     }
 
     if attempt.Status != string(models.AttemptStatusSubmitted) {
