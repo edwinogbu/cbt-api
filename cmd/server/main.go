@@ -58,12 +58,30 @@ func main() {
 	// ============================================
 
 	// 1. Redis Queue
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+	// REDIS_URL (a full redis:// or rediss:// connection string, as
+	// managed providers like Upstash issue) takes precedence - it carries
+	// auth and TLS that a bare host:port address can't express. Falls
+	// back to REDIS_ADDR for local/dev use against a plain Redis with no
+	// auth.
+	var redisQueue *queue.RedisQueue
+	redisDescription := ""
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		var err error
+		redisQueue, err = queue.NewRedisQueueFromURL(redisURL)
+		if err != nil {
+			log.Fatalf("❌ Invalid REDIS_URL: %v", err)
+		}
+		redisDescription = "REDIS_URL"
+		log.Println("✅ Redis Queue initialized from REDIS_URL")
+	} else {
+		redisAddr := os.Getenv("REDIS_ADDR")
+		if redisAddr == "" {
+			redisAddr = "localhost:6379"
+		}
+		redisQueue = queue.NewRedisQueue(redisAddr)
+		redisDescription = redisAddr
+		log.Printf("✅ Redis Queue initialized at %s", redisAddr)
 	}
-	redisQueue := queue.NewRedisQueue(redisAddr)
-	log.Printf("✅ Redis Queue initialized at %s", redisAddr)
 
 	// 2. AI Providers (with graceful fallback)
 	providerRouter := providers.NewRouter()
@@ -137,7 +155,7 @@ func main() {
 	log.Printf("🚀 CBT API Server starting on port %s", port)
 	log.Printf("📚 Environment: %s", cfg.Server.Environment)
 	log.Printf("🤖 AI Providers: %v", providerRouter.List())
-	log.Printf("🔄 Redis Queue: %s", redisAddr)
+	log.Printf("🔄 Redis Queue: %s", redisDescription)
 	log.Printf("========================================")
 	log.Printf("✅ Server is ready to accept requests")
 	log.Printf("📖 Swagger UI available at http://localhost:%s/swagger/index.html", port)
