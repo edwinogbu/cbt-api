@@ -1,0 +1,51 @@
+# Fly.io deployment config for cbt-api.
+#
+# This app is stateless (Postgres lives on Neon, Redis on Upstash - both
+# set via `fly secrets set`, never here), so it can scale to zero and
+# back up cheaply on Fly's free allowance.
+#
+# Before first deploy:
+#   1. Replace `app` below with a globally-unique name (fly will suggest
+#      one during `fly launch` if you'd rather let it pick).
+#   2. Run `fly launch --no-deploy --copy-config` from this directory to
+#      register the app against your Fly account (it reads this file).
+#   3. Set secrets (see DEPLOY.md in this same directory for the full
+#      list and where each value comes from):
+#        fly secrets set DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require&channel_binding=require"
+#        fly secrets set REDIS_URL="rediss://default:...@....upstash.io:6379"
+#        fly secrets set JWT_SECRET="$(openssl rand -hex 32)"
+#        fly secrets set JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
+#   4. First deploy only - run the schema migration once:
+#        fly secrets set AUTO_MIGRATE=true
+#        fly deploy
+#        fly secrets set AUTO_MIGRATE=false   # avoid re-running it on every future deploy
+#   5. Subsequent deploys: just `fly deploy`.
+
+app = "cbt-api"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+  ENVIRONMENT = "production"
+  DB_SSLMODE = "require"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "15s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/api/v1/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
