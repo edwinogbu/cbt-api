@@ -1,0 +1,37 @@
+# Render Blueprint for cbt-api.
+#
+# This defines the service so Render knows how to build and run it (reusing
+# the existing Dockerfile). The secret values below (DATABASE_URL, REDIS_URL,
+# JWT_SECRET, JWT_REFRESH_SECRET) are deliberately NOT set here - `sync: false`
+# means Render expects you to paste them in by hand in the dashboard
+# (Service -> Environment), not store them in this file or in git.
+#
+# See DEPLOY.md for the full setup walkthrough.
+
+services:
+  - type: web
+    name: cbt-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /api/v1/health
+    autoDeploy: false # deploys are triggered by the GitHub Action instead,
+                       # after a build/test gate - see .github/workflows/deploy-render.yml
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: ENVIRONMENT
+        value: production
+      - key: DB_SSLMODE
+        value: require
+      - key: AUTO_MIGRATE
+        value: "false" # flip to "true" for the first deploy only, then back to "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
