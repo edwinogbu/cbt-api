@@ -59,6 +59,27 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_results_attempt_id_unique
 -- CREATE INDEX CONCURRENTLY inside a transaction block - run Step 1
 -- and Step 2 as separate statements/sessions, not as one script).
 --
+-- RUNNER COMPATIBILITY: this repo has no automated migration runner
+-- (golang-migrate/goose/atlas) - the only automated path is GORM's
+-- AutoMigrate, which this file deliberately bypasses (see above). Run
+-- this by hand with a plain `psql -f migrations/0001_....sql` (or
+-- paste the statements into an interactive psql session) using a
+-- role with sufficient privilege to create indexes. Do NOT run it with
+-- `psql -1` / `--single-transaction`, and do NOT invoke it through any
+-- tool that auto-wraps a script's statements in one transaction - that
+-- produces the same "CREATE INDEX CONCURRENTLY cannot run inside a
+-- transaction block" error Step 2 is written to avoid, just one layer
+-- up where it's less obvious why.
+--
+-- If Step 2 is interrupted (connection drop, killed session) partway
+-- through the index build, Postgres can leave an INVALID index behind
+-- rather than cleanly rolling back (a CONCURRENTLY-specific behavior).
+-- Check `SELECT indexrelid::regclass, indisvalid FROM pg_index WHERE
+-- indexrelid = 'idx_results_attempt_id_unique'::regclass;` after an
+-- interrupted run - if indisvalid is false, DROP INDEX
+-- CONCURRENTLY idx_results_attempt_id_unique; and retry Step 2 from
+-- scratch rather than assuming it's usable.
+--
 -- The partial WHERE deleted_at IS NULL clause matches this table's
 -- existing soft-delete pattern (gorm.DeletedAt) - a soft-deleted
 -- Result should not block a legitimate new one for the same attempt
@@ -67,4 +88,6 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_results_attempt_id_unique
 -- ============================================================
 -- ROLLBACK
 -- ============================================================
+-- Same transaction-block restriction as Step 2 applies here - run this
+-- on its own, not inside `psql -1` or an auto-transactional tool.
 -- DROP INDEX CONCURRENTLY IF EXISTS idx_results_attempt_id_unique;
