@@ -79,7 +79,16 @@ address kept as the fallback if the node ever goes down.
 - **TLS**: this compose file serves plain HTTP on the LAN, matching a
   school's internal network. Put a reverse proxy in front of it (with a
   real or self-signed certificate) if the network isn't trusted, or if the
-  node needs to be reachable outside the school building.
+  node needs to be reachable outside the school building. **This is no
+  longer optional for a production build of the frontend**: as of the
+  elias-cbt-portal LAN transport security fix, `ConnectionManager.ts`
+  refuses to use `NEXT_PUBLIC_LAN_API_URL` in a production build unless it
+  is `https://` - exam answers must not cross the LAN unencrypted. A
+  school-node deployment that still serves plain HTTP on the LAN (as this
+  guide's default does) will have LAN sync silently disabled by a
+  production frontend build, falling back to Cloud, until a TLS-terminating
+  reverse proxy is put in front of this node and `NEXT_PUBLIC_LAN_API_URL`
+  is pointed at its `https://` address instead.
 - **Backups**: `cbt_node_pgdata` is a named Docker volume. Set up your own
   periodic `pg_dump` (or volume snapshot) - nothing here backs it up for you.
 - **Multi-node**: this guide is for one node. Repeat steps 1-3 per school,
