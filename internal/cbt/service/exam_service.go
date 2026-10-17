@@ -17,8 +17,9 @@ import (
 	"cbt-api/internal/models"
 
 	"github.com/xuri/excelize/v2"
-	"go.uber.org/zap"  
+	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================
@@ -429,6 +430,18 @@ func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest, st
 	// Verify ownership
 	if attempt.StudentID != studentID {
 		return nil, errors.New("unauthorized")
+	}
+
+	if attempt.Status != string(models.AttemptStatusInProgress) {
+		return nil, errors.New("exam already submitted")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	savedCount := 0
@@ -1387,6 +1400,22 @@ func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string, stu
 	}, nil
 }
 
+// checkWithinTimeLimit is the one server-authoritative gate against a
+// client extending its own exam time by staying offline past the
+// deadline and only writing/syncing answers afterward. Every path that
+// writes a StudentAnswer must call this - SaveAnswer always has; before
+// this fix, BulkSaveAnswers and AutoSave did not, so a student whose
+// device went offline could keep answering past the exam's duration and
+// have those late answers accepted (and graded) via the bulk-sync or
+// auto-save path even though the real-time single-answer path would
+// have rejected the very same write.
+func (s *ExamService) checkWithinTimeLimit(attempt *models.ExamAttempt, exam *models.Exam) error {
+	if time.Since(attempt.StartTime).Minutes() > float64(exam.DurationMinutes) {
+		return errors.New("time limit exceeded")
+	}
+	return nil
+}
+
 // SaveAnswer saves a student's answer
 func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest, studentID string) (*dto.SaveAnswerResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
@@ -1408,9 +1437,8 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 		return nil, err
 	}
 
-	// Check time limit
-	if time.Since(attempt.StartTime).Minutes() > float64(exam.DurationMinutes) {
-		return nil, errors.New("time limit exceeded")
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	// Get question
@@ -1490,6 +1518,14 @@ func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnsw
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
 		return nil, errors.New("exam already submitted")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	var errorsList []string
@@ -1622,18 +1658,15 @@ func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest
 
 // SubmitExam submits an exam for grading
 func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest, studentID string) (*dto.SubmitExamResponse, error) {
+    // Fast-path check outside the transaction (cheap "not found"/"not
+    // yours" rejection). The authoritative check is repeated below,
+    // inside the transaction, under a row lock.
     attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
     if err != nil {
         return nil, errors.New("attempt not found")
     }
-
-    // Verify ownership
     if attempt.StudentID != studentID {
         return nil, errors.New("unauthorized")
-    }
-
-    if attempt.Status != string(models.AttemptStatusInProgress) {
-        return nil, errors.New("exam already submitted")
     }
 
     tx := s.db.Begin()
@@ -1642,6 +1675,64 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
             tx.Rollback()
         }
     }()
+    // Previously this transaction was decorative: UpdateAttempt/
+    // CreateResult below went through s.examRepo, which holds the
+    // original (non-tx) *gorm.DB, so a rollback would not actually have
+    // undone a write that had already landed. txExamRepo binds the same
+    // repository methods to this transaction instead.
+    txExamRepo := repository.NewExamRepository(tx)
+
+    // Re-read and row-lock the attempt inside the transaction so a
+    // concurrent SubmitExam call for the same attempt (a client retry
+    // racing the original request, or a genuine duplicate submit)
+    // blocks here instead of both racing past the status check below -
+    // previously the status check happened before any transaction was
+    // even opened, so two concurrent calls could both observe
+    // "in progress" and both proceed to grade and create a Result row.
+    var lockedAttempt models.ExamAttempt
+    if err := tx.WithContext(ctx).
+        Clauses(clause.Locking{Strength: "UPDATE"}).
+        Where("id = ?", req.AttemptID).
+        First(&lockedAttempt).Error; err != nil {
+        tx.Rollback()
+        return nil, errors.New("attempt not found")
+    }
+
+    if lockedAttempt.Status != string(models.AttemptStatusInProgress) {
+        tx.Rollback()
+        // Idempotent re-submit: a retried request for an attempt that's
+        // already graded (e.g. the first call's response was lost in
+        // transit but it actually committed) returns the existing
+        // result instead of erroring - the caller cannot otherwise tell
+        // "already submitted by someone else" apart from "your own
+        // earlier submit already succeeded." Never creates or
+        // overwrites a second Result row.
+        if existing, findErr := s.examRepo.FindResultByAttempt(ctx, req.AttemptID); findErr == nil && existing != nil {
+            exam, _ := s.examRepo.FindExamByIDWithContext(ctx, lockedAttempt.ExamID)
+            totalMarks := 0
+            if exam != nil {
+                totalMarks = exam.TotalMarks
+            }
+            submittedAt := time.Now()
+            if lockedAttempt.EndTime != nil {
+                submittedAt = *lockedAttempt.EndTime
+            }
+            timeTaken := int(submittedAt.Sub(lockedAttempt.StartTime).Minutes())
+            return &dto.SubmitExamResponse{
+                AttemptID:        req.AttemptID,
+                ResultID:         existing.ID,
+                Score:            existing.TotalScore,
+                TotalMarks:       totalMarks,
+                Percentage:       existing.Percentage,
+                Grade:            existing.Grade,
+                Passed:           existing.Passed,
+                TimeTakenMinutes: timeTaken,
+                Status:           lockedAttempt.Status,
+                SubmittedAt:      submittedAt,
+            }, nil
+        }
+        return nil, errors.New("exam already submitted")
+    }
 
     // Get all answers
     answers, err := s.examRepo.FindAnswersByAttemptWithContext(ctx, req.AttemptID)
@@ -1651,7 +1742,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
     }
 
     // Calculate score
-    exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+    exam, err := s.examRepo.FindExamByIDWithContext(ctx, lockedAttempt.ExamID)
     if err != nil {
         tx.Rollback()
         return nil, err
@@ -1669,14 +1760,14 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
     }
 
     now := time.Now()
-    attempt.Status = string(models.AttemptStatusCompleted)
-    attempt.EndTime = &now
-    attempt.Score = &totalScore
+    lockedAttempt.Status = string(models.AttemptStatusCompleted)
+    lockedAttempt.EndTime = &now
+    lockedAttempt.Score = &totalScore
 
     percentage := float64(totalScore) / float64(exam.TotalMarks) * 100
-    attempt.Percentage = &percentage
+    lockedAttempt.Percentage = &percentage
 
-    if err := s.examRepo.UpdateAttempt(attempt); err != nil {
+    if err := txExamRepo.UpdateAttempt(&lockedAttempt); err != nil {
         tx.Rollback()
         return nil, err
     }
@@ -1685,25 +1776,25 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
     passed := percentage >= float64(exam.PassMark)
     grade, _, _ := dto.GetGrade(percentage)
 
-    // Create result - NOW using the passed variable
     result := &models.Result{
         ID:          models.GenerateID(),
-        ExamID:      attempt.ExamID,
-        StudentID:   attempt.StudentID,
-        AttemptID:   attempt.ID,
+        ExamID:      lockedAttempt.ExamID,
+        StudentID:   lockedAttempt.StudentID,
+        AttemptID:   lockedAttempt.ID,
         TotalScore:  totalScore,
         Percentage:  percentage,
         Grade:       grade,
-        Passed:      passed,  // ✅ FIXED: Now using the passed variable
+        Passed:      passed,
         PublishedAt: &now,
     }
-    if err := s.examRepo.CreateResult(result); err != nil {
+    if err := txExamRepo.CreateResult(result); err != nil {
         tx.Rollback()
         return nil, err
     }
 
-    // Update proctoring session
-    proctoring, _ := s.examRepo.FindProctoringByAttempt(ctx, attempt.ID)
+    // Update proctoring session (unchanged: not part of the exam-result
+    // transaction - a failure here does not affect grading correctness)
+    proctoring, _ := s.examRepo.FindProctoringByAttempt(ctx, lockedAttempt.ID)
     if proctoring != nil {
         proctoring.Status = "completed"
         proctoring.EndedAt = &now
@@ -1714,7 +1805,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         return nil, err
     }
 
-    timeTaken := int(now.Sub(attempt.StartTime).Minutes())
+    timeTaken := int(now.Sub(lockedAttempt.StartTime).Minutes())
 
     return &dto.SubmitExamResponse{
         AttemptID:        req.AttemptID,
@@ -1723,7 +1814,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         TotalMarks:       exam.TotalMarks,
         Percentage:       percentage,
         Grade:            grade,
-        Passed:           passed,  // ✅ CORRECT
+        Passed:           passed,
         TimeTakenMinutes: timeTaken,
         Status:           string(models.AttemptStatusCompleted),
         SubmittedAt:      now,
