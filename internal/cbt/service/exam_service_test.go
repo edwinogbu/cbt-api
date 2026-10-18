@@ -40,7 +40,15 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE question_bank (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-			correct_answer TEXT, marks INTEGER DEFAULT 1,
+			school_id TEXT, session_id TEXT, term_id TEXT, class_level_id TEXT, class_id TEXT,
+			subject_id TEXT, exam_type TEXT, question_text TEXT, question_type TEXT,
+			difficulty TEXT, bloom_level TEXT, topic TEXT, sub_topic TEXT, learning_objective TEXT,
+			options TEXT, correct_option_keys TEXT, correct_answer TEXT, rubric TEXT, tags TEXT,
+			explanation TEXT, marks INTEGER DEFAULT 1, negative_marks REAL DEFAULT 0,
+			time_limit_seconds INTEGER, "order" INTEGER DEFAULT 0, is_required INTEGER DEFAULT 0,
+			status TEXT DEFAULT 'draft', version INTEGER DEFAULT 1, parent_id TEXT,
+			created_by TEXT, updated_by TEXT, usage_count INTEGER DEFAULT 0, success_rate REAL,
+			curriculum_type TEXT, source_type TEXT, external_id TEXT, metadata TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE student_answers (
@@ -59,6 +67,10 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), attempt_id TEXT NOT NULL, student_id TEXT NOT NULL,
 			status TEXT DEFAULT 'active', started_at DATETIME, ended_at DATETIME,
 			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE exam_questions (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), exam_id TEXT NOT NULL, question_id TEXT NOT NULL,
+			sort_order INTEGER DEFAULT 0
 		)`,
 	}
 	for _, stmt := range ddl {
@@ -341,5 +353,126 @@ func TestMarkReview_WithinTimeLimit_Accepted(t *testing.T) {
 	}
 	if !resp.IsMarked {
 		t.Fatalf("expected IsMarked true in response, got false")
+	}
+}
+
+// ---- Grading-integrity fix: percentage/pass-mark scale mismatch ----
+
+// seedExamQuestions attaches questions to an exam via exam_questions, the
+// join SubmitExam now reads to compute the exam's real total marks.
+func seedExamQuestions(t *testing.T, db *gorm.DB, examID string, questionIDs []string) {
+	t.Helper()
+	for i, qID := range questionIDs {
+		if err := db.Exec(
+			"INSERT INTO exam_questions (id, exam_id, question_id, sort_order) VALUES (?, ?, ?, ?)",
+			uuid.NewString(), examID, qID, i,
+		).Error; err != nil {
+			t.Fatalf("failed to seed exam_questions: %v", err)
+		}
+	}
+}
+
+// TestSubmitExam_PercentageUsesActualQuestionMarks_NotStaleExamTotalMarks
+// is the regression test for a confirmed live defect: exams.total_marks
+// is a separate, teacher-entered field that drifts from the real sum of
+// the questions actually attached via AddQuestionsToExam (nothing keeps
+// them in sync). Reproduced live: a 40-question, 1-mark-each exam
+// created with total_marks=15 graded a 28-correct attempt at 186.67% -
+// an impossible, silently-stored percentage. SubmitExam must compute
+// the percentage against the real sum of attached questions' marks.
+func TestSubmitExam_PercentageUsesActualQuestionMarks_NotStaleExamTotalMarks(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	// Deliberately mismatched: exams.total_marks (15) does not match the
+	// sum of the 4 questions' marks seeded below (4 x 10 = 40).
+	seedExam(t, db, 30)
+	db.Exec("UPDATE exams SET total_marks = 15, pass_mark = 20 WHERE id = ?", testExamID)
+	attemptID := seedAttempt(t, db, 5)
+
+	var questionIDs []string
+	for i := 0; i < 4; i++ {
+		qID := seedQuestion(t, db, "A", 10)
+		questionIDs = append(questionIDs, qID)
+	}
+	seedExamQuestions(t, db, testExamID, questionIDs)
+
+	// Answer 3 of 4 correctly (30/40 marks = 75%), 1 wrong.
+	for i, qID := range questionIDs {
+		answer := "A"
+		if i == 3 {
+			answer = "B" // wrong
+		}
+		if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+			AttemptID: attemptID, QuestionID: qID, SelectedAnswer: answer,
+		}, testStudentID); err != nil {
+			t.Fatalf("SaveAnswer failed: %v", err)
+		}
+	}
+
+	resp, err := svc.SubmitExam(context.Background(), &dto.SubmitExamRequest{AttemptID: attemptID}, testStudentID)
+	if err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+
+	if resp.Score != 30 {
+		t.Fatalf("expected score 30 (3 correct x 10 marks), got %d", resp.Score)
+	}
+	if resp.Percentage < 74.9 || resp.Percentage > 75.1 {
+		t.Fatalf("expected percentage ~75.0 (30/40 actual question marks), got %v - a percentage > 100 means the stale exams.total_marks (15) was used instead of the real question-marks sum (40)", resp.Percentage)
+	}
+	// pass_mark=20 out of the real 40-mark total is a 50% threshold;
+	// 75% clears it.
+	if !resp.Passed {
+		t.Fatalf("expected passed=true (75%% clears a 50%% pass threshold), got false")
+	}
+
+	var stored models.Result
+	if err := db.Where("attempt_id = ?", attemptID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored result: %v", err)
+	}
+	if stored.Percentage > 100 {
+		t.Fatalf("stored Result.Percentage is %v, which is impossible for a percentage - the bug is present", stored.Percentage)
+	}
+}
+
+// TestSubmitExam_PassMarkBelowThreshold_CorrectlyFails is the companion
+// test: confirms a genuinely failing attempt (below the real pass-mark
+// percentage) is actually marked as failed, not silently passed by the
+// scale-mismatch bug (which made "passed" true for almost any real
+// percentage compared against a small raw pass_mark number).
+func TestSubmitExam_PassMarkBelowThreshold_CorrectlyFails(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	db.Exec("UPDATE exams SET total_marks = 15, pass_mark = 20 WHERE id = ?", testExamID)
+	attemptID := seedAttempt(t, db, 5)
+
+	var questionIDs []string
+	for i := 0; i < 4; i++ {
+		qID := seedQuestion(t, db, "A", 10)
+		questionIDs = append(questionIDs, qID)
+	}
+	seedExamQuestions(t, db, testExamID, questionIDs)
+
+	// Answer only 1 of 4 correctly (10/40 marks = 25%, below the 50% pass
+	// threshold derived from pass_mark=20/total=40).
+	for i, qID := range questionIDs {
+		answer := "A"
+		if i != 0 {
+			answer = "B" // wrong
+		}
+		if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+			AttemptID: attemptID, QuestionID: qID, SelectedAnswer: answer,
+		}, testStudentID); err != nil {
+			t.Fatalf("SaveAnswer failed: %v", err)
+		}
+	}
+
+	resp, err := svc.SubmitExam(context.Background(), &dto.SubmitExamRequest{AttemptID: attemptID}, testStudentID)
+	if err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+	if resp.Passed {
+		t.Fatalf("expected passed=false for a 25%% score against a 50%% pass threshold, got true - confirms the scale-mismatch bug (percentage >= raw pass_mark) is NOT present")
 	}
 }

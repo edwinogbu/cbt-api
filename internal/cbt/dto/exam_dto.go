@@ -11,7 +11,16 @@ import (
 type CreateExamRequest struct {
 	Title            string     `json:"title" binding:"required"`
 	SubjectID        string     `json:"subject_id" binding:"required,uuid"`
-	ClassID          string     `json:"class_id,omitempty"`
+	ClassID          string     `json:"class_id" binding:"required,uuid"`
+	// SessionID/TermID: models.Exam declares both NOT NULL with no
+	// database default (internal/models/cbt.go:332-333), but this
+	// request had no fields for either - every call to this endpoint
+	// failed at the DB layer with "invalid input syntax for type uuid:
+	// ''" (GORM inserting the Go zero-value empty string), confirmed
+	// live. Required here, matching the same explicit session_id/
+	// term_id pattern CreateQuestionRequest already uses.
+	SessionID        string     `json:"session_id" binding:"required,uuid"`
+	TermID           string     `json:"term_id" binding:"required,uuid"`
 	DurationMinutes  int        `json:"duration_minutes" binding:"required,min=1"`
 	TotalMarks       int        `json:"total_marks" binding:"required,min=1"`
 	PassMark         int        `json:"pass_mark" binding:"required,min=0"`

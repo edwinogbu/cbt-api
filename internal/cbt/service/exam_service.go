@@ -637,10 +637,19 @@ func (s *ExamService) GetStudentDashboard(ctx context.Context, studentID string)
 				EndTime:   exam.EndTime,
 			},
 			Result: dto.ResultInfo{
-				Score:       result.TotalScore,
-				Percentage:  result.Percentage,
-				Grade:       result.Grade,
-				Passed:      result.Percentage >= float64(exam.PassMark),
+				Score:      result.TotalScore,
+				Percentage: result.Percentage,
+				Grade:      result.Grade,
+				// result.Passed was already computed correctly at
+				// submission time (SubmitExam converts the raw-marks
+				// PassMark to a percentage before comparing) -
+				// recomputing it here by comparing a percentage
+				// directly against the raw PassMark mixed scales
+				// (confirmed live: this always evaluated true for any
+				// real percentage against a typical single-digit
+				// PassMark), silently overriding the correct stored
+				// value with a meaningless one on every dashboard read.
+				Passed:      result.Passed,
 				CompletedAt: *result.PublishedAt,
 			},
 			HasCompleted:    true,
@@ -822,6 +831,8 @@ func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest
 		Title:            req.Title,
 		SubjectID:        req.SubjectID,
 		ClassID:          req.ClassID,
+		SessionID:        req.SessionID,
+		TermID:           req.TermID,
 		DurationMinutes:  req.DurationMinutes,
 		TotalMarks:       req.TotalMarks,
 		PassMark:         req.PassMark,
@@ -1767,12 +1778,38 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         }
     }
 
+    // exam.TotalMarks is a separate, teacher-entered field on the Exam
+    // record (set at exam-creation time) - nothing keeps it in sync with
+    // the marks of the questions actually attached later via
+    // AddQuestionsToExam, so it can legitimately drift from the real
+    // sum. Confirmed live: a 40-question, 1-mark-each exam created with
+    // TotalMarks=15 produced a graded percentage of 186.67% (totalScore
+    // 28 / exam.TotalMarks 15 * 100) - a passed/graded Result with an
+    // impossible percentage, silently stored. The denominator must be
+    // the actual sum of the attached questions' marks, not the
+    // independently-set declarative field.
+    examQuestions, err := s.examRepo.GetExamQuestionsWithContext(ctx, lockedAttempt.ExamID)
+    if err != nil {
+        tx.Rollback()
+        return nil, err
+    }
+    actualTotalMarks := 0
+    for _, q := range examQuestions {
+        actualTotalMarks += q.Marks
+    }
+    if actualTotalMarks == 0 {
+        // No questions attached (shouldn't happen - AddQuestionsToExam
+        // enforces a minimum count - but avoids a division by zero if
+        // it somehow does) - fall back to the declarative field.
+        actualTotalMarks = exam.TotalMarks
+    }
+
     now := time.Now()
     lockedAttempt.Status = string(models.AttemptStatusCompleted)
     lockedAttempt.EndTime = &now
     lockedAttempt.Score = &totalScore
 
-    percentage := float64(totalScore) / float64(exam.TotalMarks) * 100
+    percentage := float64(totalScore) / float64(actualTotalMarks) * 100
     lockedAttempt.Percentage = &percentage
 
     if err := txExamRepo.UpdateAttempt(&lockedAttempt); err != nil {
@@ -1780,8 +1817,18 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         return nil, err
     }
 
-    // Calculate grade and passed status
-    passed := percentage >= float64(exam.PassMark)
+    // Calculate grade and passed status. exam.PassMark is a raw mark
+    // threshold on the same scale as total marks (e.g. "8" out of a
+    // 15-mark exam), not a percentage - comparing it directly against
+    // `percentage` (always 0-100) mixed two different scales, and since
+    // a real percentage score almost always numerically exceeds a
+    // single-digit-to-low-double-digit pass mark, this made "passed"
+    // true for nearly any attempt regardless of actual performance.
+    // Converting PassMark to the same percentage scale before comparing
+    // fixes this, using the same actualTotalMarks denominator as above
+    // for consistency.
+    passMarkPercentage := float64(exam.PassMark) / float64(actualTotalMarks) * 100
+    passed := percentage >= passMarkPercentage
     grade, _, _ := dto.GetGrade(percentage)
 
     result := &models.Result{
