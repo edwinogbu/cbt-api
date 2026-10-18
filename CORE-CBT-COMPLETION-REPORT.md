@@ -792,3 +792,188 @@ here with a genuine kernel-level disconnect specifically.
   exam-submission/duplicate-protection behavior under genuine
   offline-then-reconnect (§14d) are backed by full live, non-simulated
   verification end to end this session.
+
+## 15. Follow-up session: reconnect-sync delivery (blocked) and LAN node sync (verified)
+
+Continuing directly from §14 with the offline-reload fix treated as settled.
+Two independent goals: (1) does an answer queued while genuinely offline
+actually get *delivered* to the server once reconnected, through the real
+Dexie→syncQueue→sync-engine path (not a raw bypass fetch, which §14d
+already covered)? (2) separately re-verify the LAN School-Node↔Cloud sync
+HTTP path beyond the existing service-layer tests.
+
+### 15a. Reconnect-sync delivery - genuine blocker found, not fixed, not papered over
+
+Traced the full path before testing: `AttemptClient.saveAnswer()` →
+`saveAnswerWithTransaction` (Dexie `answers` + `syncQueue` tables,
+encrypted at rest) → `runSyncEngine()` (started by `StorageInitializer`,
+mounted in the root layout, polling every 30s plus once immediately on
+mount) → `syncToCloud` (`buildSyncPayload` decrypts, then
+`POST {CLOUD_BASE_URL}/api/v1/sync/:type` with an idempotency key) →
+`cbt-api`'s `SyncService.Process` (idempotency check → ownership check,
+`SessionID` trusted as `ExamAttempt.ID` → dispatches to the same
+`ExamService.SaveAnswer`/`SubmitExam` the live endpoints use, never a
+second grading path) → ledger row in `SyncOperation` → `ACCEPTED`/
+`ALREADY_PROCESSED`/`CONFLICT`/`REJECTED` → client marks the Dexie record
+`SYNCED` and the queue item `completed` only on a real server
+acknowledgement.
+
+Built a real end-to-end test using the same genuine kernel-level-disconnect
+network namespace as §14c, with hard per-call timeouts (Playwright's own
+timeout parameters do not bound `page.evaluate()` - confirmed the hard way
+in §14c's first run; used a SIGALRM-based wrapper here from the start) and
+a 170s wall-clock deadline. Flow: real UI login → answer Q1 online → wait
+up to 40s for server delivery → genuinely disconnect → answer Q2 offline
+→ reload while offline → reconnect → wait up to 60s for delivery → check
+the authoritative DB.
+
+**First run: zero requests to `/api/v1/sync/*` were ever observed server-
+side**, confirmed by the Go server's own access log showing no such
+request in the entire run. Root-caused to a real, confirmable issue: the
+production bundle's Cloud API base URL
+(`NEXT_PUBLIC_CLOUD_API_URL`, read by `ConnectionManager.ts`) is a
+build-time-baked Next.js env var that defaulted to the placeholder
+`https://api.yourschool.com` - never set to this sandbox's test backend,
+so `checkConnectivity('CLOUD')` could never have succeeded regardless of
+anything else.
+
+**One correction, one controlled retest (per this session's hard stopping
+rule)**: rebuilt with `NEXT_PUBLIC_CLOUD_API_URL=http://localhost:8080`
+(a local build-env setting only - no source file changed, confirmed via
+`git status` before and after) and re-ran. **The retest still showed zero
+sync requests reaching the server.** Per the stopping rule, no second
+correction was attempted; instead the evidence was gathered to pin down
+exactly where the pipeline stalls, without changing any more code:
+
+- A direct `fetch('http://localhost:8080/api/v1/health')` issued from
+  inside the real page context, after the rebuild, succeeds (200 OK) -
+  ruling out CORS (the Go API's `cors.New` config allows `AllowOrigins:
+  ["*"]`) and ruling out the URL itself being wrong post-rebuild.
+  `console` logging confirms `"📦 Storage initialized & sync engine
+  started"` fires - the engine does start.
+- Watched **every** network request for a full 35s window (more than one
+  30s sync-interval tick) after a real answer click: **zero requests of
+  any kind** were issued by the page - not even a failed connectivity
+  probe. The engine's health-check path (`checkConnectivity`) always
+  issues a `fetch()` even when it expects to fail, so this means
+  `runSyncEngine()`'s loop body itself never reaches that call on any
+  tick, not merely that the call fails.
+- Directly replicated `SyncQueueRepository.getPendingBatch()`'s exact
+  IndexedDB query (the `[status+nextRetryAt]` compound index, range-
+  bound `['pending', <now>]`) at the raw IndexedDB level, inside the same
+  real page session: the index exists, and it **correctly matches** the
+  3 real pending queue items created by the click (confirmed their
+  `status`/`nextRetryAt` fields are valid, in the past, not malformed).
+  This rules out a bad query or corrupted queue data as the cause.
+
+**Conclusion, stated precisely per this session's "no claims without
+evidence" rule**: the sync engine demonstrably starts, the queued data is
+demonstrably valid and query-matchable, and the server is demonstrably
+reachable from the page's own fetch - yet no sync attempt is ever
+observed leaving the page. The stall is somewhere between
+`runSyncEngine()`'s entry and its first `fetch()` call (plausible
+candidates not yet confirmed: the `isSyncing` re-entrancy guard getting
+stuck `true` from an early call that never reaches its `finally` block,
+a repository call that hangs rather than throwing, or an IndexedDB
+"blocked" connection state from this test harness's own repeated
+full-page navigations within one browser profile - none of these were
+confirmed as *the* cause, only ruled out as *not* the cause: bad data,
+bad query, unreachable server, CORS, and the engine failing to start at
+all). **This is reported as a genuine, reproducible, unresolved blocker,
+not a pass and not silently dropped.** No source code was changed while
+investigating it, and none was changed afterward - per the stopping rule,
+this investigation ends here rather than entering a second speculative
+fix cycle.
+
+**What this does and does not affect**: §14d's finding (a raw, direct API
+call fails safely offline with no data corruption, verified end-to-end)
+stands unaffected - it never depended on the sync engine. §14c's offline-
+reload fix also stands unaffected - it's a Cache-Control/Workbox-routing
+fix, unrelated to this sync-delivery path. What remains **specifically
+unproven** is: does an answer saved through the real UI while offline
+ever actually reach the cloud server once reconnected, via this app's own
+queue mechanism. The durable local write itself (encrypted Dexie record +
+queued entry, surviving a reload) is confirmed working (§14c's UI
+regression check, re-confirmed here).
+
+### 15b. LAN School-Node ↔ Cloud sync - verified live, HTTP layer
+
+Existing coverage already cited in §8/§14b (service-layer, real SQLite
+DB, not mocked): idempotent upsert, cross-school rejection, session-
+downgrade/status-precedence rejection, answer-conflict rejection,
+result-overwrite rejection with `FullyGraded` - all still passing
+(re-ran `go test ./internal/nodesync/... -v` and `-race`: 9/9 pass, no
+races). This session added what those tests cannot cover: the actual
+HTTP handler, `NodeAuthMiddleware`, and routing layer, live.
+
+- Created a real node credential via `POST /admin/school-nodes/credentials`
+  (admin JWT, real HTTP call) - confirmed this is the only way a node key
+  is ever issued, exactly as the route's own comment describes.
+- `POST /api/v1/nodesync/push` with that key: a session (status
+  `submitted`) + an answer + a result (`fully_graded: true`) were all
+  `accepted`, and confirmed directly in Postgres - `exam_attempts`,
+  `student_answers`, and `results` rows exist with the exact pushed
+  values (`status='submitted'`, `selected_answer='B'`, `is_correct=true`,
+  `total_score=5`, `grade='E'`, `fully_graded=true`).
+- **Idempotent retry**: resent the identical push body - still `accepted`,
+  row count confirmed still exactly 1 (no duplicate).
+- **Auth rejection**: the same push with an invalid Bearer key -> real
+  `401 {"error":"invalid node credential"}`.
+- **Conflict/status-precedence, live**: pushed the same attempt back with
+  `status: "in_progress"` (a downgrade from the already-`submitted`
+  state) - correctly `rejected` with
+  `"conflict: local attempt is already in a more final state (submitted)"`,
+  and the DB's stored status was confirmed unchanged (`submitted`) -
+  this is the status-rank precedence rule from §14b, now confirmed
+  working through the real HTTP+middleware+auth path, not just the
+  service layer. No timestamp was involved in this decision, consistent
+  with this session's explicit instruction not to trust LAN-node clocks.
+
+**LAN node sync is verified working at the HTTP layer for every item in
+this phase's checklist**: session/attempt sync, answer sync, result sync
+with `FullyGraded` propagation, auth rejection, retry/idempotency, and
+conflict precedence. No defect found; no code changed.
+
+### 15c. Regression gates this session
+
+| Suite | Result |
+|---|---|
+| `cbt-api`: `go build ./...` | pass |
+| `cbt-api`: `go vet ./...` | pass |
+| `cbt-api`: `go test ./internal/nodesync/...` (`-v` and `-race`) | 9/9 pass, no races |
+| `elias-cbt-portal`: working tree | clean before and after (confirmed via `git status`) - no source file was changed this session; the one build-env rebuild used for the retest was reverted (`public/sw.js` restored) |
+
+### 15d. Files changed this session
+
+None. This session's only artifacts were test infrastructure (a Linux
+network namespace, `socat` relays, throwaway Python/Playwright scripts)
+living entirely outside both repositories' working trees - never
+committed, confirmed via `git status` throughout. No application code or
+configuration was modified in either repo.
+
+### 15e. What this session does and does not claim
+
+- Does **not** claim queued answers are reliably delivered after a
+  genuine reconnect through the app's own sync engine - §15a is a
+  reported, reproducible, unresolved blocker with concrete diagnostic
+  evidence of where it is *not* (bad data, bad query, unreachable
+  server, CORS, engine-fails-to-start), not yet of where it *is*.
+- Does claim LAN School-Node↔Cloud sync is now verified at the live HTTP
+  layer for session/answer/result sync, `FullyGraded` propagation, auth
+  rejection, idempotency, and conflict precedence (§15b) - on top of,
+  not instead of, the existing service-layer test suite.
+- Does not claim this blocker affects the offline-reload fix (§14c) or
+  the raw-API offline-safety finding (§14d) - both are independent of the
+  sync engine and remain verified as reported.
+
+### 15f. Next concrete step
+
+Instrument `runSyncEngine()`/`processSyncItem()` with explicit
+checkpoint logging (entry, after `recoverStuckProcessing()`, after
+`getPendingBatch()`, before/after each `processSyncItem` call) and re-run
+the exact same genuine-disconnect-then-reconnect test from §15a once -
+the missing checkpoint will show exactly which call never returns or
+never gets reached, turning "the stall is somewhere in here" into a
+specific line of code. Not done this session, in keeping with the
+one-correction-one-retest rule once the first correction (the env var)
+didn't resolve it.
