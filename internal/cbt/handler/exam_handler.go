@@ -1142,7 +1142,8 @@ func (h *ExamHandler) BulkSaveAnswers(c *gin.Context) {
 	resp, err := h.examService.BulkSaveAnswers(c.Request.Context(), &req, studentID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err.Error() == "unauthorized" {
+		switch err.Error() {
+		case "time limit exceeded", "unauthorized":
 			status = http.StatusForbidden
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -1220,7 +1221,8 @@ func (h *ExamHandler) AutoSave(c *gin.Context) {
 	resp, err := h.examService.AutoSave(c.Request.Context(), &req, studentID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err.Error() == "unauthorized" {
+		switch err.Error() {
+		case "time limit exceeded", "unauthorized", "exam already submitted":
 			status = http.StatusForbidden
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
