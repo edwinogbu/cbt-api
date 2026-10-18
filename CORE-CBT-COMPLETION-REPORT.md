@@ -977,3 +977,174 @@ never gets reached, turning "the stall is somewhere in here" into a
 specific line of code. Not done this session, in keeping with the
 one-correction-one-retest rule once the first correction (the env var)
 didn't resolve it.
+
+## 16. Follow-up session: reconnect-sync blocker root-caused and fixed
+
+Continuing directly from §15f: added the checkpoint logging it specified,
+re-ran the same genuine-disconnect test, and found the actual defect.
+
+### 16a. Environment note
+
+This session started with the sandbox container reset to a clean slate:
+Postgres, Redis, the Go API, and the Next.js server were all stopped (the
+Postgres *data* directory was intact - 5 users, the test exam, and the test
+attempt all still present). Both repos' working trees were confirmed clean
+and on `claude/awesome-einstein-df5zdb` before any change was made. All
+services were restarted locally in this same sandbox - nothing was deployed
+anywhere.
+
+**On "opening a browser on your desktop" and giving you an accessible
+URL**: this session runs in a cloud container with no connection to your
+computer and no port-tunneling capability - there is no way from here to
+open a window on your screen or hand you a URL that reaches `localhost`
+inside this sandbox. That was stated up front rather than attempted. The
+genuine alternative actually available - driving a real headless Chromium
+against the real local stack and capturing screenshots at each milestone -
+is what was done; those are the 5 images already sent to you.
+
+### 16b. Checkpoint logging added
+
+Temporary `console.log('[SYNC-CKPT] ...')` lines were added through
+`runSyncEngine()` and `processSyncItem()` in
+`src/lib/storage/sync/syncManager.ts`, covering every checkpoint §15f
+specified: engine entry, the `isSyncing` guard, after
+`recoverStuckProcessing()`, after `getPendingBatch()` (with queue IDs),
+per-session/per-item loop entry, the atomic claim result, the resolved
+sync target, immediately before and after the `syncFn()` call (with the
+response status), and the `finally` block. Rebuilt with
+`NEXT_PUBLIC_CLOUD_API_URL=http://localhost:8080` (same local build-env
+setting as §15a, confirmed baked into the compiled bundle via `grep`) and
+ran the same netns/veth/socat genuine-disconnect rig as §14c/§15a (a real
+Linux network namespace with its own veth pair - bringing the namespace's
+interface down is a real kernel-level disconnect, not DevTools emulation;
+this was stated explicitly rather than implied).
+
+### 16c. First run: the real root cause, found via the checkpoint trace
+
+The checkpoint trace (captured via Playwright's console listener, with
+timestamps) showed something §15a's evidence could not distinguish:
+execution reaches `processSyncItem:before-fetch` **and**
+`processSyncItem:after-fetch` on every single attempt, online and
+offline alike - the `fetch()` call itself always completes and returns.
+But the Go API's own access log for the same window showed only:
+
+```
+OPTIONS /api/v1/sync/answer  -> 204
+OPTIONS /api/v1/sync/event   -> 204
+```
+
+**No POST to `/api/v1/sync/*` ever arrived - only the CORS preflight.**
+This is the signature of a CORS preflight that the browser does not
+accept: the `cors.Config.AllowHeaders` list in `cmd/server/main.go` was
+`["Origin", "Content-Type", "Accept", "Authorization"]`, but
+`cloudSync.ts`/`lanSync.ts` send two more headers on every sync POST -
+`Idempotency-Key` and `X-Operation-Id`. gin-contrib/cors still answers
+the OPTIONS preflight with 204 regardless, but its
+`Access-Control-Allow-Headers` response only ever lists the configured
+set - never including the two custom headers the real request needs. The
+browser then silently refuses to send the POST, and `fetch()` surfaces
+this as an opaque network-type rejection with no further detail -
+indistinguishable, from inside `syncToCloud`'s catch-all, from genuinely
+being offline. This is exactly why §15a's "zero requests observed, engine
+starts, data is valid, server is reachable" evidence could rule out five
+other causes but not reach this one: a raw `fetch('/api/v1/health')`
+(§15a's probe) carries none of the sync client's custom headers, so it
+was never subject to the same preflight rejection.
+
+### 16d. Fix applied (the one correction this session's stopping rule allows)
+
+Added `"Idempotency-Key"` and `"X-Operation-Id"` to `AllowHeaders` in
+`cmd/server/main.go`'s CORS middleware - a 2-line, additive change, no
+other code touched. `go build ./...`, `go vet ./...`, and
+`go test ./internal/sync/... -v` (4/4 existing tests, unrelated to this
+change) all pass after the fix. Verified directly with a raw preflight
+`curl`: the response's `Access-Control-Allow-Headers` now includes both
+headers.
+
+### 16e. One controlled retest: delivery confirmed end-to-end
+
+Restarted the Go API with the fix and re-ran the exact same bounded
+genuine-disconnect test. Result, straight from the checkpoint trace and
+the server's own records:
+
+- The two queued `event`-type items delivered immediately once the fix
+  was live: `after-fetch status=ACCEPTED` -> `processSyncItem:completed`.
+- The queued `answer`-type item came back `CONFLICT` - at first glance a
+  second defect, but tracing it (code read only, no further test) showed
+  it was the Go API correctly enforcing the exam's time limit
+  (`"time limit exceeded"` -> HTTP 409, the same `CONFLICT_STATE` path
+  added in §4's "Fix A"): the test attempt (`b18f0ee5-...`) had been
+  sitting `in_progress` since `13:59:38` across several earlier sessions'
+  wall-clock time, well past the exam's 60-minute limit by the time this
+  session ran. **Not a code defect** - the time-limit enforcement is
+  working exactly as intended.
+- Refreshed that one test attempt's `start_time` to now (isolated test
+  data only, in the sandbox's test Postgres - no real student or exam
+  content touched) and re-checked with the same already-queued answer
+  item, no further code change: within 5 seconds, `GET
+  /api/v1/student/exams/attempt/{id}` reported `answered_count: 1`.
+  Confirmed directly in Postgres:
+  - `student_answers`: a row exists for this attempt/question with
+    `selected_answer='D'`, timestamped to the exact test window.
+  - `sync_operations`: a ledger row exists for this exact operation
+    (`type='answer'`, the real `idempotency_key`/`operation_id` the
+    client generated, `server_version=1`,
+    `result_json` containing the real progress snapshot
+    `{"answered": 1, "percentage": 20, ...}`), proving the server
+    acknowledged it and the client's queue item was marked `completed`
+    (confirmed in Dexie) as a result of that acknowledgement, not
+    assumed from local state alone.
+
+**This closes §15a's open blocker with a verified, working fix**: an
+answer saved through the real UI while genuinely offline, queued in
+Dexie, and delivered after a genuine reconnect through the app's own
+`runSyncEngine()` → `syncToCloud()` → `/api/v1/sync/answer` path is now
+confirmed received and persisted by the real Go API and database, with
+the sync queue item correctly marked `completed` only after that
+server-side acknowledgement - matching this session's explicit
+instruction not to claim success without that evidence.
+
+### 16f. Cleanup
+
+The temporary `[SYNC-CKPT]` logging was fully removed from
+`syncManager.ts` (`git checkout` against the clean committed version,
+confirmed via `git diff` showing no residual change) once the
+investigation concluded, and the frontend was rebuilt clean. The CORS fix
+itself was kept - it is the real, permanent fix, not a diagnostic. The
+`NEXT_PUBLIC_CLOUD_API_URL=http://localhost:8080` build-env setting used
+for this sandbox's own testing was not baked into any committed file -
+it is passed at build time only, exactly as in §15a.
+
+### 16g. Files changed this session
+
+- `cbt-api/cmd/server/main.go` - added 2 entries to `cors.Config.AllowHeaders`
+  (committed, pushed).
+- `elias-cbt-portal/src/lib/storage/sync/syncManager.ts` - temporary
+  diagnostic logging, added and then fully removed; working tree
+  confirmed clean, nothing committed.
+- No other files in either repository were changed.
+
+### 16h. What this session does and does not claim
+
+- Does claim: the reconnect-sync blocker reported as unresolved in §15a
+  is now root-caused (CORS `AllowHeaders` missing two custom headers the
+  sync client has always sent) and fixed, with the fix verified by a real
+  answer reaching the real Go API and being persisted in the real test
+  database, with server acknowledgement and queue completion confirmed -
+  not inferred from local Dexie state alone.
+- Does **not** claim this was caught by the existing automated test
+  suites - `go test ./internal/sync/...` exercises `SyncService.Process`
+  directly, never through an HTTP server or a browser's CORS enforcement,
+  so none of the existing tests could have caught a browser-side CORS
+  rejection. No regression test was added for this in this session; an
+  HTTP-layer integration test asserting the full header set survives a
+  real preflight would be the natural one to add next.
+- Does not claim a browser was ever opened on the user's own desktop, or
+  that this sandbox exposed any URL reachable from the user's computer -
+  §16a states plainly that neither capability exists in this session.
+  Screenshots from a real headless Chromium driving the real local stack
+  were sent as the closest available evidence of "watching the test."
+- Does not claim the `CONFLICT` seen on the first retest attempt was a
+  defect - §16e explains it as correct, intentional time-limit
+  enforcement acting on a stale test fixture, verified against the
+  exam's actual configured duration and the attempt's actual timestamps.
