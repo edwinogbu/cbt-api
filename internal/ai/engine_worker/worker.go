@@ -3,6 +3,7 @@ package engine_worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -66,6 +67,7 @@ func (w *AIWorker) Start() {
 
 func (w *AIWorker) processGenerateJob(payload map[string]interface{}) {
 	jobIDStr, _ := payload["job_id"].(string)
+	userID, _ := payload["user_id"].(string)
 
 	var req dto.AIGenerateQuestionsRequest
 	b, _ := json.Marshal(payload["request"])
@@ -101,8 +103,12 @@ func (w *AIWorker) processGenerateJob(payload map[string]interface{}) {
 			question := models.QuestionBank{
 				ID:                generateID(),
 				SchoolID:          req.SchoolID,
+				SessionID:         req.SessionID,
+				TermID:            req.TermID,
 				ClassLevelID:      req.ClassLevelID,
+				ClassID:           req.ClassID,
 				SubjectID:         req.SubjectID,
+				ExamType:          req.ExamType,
 				CurriculumType:    req.CurriculumType,
 				SourceType:        "ai_generated",
 				Topic:             req.Topic,
@@ -116,6 +122,8 @@ func (w *AIWorker) processGenerateJob(payload map[string]interface{}) {
 				Marks:             q.Marks,
 				Status:            models.QuestionStatusDraft,
 				Version:           1,
+				CreatedBy:         userID,
+				UpdatedBy:         userID,
 			}
 			if err := w.qRepo.Create(ctx, &question); err != nil {
 				log.Printf("Failed to save question: %v", err)
@@ -125,17 +133,22 @@ func (w *AIWorker) processGenerateJob(payload map[string]interface{}) {
 		}
 	}
 
-	msg := "Saved " + string(rune(saved)) + " questions"
+	msg := fmt.Sprintf("Saved %d questions", saved)
 	w.updateJobStatus(jobIDStr, "completed", msg)
 }
 
 func (w *AIWorker) processExtractJob(payload map[string]interface{}) {
 	jobIDStr, _ := payload["job_id"].(string)
+	userID, _ := payload["user_id"].(string)
 
 	text, _ := payload["text"].(string)
 	schoolID, _ := payload["school"].(string)
-	classLevelID, _ := payload["class"].(string)
+	sessionID, _ := payload["session"].(string)
+	termID, _ := payload["term"].(string)
+	classLevelID, _ := payload["class_level"].(string)
+	classID, _ := payload["class"].(string)
 	subjectID, _ := payload["subject"].(string)
+	examType, _ := payload["exam_type"].(string)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(w.engine.Config().TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -165,8 +178,12 @@ func (w *AIWorker) processExtractJob(payload map[string]interface{}) {
 			question := models.QuestionBank{
 				ID:                generateID(),
 				SchoolID:          schoolID,
+				SessionID:         sessionID,
+				TermID:            termID,
 				ClassLevelID:      classLevelID,
+				ClassID:           classID,
 				SubjectID:         subjectID,
+				ExamType:          examType,
 				SourceType:        "extracted",
 				QuestionText:      q.QuestionText,
 				QuestionType:      models.QuestionType(q.Type),
@@ -178,6 +195,8 @@ func (w *AIWorker) processExtractJob(payload map[string]interface{}) {
 				Marks:             q.Marks,
 				Status:            models.QuestionStatusDraft,
 				Version:           1,
+				CreatedBy:         userID,
+				UpdatedBy:         userID,
 			}
 			if err := w.qRepo.Create(ctx, &question); err != nil {
 				log.Printf("Failed to save extracted question: %v", err)
@@ -187,7 +206,7 @@ func (w *AIWorker) processExtractJob(payload map[string]interface{}) {
 		}
 	}
 
-	msg := "Extracted and saved " + string(rune(saved)) + " questions"
+	msg := fmt.Sprintf("Extracted and saved %d questions", saved)
 	w.updateJobStatus(jobIDStr, "completed", msg)
 }
 

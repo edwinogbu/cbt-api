@@ -512,6 +512,12 @@ func setupSubscriptionRoutes(rg *gin.RouterGroup, handler *subscriptionHandler.S
 func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.QuestionHandler) {
 	q := rg.Group("/questions")
 	q.Use(middleware.AuthMiddleware())
+	// Question bank management is a teacher/admin surface: students and
+	// parents have no legitimate call into it (confirmed - the frontend's
+	// question.service.ts is only wired into /dashboard/admin and teacher
+	// pages), and the FKs trusted inside these handlers (school/class/subject)
+	// are only safe once the caller's role is restricted here.
+	q.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
 	{
 		q.POST("/create", handler.CreateQuestion)
 		q.GET("/:id", handler.GetQuestion)
@@ -534,6 +540,12 @@ func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.Que
 		q.POST("/ai/generate", handler.GenerateQuestionsWithAI)
 		q.POST("/extract", handler.ExtractQuestionsFromText)
 		q.GET("/jobs/:id", handler.GetJobStatus)
+
+		// Synchronous, review-first AI endpoints: these never write to the
+		// question bank. The teacher reviews the returned drafts and saves
+		// approved ones via POST /questions/bulk (above).
+		q.POST("/ai/extract-lesson", handler.ExtractLessonStructure)
+		q.POST("/ai/generate-grounded", handler.GenerateGroundedQuestions)
 
 		q.GET("/by-term", handler.GetQuestionsByTerm)
 		q.GET("/by-session", handler.GetQuestionsBySession)

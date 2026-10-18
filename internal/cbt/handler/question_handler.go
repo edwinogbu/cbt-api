@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -619,16 +620,14 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	}
 
 	// Validate exam type
-	validExamTypes := map[string]bool{
-		"weekly_test": true,
-		"mid_term":    true,
-		"main_exam":   true,
-		"practice":    true,
+	validExamTypes := make(map[string]bool)
+	for _, t := range dto.AllExamTypes() {
+		validExamTypes[t] = true
 	}
 	if !validExamTypes[examType] {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid exam_type",
-			"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+			"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 		})
 		return
 	}
@@ -847,8 +846,14 @@ func (h *QuestionHandler) GenerateQuestionsWithAI(c *gin.Context) {
 		return
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req)
+	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -910,8 +915,14 @@ func (h *QuestionHandler) ExtractQuestionsFromText(c *gin.Context) {
 		return
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req)
+	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -945,6 +956,90 @@ func (h *QuestionHandler) GetJobStatus(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	resp, err := h.questionService.GetJobStatus(ctx, id)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// ============================================
+// SYNCHRONOUS, REVIEW-FIRST AI ENDPOINTS
+//
+// Unlike GenerateQuestionsWithAI/ExtractQuestionsFromText above, these
+// respond synchronously and never write to the question bank - the teacher
+// reviews the drafts and saves approved ones via POST /questions/bulk.
+// ============================================
+
+// ExtractLessonStructure godoc
+// @Summary      Extract structured lesson data from text for teacher review
+// @Tags         Questions
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.ExtractLessonRequest true "Source text"
+// @Success      200 {object} dto.ExtractLessonResponse
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/ai/extract-lesson [post]
+func (h *QuestionHandler) ExtractLessonStructure(c *gin.Context) {
+	var req dto.ExtractLessonRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid request body",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	resp, err := h.questionService.ExtractLessonStructure(ctx, &req, userID.(string))
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// GenerateGroundedQuestions godoc
+// @Summary      Generate draft questions for teacher review (does not persist)
+// @Tags         Questions
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.GenerateGroundedQuestionsRequest true "Generation parameters"
+// @Success      200 {object} dto.GenerateGroundedQuestionsResponse
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/ai/generate-grounded [post]
+func (h *QuestionHandler) GenerateGroundedQuestions(c *gin.Context) {
+	var req dto.GenerateGroundedQuestionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid request body",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	resp, err := h.questionService.GenerateGroundedQuestions(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1427,16 +1522,14 @@ func (h *QuestionHandler) GetQuestionsGrouped(c *gin.Context) {
 	}
 
 	if req.ExamType != "" {
-		validExamTypes := map[string]bool{
-			"weekly_test": true,
-			"mid_term":    true,
-			"main_exam":   true,
-			"practice":    true,
+		validExamTypes := make(map[string]bool)
+		for _, t := range dto.AllExamTypes() {
+			validExamTypes[t] = true
 		}
 		if !validExamTypes[req.ExamType] {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":   "invalid exam_type",
-				"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+				"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 			})
 			return
 		}
@@ -1542,16 +1635,14 @@ func (h *QuestionHandler) GetQuestionsByExamType(c *gin.Context) {
 		return
 	}
 
-	validExamTypes := map[string]bool{
-		"weekly_test": true,
-		"mid_term":    true,
-		"main_exam":   true,
-		"practice":    true,
+	validExamTypes := make(map[string]bool)
+	for _, t := range dto.AllExamTypes() {
+		validExamTypes[t] = true
 	}
 	if !validExamTypes[examType] {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid exam_type",
-			"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+			"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 		})
 		return
 	}

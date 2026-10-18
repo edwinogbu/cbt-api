@@ -49,11 +49,24 @@ const (
 	StatusPublished = "published"
 	StatusArchived  = "archived"
 
-	// Exam Types - Nigerian Academic Context
-	ExamTypeWeeklyTest = "weekly_test"
-	ExamTypeMidTerm    = "mid_term"
-	ExamTypeMainExam   = "main_exam"
-	ExamTypePractice   = "practice"
+	// Exam Types - Nigerian Academic Context (assessment purposes).
+	// Stored in a varchar column (not a native enum), so widening this list
+	// is a validation-only change - no migration required.
+	ExamTypeWeeklyTest           = "weekly_test"
+	ExamTypeContinuousAssessment = "continuous_assessment"
+	ExamTypeMidTerm              = "mid_term"
+	ExamTypeEndOfTerm            = "end_of_term"
+	ExamTypeMainExam             = "main_exam"
+	ExamTypeMockExam             = "mock_exam"
+	ExamTypeRevision             = "revision"
+	ExamTypePractice             = "practice"
+	ExamTypeAssignment           = "assignment"
+	ExamTypeQuiz                 = "quiz"
+	ExamTypeEntrance             = "entrance"
+	ExamTypePlacement            = "placement"
+	ExamTypePromotional          = "promotional"
+	ExamTypeFinalExam            = "final_exam"
+	ExamTypeCustom               = "custom"
 
 	// ============================================================
 	// FILE UPLOAD FORMATS
@@ -87,6 +100,30 @@ const (
 	MaxRubricCriteria = 10
 )
 
+// AllExamTypes returns every supported assessment-purpose identifier.
+// Used wherever the Go-code side needs the full set as a slice (binding
+// tags on struct fields list the same values literally, since `oneof=`
+// can't reference a function).
+func AllExamTypes() []string {
+	return []string{
+		ExamTypeWeeklyTest,
+		ExamTypeContinuousAssessment,
+		ExamTypeMidTerm,
+		ExamTypeEndOfTerm,
+		ExamTypeMainExam,
+		ExamTypeMockExam,
+		ExamTypeRevision,
+		ExamTypePractice,
+		ExamTypeAssignment,
+		ExamTypeQuiz,
+		ExamTypeEntrance,
+		ExamTypePlacement,
+		ExamTypePromotional,
+		ExamTypeFinalExam,
+		ExamTypeCustom,
+	}
+}
+
 // ============================================
 // REQUEST DTOs
 // ============================================
@@ -99,7 +136,7 @@ type CreateQuestionRequest struct {
 	ClassLevelID      string            `json:"class_level_id" binding:"required,uuid"`
 	ClassID           string            `json:"class_id" binding:"required,uuid"`
 	SubjectID         string            `json:"subject_id" binding:"required,uuid"`
-	ExamType          string            `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          string            `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	QuestionText      string            `json:"question_text" binding:"required"`
 	QuestionType      string            `json:"question_type" binding:"required,oneof=single_choice multiple_choice true_false essay fill_blank"`
 	Difficulty        string            `json:"difficulty" binding:"required,oneof=easy medium hard expert"`
@@ -132,7 +169,7 @@ type UpdateQuestionRequest struct {
 	ClassLevelID      *string           `json:"class_level_id,omitempty" binding:"omitempty,uuid"`
 	ClassID           *string           `json:"class_id,omitempty" binding:"omitempty,uuid"`
 	SubjectID         *string           `json:"subject_id,omitempty" binding:"omitempty,uuid"`
-	ExamType          *string           `json:"exam_type,omitempty" binding:"omitempty,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          *string           `json:"exam_type,omitempty" binding:"omitempty,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	QuestionText      *string           `json:"question_text"`
 	Topic             *string           `json:"topic"`
 	SubTopic          *string           `json:"sub_topic"`
@@ -230,7 +267,7 @@ type BulkUploadRequest struct {
 	ClassLevelID       string                `form:"class_level_id" binding:"required,uuid"`
 	ClassID            string                `form:"class_id" binding:"required,uuid"`
 	SubjectID          string                `form:"subject_id" binding:"required,uuid"`
-	ExamType           string                `form:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType           string                `form:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	File               *multipart.FileHeader `form:"file" binding:"required"`
 	Format             string                `form:"format" binding:"omitempty,oneof=auto csv excel json docx txt"`
 	HasHeader          bool                  `form:"has_header"`
@@ -1399,7 +1436,7 @@ type AIGenerateQuestionsRequest struct {
 	ClassLevelID      string   `json:"class_level_id" binding:"required,uuid"`
 	ClassID           string   `json:"class_id" binding:"required,uuid"`
 	SubjectID         string   `json:"subject_id" binding:"required,uuid"`
-	ExamType          string   `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          string   `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	Topic             string   `json:"topic" binding:"required"`
 	NumberOfQuestions int      `json:"number_of_questions" binding:"required,min=1,max=100"`
 	Difficulty        string   `json:"difficulty" binding:"required,oneof=easy medium hard expert"`
@@ -1417,9 +1454,112 @@ type ExtractTextQuestionsRequest struct {
 	ClassLevelID string `json:"class_level_id" binding:"required,uuid"`
 	ClassID      string `json:"class_id" binding:"required,uuid"`
 	SubjectID    string `json:"subject_id" binding:"required,uuid"`
-	ExamType     string `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType     string `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	Text         string `json:"text" binding:"required"`
 	Format       string `json:"format" binding:"required,oneof=plain markdown html"`
+}
+
+// ============================================================
+// SYNCHRONOUS, REVIEW-FIRST AI DTOs
+//
+// Unlike AIGenerateQuestionsRequest/ExtractTextQuestionsRequest above (which
+// enqueue an async job that auto-saves straight to the question bank as
+// soon as the worker finishes), these never persist anything. They return
+// drafts for the teacher to review/edit; nothing reaches the question bank
+// until the teacher explicitly saves the approved drafts via POST
+// /questions/bulk, which runs full ownership and schema validation.
+// ============================================================
+
+// ExtractLessonRequest asks the AI to extract structured lesson/topic data
+// from raw text already pulled from an uploaded document (see the
+// Next.js /api/extract-text route) for teacher review.
+type ExtractLessonRequest struct {
+	SchoolID     string `json:"school_id" binding:"required,uuid"`
+	SubjectID    string `json:"subject_id" binding:"required,uuid"`
+	ClassLevelID string `json:"class_level_id" binding:"required,uuid"`
+	Text         string `json:"text" binding:"required"`
+	FileName     string `json:"file_name,omitempty"`
+}
+
+// ExtractedLessonItem is one lesson/topic unit detected in the source text.
+type ExtractedLessonItem struct {
+	Topic           string   `json:"topic"`
+	SubTopic        string   `json:"sub_topic"`
+	Objectives      []string `json:"objectives"`
+	KeyTerms        []string `json:"key_terms"`
+	AssessmentAreas []string `json:"assessment_areas"`
+	// Confidence is "low" when the extraction had to infer rather than read
+	// this directly from the source text - the teacher should double-check it.
+	Confidence string `json:"confidence"`
+}
+
+// ExtractLessonResponse is returned for teacher review and correction; it
+// is not persisted anywhere by this endpoint.
+type ExtractLessonResponse struct {
+	Lessons  []ExtractedLessonItem `json:"lessons"`
+	Provider string                `json:"provider"`
+	Warning  string                `json:"warning,omitempty"`
+}
+
+// GenerateGroundedQuestionsRequest generates draft questions grounded in
+// teacher-approved lesson content for review. DifficultyDistribution (e.g.
+// {"easy":3,"medium":5,"hard":2}) takes priority over the flat
+// Difficulty+NumberOfQuestions fields when provided.
+type GenerateGroundedQuestionsRequest struct {
+	SchoolID                string         `json:"school_id" binding:"required,uuid"`
+	SessionID               string         `json:"session_id" binding:"required,uuid"`
+	TermID                  string         `json:"term_id" binding:"required,uuid"`
+	ClassLevelID            string         `json:"class_level_id" binding:"required,uuid"`
+	ClassID                 string         `json:"class_id" binding:"required,uuid"`
+	SubjectID               string         `json:"subject_id" binding:"required,uuid"`
+	ExamType                string         `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
+	Topic                   string         `json:"topic" binding:"required"`
+	SubTopic                string         `json:"sub_topic,omitempty"`
+	SourceText              string         `json:"source_text" binding:"required"`
+	Keywords                []string       `json:"keywords,omitempty"`
+	CurriculumType          string         `json:"curriculum_type,omitempty"`
+	DifficultyDistribution  map[string]int `json:"difficulty_distribution,omitempty"`
+	NumberOfQuestions       int            `json:"number_of_questions,omitempty" binding:"omitempty,min=1,max=100"`
+	Difficulty              string         `json:"difficulty,omitempty" binding:"omitempty,oneof=easy medium hard expert"`
+	BloomLevel              string         `json:"bloom_level,omitempty" binding:"omitempty,oneof=remember understand apply analyse evaluate create"`
+	IncludeAnswers          bool           `json:"include_answers"`
+	IncludeExplanations     bool           `json:"include_explanations"`
+}
+
+// GeneratedQuestionDraft is one AI-proposed question awaiting teacher
+// review. It mirrors CreateQuestionRequest's shape so an approved draft can
+// be submitted to POST /questions/bulk with minimal remapping.
+type GeneratedQuestionDraft struct {
+	QuestionText      string           `json:"question_text"`
+	QuestionType      string           `json:"question_type"`
+	Options           []QuestionOption `json:"options,omitempty"`
+	CorrectOptionKeys []string         `json:"correct_option_keys,omitempty"`
+	CorrectAnswer     string           `json:"correct_answer,omitempty"`
+	Explanation       string           `json:"explanation,omitempty"`
+	Marks             int              `json:"marks"`
+	Difficulty        string           `json:"difficulty"`
+	BloomLevel        string           `json:"bloom_level"`
+	Topic             string           `json:"topic"`
+	SubTopic          string           `json:"sub_topic,omitempty"`
+	LearningObjective string           `json:"learning_objective,omitempty"`
+	// Rubric is a suggested marking scheme for essay-type drafts - the
+	// response always labels it as teacher-reviewable, never authoritative.
+	Rubric           []RubricCriteria `json:"rubric,omitempty"`
+	ValidationStatus string           `json:"validation_status"` // approved | needs_review | rejected
+	ValidationErrors []string         `json:"validation_errors,omitempty"`
+}
+
+// GenerateGroundedQuestionsResponse is returned for teacher review; nothing
+// is saved to the question bank by this endpoint (Persisted is always false).
+type GenerateGroundedQuestionsResponse struct {
+	Questions []GeneratedQuestionDraft `json:"questions"`
+	// RequestedCount is how many questions were asked for; GeneratedCount is
+	// how many survived provider generation and validation. A shortfall is
+	// reported via Warning rather than silently returning fewer than asked.
+	RequestedCount int    `json:"requested_count"`
+	GeneratedCount int    `json:"generated_count"`
+	Persisted      bool   `json:"persisted"`
+	Warning        string `json:"warning,omitempty"`
 }
 
 // BulkQuestionImportRequest represents bulk import from structured data
@@ -1430,7 +1570,7 @@ type BulkQuestionImportRequest struct {
 	ClassLevelID   string               `json:"class_level_id" binding:"required,uuid"`
 	ClassID        string               `json:"class_id" binding:"required,uuid"`
 	SubjectID      string               `json:"subject_id" binding:"required,uuid"`
-	ExamType       string               `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType       string               `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	CurriculumType string               `json:"curriculum_type"`
 	SourceType     string               `json:"source_type"`
 	Status         string               `json:"status"`
@@ -1847,7 +1987,7 @@ func (req *UpdateQuestionRequest) Validate() error {
 		}
 	}
 	if req.ExamType != nil {
-		validExamTypes := []string{"weekly_test", "mid_term", "main_exam", "practice"}
+		validExamTypes := AllExamTypes()
 		valid := false
 		for _, e := range validExamTypes {
 			if e == *req.ExamType {

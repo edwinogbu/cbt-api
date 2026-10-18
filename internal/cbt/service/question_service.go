@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	academicRepo "cbt-api/internal/academic/repository"
 	"cbt-api/internal/ai/engine"
 	"cbt-api/internal/ai/queue"
 	"cbt-api/internal/cbt/dto"
@@ -20,21 +21,25 @@ import (
 
 // QuestionService handles all question business logic
 type QuestionService struct {
-	qRepo   *repository.QuestionRepository
-	subRepo *repository.SubjectRepository
-	db      *gorm.DB
-	queue   queue.Queue
-	engine  *engine.Engine
+	qRepo     *repository.QuestionRepository
+	subRepo   *repository.SubjectRepository
+	classRepo *academicRepo.ClassRepository
+	userRepo  *academicRepo.UserRepository
+	db        *gorm.DB
+	queue     queue.Queue
+	engine    *engine.Engine
 }
 
 // NewQuestionService creates a new QuestionService instance
 func NewQuestionService(qRepo *repository.QuestionRepository, subRepo *repository.SubjectRepository, db *gorm.DB, queue queue.Queue, engine *engine.Engine) *QuestionService {
 	return &QuestionService{
-		qRepo:   qRepo,
-		subRepo: subRepo,
-		db:      db,
-		queue:   queue,
-		engine:  engine,
+		qRepo:     qRepo,
+		subRepo:   subRepo,
+		classRepo: academicRepo.NewClassRepository(db),
+		userRepo:  academicRepo.NewUserRepository(db),
+		db:        db,
+		queue:     queue,
+		engine:    engine,
 	}
 }
 
@@ -46,6 +51,10 @@ func NewQuestionService(qRepo *repository.QuestionRepository, subRepo *repositor
 func (s *QuestionService) CreateQuestion(ctx context.Context, req *dto.CreateQuestionRequest, userID string) (*dto.QuestionBankResponse, error) {
 	if err := s.validateCreateQuestionRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
+		return nil, err
 	}
 
 	questionID := models.GenerateID()
@@ -320,6 +329,21 @@ func (s *QuestionService) BulkCreateQuestionsFromJSON(ctx context.Context, req *
 		return nil, errors.New("no questions provided")
 	}
 
+	// Authorize each distinct (school, class) pair referenced in this batch up
+	// front, before opening the write transaction, so a batch spanning a class
+	// the caller doesn't own fails fast without partially authorizing others.
+	authorizedClasses := make(map[string]bool)
+	for idx, qReq := range req.Questions {
+		key := qReq.SchoolID + "|" + qReq.ClassID
+		if authorizedClasses[key] {
+			continue
+		}
+		if err := s.authorizeQuestionWrite(userID, qReq.SchoolID, qReq.ClassID); err != nil {
+			return nil, fmt.Errorf("question %d: %w", idx+1, err)
+		}
+		authorizedClasses[key] = true
+	}
+
 	var responses []dto.QuestionBankResponse
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -496,6 +520,10 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 	// Validate request
 	if err := s.validateBulkUploadRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
+		return nil, err
 	}
 
 	// Determine format if auto
@@ -753,14 +781,18 @@ func (s *QuestionService) parseInt(str string) int {
 // AI METHODS
 // ============================================
 
-func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.AIGenerateQuestionsRequest) (*dto.AIQuestionGenerationResponse, error) {
+func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.AIGenerateQuestionsRequest, userID string) (*dto.AIQuestionGenerationResponse, error) {
 	if err := s.validateAIGenerateRequest(req); err != nil {
+		return nil, err
+	}
+
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
 	}
 
 	job := &models.AIQuestionGenerationJob{
 		ID:                models.GenerateID(),
-		UserID:            "",
+		UserID:            userID,
 		SubjectID:         req.SubjectID,
 		Topic:             req.Topic,
 		NumberOfQuestions: req.NumberOfQuestions,
@@ -777,6 +809,7 @@ func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.
 	payload := map[string]interface{}{
 		"job_id":  job.ID,
 		"type":    "generate",
+		"user_id": userID,
 		"request": req,
 	}
 	data, err := json.Marshal(payload)
@@ -795,14 +828,18 @@ func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.
 	}, nil
 }
 
-func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto.ExtractTextQuestionsRequest) (*dto.AIQuestionGenerationResponse, error) {
+func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto.ExtractTextQuestionsRequest, userID string) (*dto.AIQuestionGenerationResponse, error) {
 	if err := s.validateExtractRequest(req); err != nil {
+		return nil, err
+	}
+
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
 	}
 
 	job := &models.AIQuestionGenerationJob{
 		ID:         models.GenerateID(),
-		UserID:     "",
+		UserID:     userID,
 		SubjectID:  req.SubjectID,
 		SourceText: req.Text,
 		Status:     "queued",
@@ -813,15 +850,17 @@ func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto
 	}
 
 	payload := map[string]interface{}{
-		"job_id":    job.ID,
-		"type":      "extract",
-		"text":      req.Text,
-		"school":    req.SchoolID,
-		"session":   req.SessionID,
-		"term":      req.TermID,
-		"class":     req.ClassLevelID,
-		"subject":   req.SubjectID,
-		"exam_type": req.ExamType,
+		"job_id":        job.ID,
+		"type":          "extract",
+		"text":          req.Text,
+		"user_id":       userID,
+		"school":        req.SchoolID,
+		"session":       req.SessionID,
+		"term":          req.TermID,
+		"class_level":   req.ClassLevelID,
+		"class":         req.ClassID,
+		"subject":       req.SubjectID,
+		"exam_type":     req.ExamType,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -855,6 +894,227 @@ func (s *QuestionService) GetJobStatus(ctx context.Context, jobID string) (*dto.
 		CreatedAt:    job.CreatedAt,
 		CompletedAt:  job.CompletedAt,
 	}, nil
+}
+
+// ============================================
+// SYNCHRONOUS, REVIEW-FIRST AI GENERATION
+//
+// Unlike GenerateQuestionsWithAI/ExtractQuestionsFromText above (which
+// enqueue a job that auto-saves to the question bank once the worker
+// finishes), these never write to the database. They return drafts for the
+// teacher to review/edit; nothing reaches the question bank until the
+// teacher explicitly saves the approved drafts via BulkCreateQuestionsFromJSON.
+// ============================================
+
+// ExtractLessonStructure extracts structured lesson/topic data from raw text
+// for teacher review (Stage C). It does not persist anything.
+func (s *QuestionService) ExtractLessonStructure(ctx context.Context, req *dto.ExtractLessonRequest, userID string) (*dto.ExtractLessonResponse, error) {
+	// class_id isn't known yet at this stage of the workflow (context
+	// selection may not have reached class level), so only role is checked
+	// here; the later generate/save steps re-check against the specific
+	// class the teacher ultimately picks via authorizeQuestionWrite.
+	if err := s.authorizeRoleOnly(userID); err != nil {
+		return nil, err
+	}
+
+	trimmed := strings.TrimSpace(req.Text)
+	if len(trimmed) < 50 {
+		return nil, errors.New("text is too short to extract meaningful lesson structure (minimum 50 characters)")
+	}
+	const maxExtractChars = 50000
+	if len(trimmed) > maxExtractChars {
+		trimmed = trimmed[:maxExtractChars]
+	}
+
+	prompt := engine.BuildLessonExtractionPrompt(trimmed)
+	raw, err := s.engine.Router().Generate(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("AI lesson extraction failed: %w", err)
+	}
+
+	var lessons []dto.ExtractedLessonItem
+	if err := json.Unmarshal([]byte(raw), &lessons); err != nil {
+		return nil, fmt.Errorf("AI returned an unparsable response for lesson extraction: %w", err)
+	}
+
+	resp := &dto.ExtractLessonResponse{Lessons: lessons}
+	if len(lessons) == 0 {
+		resp.Warning = "No lesson structure could be identified in the supplied text. Try uploading a more detailed lesson plan or scheme of work, or enter topics manually."
+	}
+	return resp, nil
+}
+
+// GenerateGroundedQuestions generates draft questions grounded in
+// teacher-approved lesson content, for teacher review (Stage D). It never
+// persists anything - the teacher must save approved drafts separately via
+// POST /questions/bulk.
+func (s *QuestionService) GenerateGroundedQuestions(ctx context.Context, req *dto.GenerateGroundedQuestionsRequest, userID string) (*dto.GenerateGroundedQuestionsResponse, error) {
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
+		return nil, err
+	}
+
+	// Build one (difficulty, count) bucket per entry in DifficultyDistribution,
+	// or a single bucket from the flat Difficulty/NumberOfQuestions fields.
+	type bucket struct {
+		difficulty string
+		count      int
+	}
+	var buckets []bucket
+	if len(req.DifficultyDistribution) > 0 {
+		for difficulty, count := range req.DifficultyDistribution {
+			if count <= 0 {
+				continue
+			}
+			if err := s.validateDifficulty(difficulty); err != nil {
+				return nil, fmt.Errorf("difficulty_distribution: %w", err)
+			}
+			buckets = append(buckets, bucket{difficulty: difficulty, count: count})
+		}
+		if len(buckets) == 0 {
+			return nil, errors.New("difficulty_distribution must contain at least one positive count")
+		}
+	} else {
+		count := req.NumberOfQuestions
+		if count < 1 {
+			count = 5
+		}
+		difficulty := req.Difficulty
+		if difficulty == "" {
+			difficulty = "medium"
+		}
+		buckets = []bucket{{difficulty: difficulty, count: count}}
+	}
+
+	bloomLevel := req.BloomLevel
+	if bloomLevel == "" {
+		bloomLevel = "understand"
+	}
+
+	requestedTotal := 0
+	var allQuestions []engine.Question
+	var allStatuses []string
+	for _, b := range buckets {
+		requestedTotal += b.count
+		examCtx := engine.ExamContext{
+			SchoolID:          req.SchoolID,
+			ClassLevelID:      req.ClassLevelID,
+			SubjectID:         req.SubjectID,
+			Topic:             req.Topic,
+			SubTopic:          req.SubTopic,
+			NumberOfQuestions: b.count,
+			Difficulty:        b.difficulty,
+			BloomLevel:        bloomLevel,
+			CurriculumType:    req.CurriculumType,
+			SourceText:        req.SourceText,
+			Keywords:          req.Keywords,
+			ExistingQuestions: allQuestions, // dedupe against questions already generated in this request
+		}
+
+		questions, results, err := s.engine.GenerateExam(ctx, examCtx)
+		if err != nil {
+			return nil, fmt.Errorf("AI question generation failed: %w", err)
+		}
+		for i, q := range questions {
+			status := "approved"
+			if i < len(results) {
+				status = results[i].Status
+			}
+			allQuestions = append(allQuestions, q)
+			allStatuses = append(allStatuses, status)
+		}
+	}
+
+	drafts := make([]dto.GeneratedQuestionDraft, 0, len(allQuestions))
+	for idx, q := range allQuestions {
+		status := allStatuses[idx]
+		drafts = append(drafts, dto.GeneratedQuestionDraft{
+			QuestionText:      q.QuestionText,
+			QuestionType:      mapEngineQuestionType(q.Type, q.CorrectOptionKeys),
+			Options:           convertEngineOptions(q.Options),
+			CorrectOptionKeys: q.CorrectOptionKeys,
+			Explanation:       q.Explanation,
+			Marks:             q.Marks,
+			Difficulty:        q.Difficulty,
+			BloomLevel:        q.BloomLevel,
+			Topic:             q.Topic,
+			SubTopic:          q.SubTopic,
+			LearningObjective: q.LearningObjective,
+			Rubric:            convertEngineRubric(q.Rubric),
+			ValidationStatus:  status,
+		})
+	}
+
+	resp := &dto.GenerateGroundedQuestionsResponse{
+		Questions:      drafts,
+		RequestedCount: requestedTotal,
+		GeneratedCount: len(drafts),
+		Persisted:      false,
+	}
+	if len(drafts) == 0 {
+		resp.Warning = "AI generation produced no usable questions. This can happen when the source text is too short or off-topic, or when no AI provider is currently available. Try more detailed source material, or create questions manually."
+	} else if len(drafts) < requestedTotal {
+		resp.Warning = fmt.Sprintf("Only %d of the requested %d questions passed generation and validation. Review the questions below, or generate more to make up the difference.", len(drafts), requestedTotal)
+	}
+	return resp, nil
+}
+
+// authorizeRoleOnly checks that the caller is a teacher/admin/super_admin
+// without requiring a specific class (used at workflow stages before a
+// class has been selected yet).
+func (s *QuestionService) authorizeRoleOnly(userID string) error {
+	if userID == "" {
+		return errors.New("unauthorized: user not authenticated")
+	}
+	user, err := s.userRepo.FindByID(userID)
+	if err != nil {
+		return errors.New("unauthorized: user not found")
+	}
+	switch user.Role {
+	case models.RoleAdmin, models.RoleSuperAdmin, models.RoleTeacher:
+		return nil
+	default:
+		return errors.New("unauthorized: only teachers and admins may use the question-generation workflow")
+	}
+}
+
+func mapEngineQuestionType(engineType string, correctKeys []string) string {
+	switch engineType {
+	case "mcq":
+		if len(correctKeys) > 1 {
+			return dto.QuestionTypeMultiple
+		}
+		return dto.QuestionTypeSingle
+	case "true_false":
+		return dto.QuestionTypeTrueFalse
+	case "essay":
+		return dto.QuestionTypeEssay
+	case "fill_blank":
+		return dto.QuestionTypeFillBlank
+	default:
+		return dto.QuestionTypeSingle
+	}
+}
+
+func convertEngineOptions(opts []engine.Option) []dto.QuestionOption {
+	if len(opts) == 0 {
+		return nil
+	}
+	out := make([]dto.QuestionOption, len(opts))
+	for i, o := range opts {
+		out[i] = dto.QuestionOption{Key: o.Key, Text: o.Text}
+	}
+	return out
+}
+
+func convertEngineRubric(rubric []engine.Rubric) []dto.RubricCriteria {
+	if len(rubric) == 0 {
+		return nil
+	}
+	out := make([]dto.RubricCriteria, len(rubric))
+	for i, r := range rubric {
+		out[i] = dto.RubricCriteria{Criteria: r.Criteria, Marks: r.Marks}
+	}
+	return out
 }
 
 // ============================================
@@ -1311,6 +1571,49 @@ func (s *QuestionService) validateExtractRequest(req *dto.ExtractTextQuestionsRe
 // ============================================
 // PERMISSION FUNCTIONS
 // ============================================
+
+// authorizeQuestionWrite verifies the authenticated caller is actually allowed
+// to create/import a question under the given school/class, instead of trusting
+// the school_id/class_id supplied in the request body. Admins and super admins
+// are trusted platform-wide (matching the admin posture already used elsewhere
+// in this codebase, e.g. admin_service.go, which has no per-school scoping);
+// teachers must be the assigned teacher of the class (the same ownership check
+// already used throughout teacher_service.go via Class.TeacherID).
+func (s *QuestionService) authorizeQuestionWrite(userID, schoolID, classID string) error {
+	if userID == "" {
+		return errors.New("unauthorized: user not authenticated")
+	}
+
+	user, err := s.userRepo.FindByID(userID)
+	if err != nil {
+		return errors.New("unauthorized: user not found")
+	}
+
+	switch user.Role {
+	case models.RoleAdmin, models.RoleSuperAdmin:
+		return nil
+	case models.RoleTeacher:
+		// fall through to the class-ownership check below
+	default:
+		return errors.New("unauthorized: only teachers and admins may manage the question bank")
+	}
+
+	if classID == "" {
+		return errors.New("unauthorized: class_id is required")
+	}
+	class, err := s.classRepo.FindByID(classID)
+	if err != nil {
+		return errors.New("unauthorized: class not found")
+	}
+	if class.TeacherID == nil || *class.TeacherID != userID {
+		return errors.New("unauthorized: you are not the assigned teacher for this class")
+	}
+	if schoolID != "" && class.SchoolID != schoolID {
+		return errors.New("unauthorized: class does not belong to the specified school")
+	}
+
+	return nil
+}
 
 func (s *QuestionService) checkQuestionOwnership(q *models.QuestionBank, userID string) error {
 	if userID == "" {
