@@ -460,3 +460,240 @@ what's known so far).
   tests - this is the single most consequential finding and fix of this
   session, since it could have let *any* exam silently produce
   impossible or wrongly-passing results.
+
+## 14. Follow-up session: manual grading, LAN conflict resolution, genuine offline verification
+
+Continuing directly from §12's priority list (manual grading → LAN conflict
+resolution → genuine offline-reload/offline-exam tests, in that order).
+`cbt-api` HEAD at session start: `123f853`; `elias-cbt-portal` HEAD:
+`604730a`. All five previously-cited fixes (grading integrity, MarkReview
+time-limit, student-route middleware, JWT security tests, PWA proxy
+allowlist) were re-confirmed present before any new work started.
+
+### 14a. Manual/essay grading - implemented, fully live-verified
+
+Implemented using the **existing** `ExamAttempt`/`StudentAnswer`/`Result`
+models - no second grading system. Changes:
+
+- `models.StudentAnswer`: added `MarksAwarded *int`, `MarkedBy *string`,
+  `MarkedAt *time.Time`, `MarkerFeedback string` (nil `MarksAwarded` means
+  "not yet marked" - distinct from a legitimate 0-mark score).
+- `models.Result`: added `FullyGraded bool` (`default:true`, so every
+  pre-existing, necessarily-all-objective row backfills correctly).
+- New `AttemptStatusPendingManualMarking` status value. Chosen over a
+  boolean flag specifically so every pre-existing "completed-only" query
+  (dashboards, class results, rankings) excludes a not-yet-fully-marked
+  attempt with **zero** changes to those call sites.
+- `ExamService.gradeAnswer()`: one shared helper now used by `AutoSave`,
+  `SaveAnswer`, and `BulkSaveAnswers` alike. Found and fixed a genuine
+  pre-existing bug while unifying this: `AutoSave` never set `IsCorrect`
+  at all.
+- New `GetPendingManualMarking`/`MarkDescriptiveAnswer` service methods,
+  `GET /exams/marking/pending` and `POST /exams/marking/grade` routes
+  (teacher/admin/super_admin, plus a class-ownership check mirroring the
+  existing `authorizeQuestionWrite` pattern - a teacher cannot mark another
+  teacher's class).
+- `SubmitExam` rewritten to branch per question: objective questions score
+  immediately as before; an essay question with no rubric-independent
+  auto-score sets `needsManualMarking`, and the attempt's final status
+  becomes `pending_manual_marking` (not `completed`) when any essay answer
+  is still unmarked.
+- `finalizeMarkingForAttempt`: recomputes total score/percentage/grade/
+  passed from every `StudentAnswer` row (same formula as the earlier
+  grading-integrity fix) once a marker submits a score, and flips the
+  attempt to `completed` once nothing remains unmarked.
+
+**Live-verified end to end** against the real API/Postgres (not just unit
+tests): created an exam with 4 objective + 1 essay question → student
+submitted → attempt correctly `pending_manual_marking` with a provisional
+score, correctly absent from the dashboard's completed list → a teacher
+saw it in `/marking/pending` with the full essay text → an unauthorized
+teacher and a student were both correctly rejected (403) → an out-of-range
+score was correctly rejected (400) → the authorized teacher marked it →
+attempt correctly became `completed`, combined score 16/18 = 88.89%,
+correctly now visible on the dashboard and cleared from the pending list.
+7 new regression tests cover invalid scores, wrong-teacher rejection,
+student rejection, admin bypass of class ownership, and idempotent
+re-marking. Committed as `fc75fb9`.
+
+### 14b. LAN sync conflict detection - implemented, unit-verified
+
+§8's disclosed gap ("conflict handling is unconditional last-write-wins...
+no detection") is now closed with **status-rank-based** conflict
+detection, deliberately **not** timestamp-based - a School Node's clock
+cannot be trusted to agree with the cloud server's, so timestamps alone
+would be exactly the unreliable signal the directive warned against.
+
+- `attemptStatusRank`: a fixed lifecycle order (`in_progress` <
+  `submitted` < `pending_manual_marking` < `completed`/`graded`). An
+  incoming session push is rejected if it would move the stored attempt
+  *backward* in this ranking, regardless of what timestamp it carries -
+  this is what makes a final submission impossible for a delayed/
+  out-of-order sync to silently revert.
+- Answer pushes: a genuine conflict (the incoming value differs from what's
+  stored AND the parent attempt has already moved past `in_progress`) is
+  rejected and logged; a brand-new answer or an identical retry is always
+  accepted, so idempotent retries keep working. (The first implementation
+  checked attempt-status before checking whether the answer already
+  existed and differed, which rejected every legitimate first-time answer
+  pushed alongside an already-finalized attempt in the same batch - caught
+  and fixed before any test or commit.)
+- Result pushes: rejected if the stored result is already `FullyGraded`
+  and the incoming values differ; an identical retry still succeeds.
+  `ResultPush`'s DTO gained a `FullyGraded` field - its absence would have
+  silently zeroed this flag on the cloud side on every push, corrupting
+  exactly the field manual grading (§14a) depends on.
+- Every rejection is logged (`zap.Warn`) with the record type, ID, and the
+  specific reason, satisfying "define how conflicts are resolved and
+  logged."
+
+6 new tests (session-downgrade-rejected, session-advance-accepted,
+answer-conflict-rejected, answer-identical-retry-accepted,
+result-overwrite-rejected, result-identical-retry-accepted) all pass
+against a real SQLite-backed `NodeSyncService`, not mocks. Full
+`go build`/`go vet`/`go test ./...`/`go test -race` all pass. **Not**
+additionally re-verified at the live HTTP layer (`POST /nodesync/push`)
+this session - that would need seeding a school-node API key plus
+attempt/answer/result rows through several more entity layers, and the
+service-layer tests already exercise the real conflict logic against a
+real database, not a mock. Committed and pushed as `83dcdfd`.
+
+### 14c. Offline PWA reload - root-caused with genuine (non-emulated) evidence, fix attempted and reverted
+
+The prior session's open question (§6) was whether the "zero responses
+served offline" result was a DevTools-Protocol-emulation artifact or a
+real defect. This session built a **real, non-emulated** offline test
+specifically to answer that: a Linux network namespace (`offlinetest`)
+connected to the root namespace by a veth pair, with `socat` relays so the
+production build's hardcoded `localhost:3000`/`localhost:8080` URLs work
+unmodified. "Going offline" is `ip link set veth-off down` - an actual
+kernel-level link-down, the same primitive used when a real network
+adapter is disabled, not `context.set_offline()` or
+`Network.emulateNetworkConditions`.
+
+**Result: the same failure reproduces with a genuine disconnect.** With
+the service worker confirmed `activated` and `controller: true`, and
+Cache Storage confirmed populated (257 precache entries), reloading a
+live, previously-visited exam-attempt page while genuinely offline
+produced **zero** response/request events of any kind within 20+ seconds
+and the page never rendered. This rules out the "it's just a Playwright/
+DevTools quirk" explanation the prior session could not rule out.
+
+**Root cause, found and confirmed live**: the exam-attempt page
+(`/dashboard/student/exams/[examId]/attempt/[attemptId]`) is served with
+`Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`
+(confirmed via the actual response header on a real navigation) - Next.js
+App Router's default for a route with dynamic segments and no
+`generateStaticParams`. The service worker's own catch-all `NetworkFirst`
+"pages-cache" route (in `public/sw.js`) therefore has nothing to ever
+cache for this exact URL: `caches.match()` for this URL returned empty
+even after multiple online visits/reloads, so when offline, NetworkFirst
+has no fallback to serve and the navigation simply never resolves.
+
+**Fix attempted, found to need a larger change than this pass should risk,
+and reverted**: `export const dynamic = 'force-static'` on the page had no
+effect on the header (verified live - still `no-store`). `export const
+revalidate = 3600` (the documented correct directive for caching a
+per-request dynamic-segment page without `generateStaticParams`) **broke
+the page with a live HTTP 500** - Next.js 16 does not allow the
+`revalidate` route-segment-config export in a file that also has `'use
+client'` at the top (confirmed via the real server's error log:
+`Invalid revalidate value "function(){throw Error(...revalidate is on the
+client...)}"`). This page is a 17,800+ line client component; the correct
+fix is the standard Next.js pattern of splitting it into a thin **server**
+`page.tsx` (holding the `revalidate` export) that renders the existing
+code as a separate client component - a real, mechanical, but non-trivial
+refactor of the single highest-stakes page in the app (the one students
+are actively taking timed exams on). Given the size and blast radius,
+this was not attempted blind under this session's time budget. The broken
+`revalidate` export was reverted immediately; `elias-cbt-portal`'s working
+tree is clean, back to `604730a` (confirmed via `git diff`), and `npm run
+build`/`npx tsc --noEmit` both pass on the reverted state. **No fix is
+deployed for this gap** - it is accurately `Still broken, root cause
+known, fix path identified but not yet implemented`.
+
+**Separately confirmed still true and unaffected by the above**: the app
+survives connectivity loss fine *as long as the tab is not reloaded*
+(§14d) - this reload-specific gap only affects a full page reload/restart
+while already offline, not an in-progress exam session that stays open.
+
+### 14d. Complete offline exam lifecycle, public internet genuinely disabled - verified
+
+Using the same real (non-LAN-fallback, kernel-level-disconnect) namespace
+as §14c, without ever reloading the page (since §14c establishes that path
+is currently broken): logged in and started an exam online; answered one
+question online; brought the network namespace's interface **down**
+(confirmed via a raw probe through the same relay returning nothing -
+genuine disconnect, not "LAN still reachable"); attempted to save a second
+answer and attempted to submit, both while genuinely offline - both failed
+cleanly with a client-side abort/network error, **no corrupted or partial
+write reached the server** (confirmed: the attempt's `answered_count`
+stayed at exactly 1, matching only what had actually reached the server
+before going offline); the already-loaded page's `document.readyState`
+stayed `complete` throughout (no crash) and its local IndexedDB databases
+(`CBTDatabase`, `ExamOfflineDB`) remained present; reconnected (interface
+back up, confirmed via a real health-check response); submitted for real
+online - correct grading (2 of 5 questions answered correctly, 10/25 =
+40%, grade E, matching the known-correct answers); submitting the same
+already-completed attempt a second time returned the **identical** stored
+result (same `result_id`, score, `submitted_at`) rather than re-grading or
+erroring, confirming the existing duplicate-submission protection holds
+under this exact offline-then-reconnect sequence.
+
+**Not covered by this pass**: the app's own internal Dexie/IndexedDB sync
+queue (`saveAnswerWithTransaction` + the sync manager that drains it on
+reconnect) was not exercised end-to-end - this test called the real API
+directly from the page's JS context to get a clean, unambiguous signal
+about server-side data integrity under genuine disconnection, rather than
+going through the UI's click path. Whether an answer saved through the
+*actual UI* while offline is queued and auto-synced on reconnect (as
+opposed to simply failing cleanly, which is what was proven) remains
+unverified by this specific test, though it was already shown working in
+the prior session via Playwright's `context.set_offline()` with the tab
+kept open (§3e of `OFFLINE-FIRST-COMPLETION-REPORT.md`) - not re-verified
+here with a genuine kernel-level disconnect specifically.
+
+### 14e. Regression gates re-run this session
+
+| Suite | Result |
+|---|---|
+| `cbt-api`: `go build ./...` | pass |
+| `cbt-api`: `go vet ./...` | pass, no findings |
+| `cbt-api`: `go test ./...` | pass (all packages, including 7 new manual-marking tests and 6 new nodesync conflict tests) |
+| `cbt-api`: `go test -race ./internal/cbt/service/... ./internal/sync/... ./internal/nodesync/...` | pass, no races |
+| `cbt-api`: JWT signing-secret fix | re-checked - still reads `JWT_SECRET` with the same production-startup refusal in both `config.go` and the actual signing path `pkg/utils/utils.go`; no hardcoded fallback has returned |
+| `elias-cbt-portal`: `npx tsc --noEmit` | 0 errors (reverted state) |
+| `elias-cbt-portal`: `npm run build` (webpack, PWA gen) | pass (reverted state) |
+
+### 14f. Updated priority list
+
+1. **Offline-reload fix** (§14c): split the exam-attempt page into a
+   thin server `page.tsx` (carrying `export const revalidate`) + a client
+   component holding the existing logic, then re-run the exact genuine
+   (kernel-level-disconnect) reload test in this report to confirm the
+   service worker actually serves it offline.
+2. Exercise the app's own Dexie-queue auto-sync path specifically under a
+   genuine kernel-level disconnect (§14d's one explicitly-undone item).
+3. Live HTTP-layer verification of the nodesync conflict-detection logic
+   (§14b) against the real running API, beyond the service-layer tests.
+4. Everything still outstanding from §12 that this session did not touch:
+   duplicate-question detection beyond exact-text matching, Electron code
+   signing, dead-code deletion, broader LAN hardware testing.
+
+### 14g. What this session does not claim
+
+- Does not claim offline PWA reload works - §14c documents a real,
+  reproduced failure with a known root cause and an identified-but-not-yet-
+  safely-implemented fix, not a pass.
+- Does not claim the LAN conflict-detection logic has been exercised
+  through the live HTTP API, only through real-database service-layer
+  tests.
+- Does not claim the app's internal offline-sync-queue path was
+  re-verified under a genuine (non-CDP-emulated) disconnect - only that
+  raw, direct API calls fail safely under one, and that the queue path
+  itself was shown working under CDP-level offline emulation in the prior
+  session.
+- Manual/essay grading (§14a) and the exam-submission/duplicate-protection
+  behavior under genuine offline-then-reconnect (§14d) are the two
+  findings in this session backed by full live, non-simulated
+  verification end to end.
