@@ -125,22 +125,7 @@ func main() {
 	r := gin.Default()
 
 	// Global middleware
-	r.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		// Idempotency-Key and X-Operation-Id are sent by the offline sync
-		// client (src/lib/storage/sync/cloudSync.ts, lanSync.ts) on every
-		// POST to /api/v1/sync/:type. Without them here, the browser's CORS
-		// preflight succeeds (OPTIONS -> 204) but the actual POST is never
-		// sent - fetch() surfaces this as an opaque network error with no
-		// further detail, which the sync client's catch-all then reports as
-		// a generic REJECTED/NETWORK_ERROR indistinguishable from being
-		// genuinely offline.
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key", "X-Operation-Id"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	r.Use(cors.New(corsConfig()))
 	r.Use(middleware.LoggerMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
 
@@ -221,6 +206,29 @@ func main() {
 	}
 
 	log.Println("✅ Server shutdown complete")
+}
+
+// corsConfig is the CORS configuration applied to every route. Extracted
+// from main() so the exact config the server runs can be exercised by an
+// HTTP-layer test (cmd/server/main_test.go) without starting the full
+// app (DB, Redis, AI workers).
+func corsConfig() cors.Config {
+	return cors.Config{
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		// Idempotency-Key and X-Operation-Id are sent by the offline sync
+		// client (src/lib/storage/sync/cloudSync.ts, lanSync.ts) on every
+		// POST to /api/v1/sync/:type. Without them here, the browser's CORS
+		// preflight succeeds (OPTIONS -> 204) but the actual POST is never
+		// sent - fetch() surfaces this as an opaque network error with no
+		// further detail, which the sync client's catch-all then reports as
+		// a generic REJECTED/NETWORK_ERROR indistinguishable from being
+		// genuinely offline.
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key", "X-Operation-Id"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
 }
 
 // Helper function to mask API keys for logging
