@@ -1,9 +1,10 @@
 package handler
 
 import (
-	// "context" 
+	// "context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/service"
@@ -1224,6 +1225,86 @@ func (h *ExamHandler) AutoSave(c *gin.Context) {
 		switch err.Error() {
 		case "time limit exceeded", "unauthorized", "exam already submitted":
 			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   resp,
+	})
+}
+
+// GetPendingManualMarking godoc
+// @Summary      List essay/descriptive answers awaiting manual marking
+// @Tags         Marking
+// @Produce      json
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/marking/pending [get]
+func (h *ExamHandler) GetPendingManualMarking(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	resp, err := h.examService.GetPendingManualMarking(c.Request.Context(), userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.HasPrefix(err.Error(), "unauthorized") {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   resp,
+	})
+}
+
+// MarkDescriptiveAnswer godoc
+// @Summary      Record a manual score for one essay/descriptive answer
+// @Tags         Marking
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.MarkAnswerRequest true "Mark answer request"
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/marking/grade [post]
+func (h *ExamHandler) MarkDescriptiveAnswer(c *gin.Context) {
+	var req dto.MarkAnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	resp, err := h.examService.MarkDescriptiveAnswer(c.Request.Context(), &req, userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case strings.HasPrefix(err.Error(), "unauthorized"):
+			status = http.StatusForbidden
+		case strings.Contains(err.Error(), "not found"):
+			status = http.StatusNotFound
+		case strings.Contains(err.Error(), "must be between"),
+			strings.Contains(err.Error(), "only essay"),
+			strings.Contains(err.Error(), "has not been submitted"):
+			status = http.StatusBadRequest
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
 		return

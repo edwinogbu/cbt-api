@@ -137,6 +137,16 @@ const (
 	AttemptStatusCompleted  AttemptStatus = "completed"
 	AttemptStatusSubmitted  AttemptStatus = "submitted"
 	AttemptStatusGraded     AttemptStatus = "graded"
+	// AttemptStatusPendingManualMarking: SubmitExam reaches this instead
+	// of AttemptStatusCompleted when the exam contains at least one
+	// essay/descriptive question still missing a MarksAwarded value.
+	// Every existing query that gates visibility/results/rankings on
+	// status == AttemptStatusCompleted (GetCompletedAttemptsByStudent,
+	// class results, exam statistics, etc.) already naturally excludes
+	// an attempt in this state without any further changes - that's the
+	// whole reason this is a new status value rather than a new boolean
+	// flag layered on top of "completed".
+	AttemptStatusPendingManualMarking AttemptStatus = "pending_manual_marking"
 
 	ViolationTypeTabSwitch   ViolationType = "tab_switch"
 	ViolationTypeCopyPaste   ViolationType = "copy_paste"
@@ -473,6 +483,17 @@ type StudentAnswer struct {
 	EssayResponse      string         `gorm:"type:text" json:"essay_response,omitempty"`
 	IsCorrect          bool           `gorm:"type:boolean;default:false" json:"is_correct"`
 	IsMarked           bool           `gorm:"type:boolean;default:false" json:"is_marked"`
+	// MarksAwarded/MarkedBy/MarkedAt/MarkerFeedback support manual
+	// marking of essay/descriptive answers (IsCorrect is a bool and
+	// can't express partial credit). nil means "not yet marked" - for
+	// an objective question it simply stays nil forever (its score is
+	// derived from IsCorrect+the question's marks, same as before this
+	// was added); for an essay question it's the authoritative score
+	// once a marker sets it.
+	MarksAwarded       *int           `gorm:"type:integer" json:"marks_awarded,omitempty"`
+	MarkedBy           *string        `gorm:"type:uuid" json:"marked_by,omitempty"`
+	MarkedAt           *time.Time     `json:"marked_at,omitempty"`
+	MarkerFeedback     string         `gorm:"type:text" json:"marker_feedback,omitempty"`
 	TimeSpent          int            `gorm:"type:integer" json:"time_spent"`
 	SyncedAt           *time.Time     `json:"synced_at,omitempty"`
 	SyncedToCloudAt    *time.Time     `json:"synced_to_cloud_at,omitempty"` // see ExamAttempt.SyncedToCloudAt
@@ -491,6 +512,14 @@ type Result struct {
 	Grade       string         `gorm:"type:varchar(10)" json:"grade"`
 	Remarks     string         `gorm:"type:text" json:"remarks"`
 	Passed      bool       `gorm:"index"` // ✅ Make sure this field exists
+	// FullyGraded is false for a Result created while the exam still had
+	// essay/descriptive answers awaiting a manual score - TotalScore/
+	// Percentage/Grade/Passed in that state reflect objective questions
+	// only (essay contributes 0 until marked) and are provisional, not
+	// final. Defaults true via the gorm tag so every pre-existing Result
+	// (all of them necessarily fully objective-graded, since this field
+	// didn't exist before) backfills correctly on migration.
+	FullyGraded bool           `gorm:"type:boolean;default:true" json:"fully_graded"`
 	PublishedAt *time.Time     `json:"published_at"`
 	SyncedToCloudAt *time.Time `json:"synced_to_cloud_at,omitempty"` // see ExamAttempt.SyncedToCloudAt
 	CreatedAt   time.Time      `json:"created_at"`

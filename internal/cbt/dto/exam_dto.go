@@ -1365,3 +1365,50 @@ func GetQuestionCountRange(examType string) (min, max int) {
         return 5, 100 // Safe fallback
     }
 }
+
+// ============================================
+// MANUAL / ESSAY MARKING DTOs
+// ============================================
+
+// PendingMarkingItem is one essay/descriptive answer awaiting a manual
+// score, scoped to exams the requesting marker is authorized for.
+type PendingMarkingItem struct {
+    AttemptID     string     `json:"attempt_id"`
+    QuestionID    string     `json:"question_id"`
+    ExamID        string     `json:"exam_id"`
+    ExamTitle     string     `json:"exam_title"`
+    StudentID     string     `json:"student_id"`
+    StudentName   string     `json:"student_name"`
+    QuestionText  string     `json:"question_text"`
+    EssayResponse string     `json:"essay_response"`
+    MaxMarks      int        `json:"max_marks"`
+    SubmittedAt   *time.Time `json:"submitted_at"`
+}
+
+type ListPendingMarkingResponse struct {
+    Items []PendingMarkingItem `json:"items"`
+    Total int                  `json:"total"`
+}
+
+// MarkAnswerRequest scores one essay/descriptive answer. MarksAwarded
+// must fall within [0, the question's own Marks] - validated in the
+// service layer against the real question record, not just a generic
+// "min=0" tag, since the upper bound varies per question.
+type MarkAnswerRequest struct {
+    AttemptID    string `json:"attempt_id" binding:"required,uuid"`
+    QuestionID   string `json:"question_id" binding:"required,uuid"`
+    MarksAwarded int    `json:"marks_awarded" binding:"min=0"`
+    Feedback     string `json:"feedback"`
+}
+
+type MarkAnswerResponse struct {
+    AttemptID      string  `json:"attempt_id"`
+    QuestionID     string  `json:"question_id"`
+    MarksAwarded   int     `json:"marks_awarded"`
+    MaxMarks       int     `json:"max_marks"`
+    AttemptStatus  string  `json:"attempt_status"`
+    FullyGraded    bool    `json:"fully_graded"`
+    TotalScore     int     `json:"total_score"`
+    Percentage     float64 `json:"percentage"`
+    Passed         bool    `json:"passed"`
+}

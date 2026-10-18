@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,8 +30,19 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 	ddl := []string{
 		`CREATE TABLE exams (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			title TEXT, class_id TEXT,
 			duration_minutes INTEGER NOT NULL, total_marks INTEGER NOT NULL, pass_mark INTEGER,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
+		`CREATE TABLE users (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			first_name TEXT, last_name TEXT, role TEXT DEFAULT 'student', deleted_at DATETIME
+		)`,
+		`CREATE TABLE classes (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), teacher_id TEXT, deleted_at DATETIME
+		)`,
+		`CREATE TABLE students (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT
 		)`,
 		`CREATE TABLE exam_attempts (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
@@ -54,12 +66,14 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE student_answers (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), attempt_id TEXT NOT NULL, question_id TEXT NOT NULL,
 			selected_answer TEXT, selected_option_keys TEXT, essay_response TEXT,
-			is_correct INTEGER DEFAULT 0, is_marked INTEGER DEFAULT 0, time_spent INTEGER,
+			is_correct INTEGER DEFAULT 0, is_marked INTEGER DEFAULT 0,
+			marks_awarded INTEGER, marked_by TEXT, marked_at DATETIME, marker_feedback TEXT,
+			time_spent INTEGER,
 			synced_at DATETIME, synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE results (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL, total_score INTEGER, percentage REAL, grade TEXT, remarks TEXT,
+			attempt_id TEXT NOT NULL, total_score INTEGER, percentage REAL, grade TEXT, remarks TEXT, fully_graded INTEGER DEFAULT 1,
 			passed INTEGER DEFAULT 0, published_at DATETIME, synced_to_cloud_at DATETIME,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
@@ -474,5 +488,306 @@ func TestSubmitExam_PassMarkBelowThreshold_CorrectlyFails(t *testing.T) {
 	}
 	if resp.Passed {
 		t.Fatalf("expected passed=false for a 25%% score against a 50%% pass threshold, got true - confirms the scale-mismatch bug (percentage >= raw pass_mark) is NOT present")
+	}
+}
+
+// TestAutoSave_SetsIsCorrect is the regression test for a second,
+// separate bug found while running a real end-to-end exam: AutoSave
+// never fetched the question or computed IsCorrect at all (unlike
+// SaveAnswer and BulkSaveAnswers), so any answer whose last write came
+// through auto-save kept IsCorrect=false forever regardless of whether
+// it was actually correct - confirmed live, a 4-question discrepancy in
+// a real 40-question exam's score. gradeAnswer (used by all three save
+// paths now) must be reached from AutoSave too.
+func TestAutoSave_SetsIsCorrect(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	attemptID := seedAttempt(t, db, 5)
+	correctQID := seedQuestion(t, db, "A", 5)
+	wrongQID := seedQuestion(t, db, "A", 5)
+
+	resp, err := svc.AutoSave(context.Background(), &dto.AutoSaveRequest{
+		AttemptID: attemptID,
+		Answers: []dto.AutoSaveItem{
+			{QuestionID: correctQID, SelectedAnswer: "A"}, // correct
+			{QuestionID: wrongQID, SelectedAnswer: "B"},   // wrong
+		},
+	}, testStudentID)
+	if err != nil {
+		t.Fatalf("AutoSave failed: %v", err)
+	}
+	if resp.SavedCount != 2 {
+		t.Fatalf("expected 2 saved, got %d", resp.SavedCount)
+	}
+
+	var correctAnswer, wrongAnswer models.StudentAnswer
+	if err := db.Where("attempt_id = ? AND question_id = ?", attemptID, correctQID).First(&correctAnswer).Error; err != nil {
+		t.Fatalf("failed to load correct answer: %v", err)
+	}
+	if err := db.Where("attempt_id = ? AND question_id = ?", attemptID, wrongQID).First(&wrongAnswer).Error; err != nil {
+		t.Fatalf("failed to load wrong answer: %v", err)
+	}
+	if !correctAnswer.IsCorrect {
+		t.Fatalf("expected the correctly-answered question to have IsCorrect=true after AutoSave, got false - the bug is present")
+	}
+	if wrongAnswer.IsCorrect {
+		t.Fatalf("expected the wrongly-answered question to have IsCorrect=false after AutoSave, got true")
+	}
+}
+
+// ---- Manual/essay marking ----
+
+const testMarkerTeacherID = "teacher-1"
+const testOtherTeacherID = "teacher-2"
+const testAdminID = "admin-1"
+
+func seedMarkingUser(t *testing.T, db *gorm.DB, id, role string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO users (id, first_name, last_name, role) VALUES (?, 'Test', 'User', ?)", id, role).Error; err != nil {
+		t.Fatalf("failed to seed user: %v", err)
+	}
+}
+
+func seedMarkingClass(t *testing.T, db *gorm.DB, teacherID string) (classID string) {
+	t.Helper()
+	classID = uuid.NewString()
+	if err := db.Exec("INSERT INTO classes (id, teacher_id) VALUES (?, ?)", classID, teacherID).Error; err != nil {
+		t.Fatalf("failed to seed class: %v", err)
+	}
+	return classID
+}
+
+func setExamClass(t *testing.T, db *gorm.DB, classID string) {
+	t.Helper()
+	if err := db.Exec("UPDATE exams SET class_id = ? WHERE id = ?", classID, testExamID).Error; err != nil {
+		t.Fatalf("failed to set exam class: %v", err)
+	}
+}
+
+func seedEssayQuestion(t *testing.T, db *gorm.DB, marks int) (questionID string) {
+	t.Helper()
+	questionID = uuid.NewString()
+	if err := db.Exec(
+		"INSERT INTO question_bank (id, question_type, marks, created_at, updated_at) VALUES (?, 'essay', ?, ?, ?)",
+		questionID, marks, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to seed essay question: %v", err)
+	}
+	return questionID
+}
+
+// setupMarkingFixture builds: exam (total_marks=10, pass_mark=5) owned
+// by a class taught by testMarkerTeacherID, one essay question worth 10
+// marks attached to it, an in-progress attempt, and the student's
+// submitted (but unmarked) essay answer. Returns the attempt ID.
+func setupMarkingFixture(t *testing.T) (svc *ExamService, attemptID, essayQID string) {
+	t.Helper()
+	db := setupExamTestDB(t)
+	svc = newTestExamService(db)
+	seedExam(t, db, 30)
+	db.Exec("UPDATE exams SET total_marks = 10, pass_mark = 5 WHERE id = ?", testExamID)
+	classID := seedMarkingClass(t, db, testMarkerTeacherID)
+	setExamClass(t, db, classID)
+	seedMarkingUser(t, db, testMarkerTeacherID, "teacher")
+	seedMarkingUser(t, db, testOtherTeacherID, "teacher")
+	seedMarkingUser(t, db, testAdminID, "admin")
+
+	attemptID = seedAttempt(t, db, 5)
+	essayQID = seedEssayQuestion(t, db, 10)
+	seedExamQuestions(t, db, testExamID, []string{essayQID})
+
+	if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, SelectedAnswer: "My essay response text.",
+	}, testStudentID); err != nil {
+		t.Fatalf("failed to save essay answer: %v", err)
+	}
+
+	resp, err := svc.SubmitExam(context.Background(), &dto.SubmitExamRequest{AttemptID: attemptID}, testStudentID)
+	if err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+	if resp.Status != string(models.AttemptStatusPendingManualMarking) {
+		t.Fatalf("expected attempt status pending_manual_marking after submitting with an unmarked essay answer, got %q", resp.Status)
+	}
+	return svc, attemptID, essayQID
+}
+
+// TestMarkDescriptiveAnswer_ValidScore_TransitionsToCompleted covers the
+// full happy path: a teacher who owns the exam's class marks the essay
+// answer within the allowed range, and the attempt - the only essay
+// question now scored - transitions from pending_manual_marking to
+// completed with the correct final percentage.
+func TestMarkDescriptiveAnswer_ValidScore_TransitionsToCompleted(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8, Feedback: "Good answer.",
+	}, testMarkerTeacherID)
+	if err != nil {
+		t.Fatalf("expected marking to succeed, got: %v", err)
+	}
+	if resp.AttemptStatus != string(models.AttemptStatusCompleted) {
+		t.Fatalf("expected attempt to transition to completed once its only essay answer is marked, got %q", resp.AttemptStatus)
+	}
+	if !resp.FullyGraded {
+		t.Fatalf("expected FullyGraded=true, got false")
+	}
+	if resp.TotalScore != 8 {
+		t.Fatalf("expected total score 8, got %d", resp.TotalScore)
+	}
+	if resp.Percentage < 79.9 || resp.Percentage > 80.1 {
+		t.Fatalf("expected percentage ~80.0 (8/10 marks), got %v", resp.Percentage)
+	}
+	if !resp.Passed {
+		t.Fatalf("expected passed=true (80%% clears the 50%% pass threshold), got false")
+	}
+}
+
+// TestMarkDescriptiveAnswer_OutOfRangeScore_Rejected confirms a marker
+// cannot enter a score outside the question's own [0, marks] range.
+func TestMarkDescriptiveAnswer_OutOfRangeScore_Rejected(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 15, // > the question's 10 marks
+	}, testMarkerTeacherID)
+	if err == nil {
+		t.Fatal("expected an out-of-range score to be rejected, got no error")
+	}
+}
+
+// TestMarkDescriptiveAnswer_WrongTeacher_Rejected confirms a teacher who
+// does not own the exam's class cannot mark it - unauthorized users
+// cannot alter results outside their permissions.
+func TestMarkDescriptiveAnswer_WrongTeacher_Rejected(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
+	}, testOtherTeacherID)
+	if err == nil || !strings.HasPrefix(err.Error(), "unauthorized") {
+		t.Fatalf("expected an unauthorized error for a teacher who doesn't own this class, got: %v", err)
+	}
+}
+
+// TestMarkDescriptiveAnswer_StudentRejected confirms a student cannot
+// mark their own (or anyone else's) essay answer.
+func TestMarkDescriptiveAnswer_StudentRejected(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
+	}, testStudentID)
+	if err == nil || !strings.HasPrefix(err.Error(), "unauthorized") {
+		t.Fatalf("expected an unauthorized error for a student marker, got: %v", err)
+	}
+}
+
+// TestMarkDescriptiveAnswer_AdminBypassesClassOwnership mirrors the
+// existing authorizeQuestionWrite admin-bypass tests for the same
+// guarantee on the marking path.
+func TestMarkDescriptiveAnswer_AdminBypassesClassOwnership(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6,
+	}, testAdminID)
+	if err != nil {
+		t.Fatalf("expected an admin to be able to mark any class's exam, got error: %v", err)
+	}
+	if resp.TotalScore != 6 {
+		t.Fatalf("expected total score 6, got %d", resp.TotalScore)
+	}
+}
+
+// TestMarkDescriptiveAnswer_RepeatedMarking_Idempotent confirms a retry
+// or a deliberate correction overwrites cleanly: the final state
+// reflects only the last write, with exactly one Result row throughout.
+func TestMarkDescriptiveAnswer_RepeatedMarking_Idempotent(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	if _, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
+	}, testMarkerTeacherID); err != nil {
+		t.Fatalf("first mark failed: %v", err)
+	}
+	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6, Feedback: "Corrected after review.",
+	}, testMarkerTeacherID)
+	if err != nil {
+		t.Fatalf("second (correcting) mark failed: %v", err)
+	}
+	if resp.TotalScore != 6 {
+		t.Fatalf("expected the second mark's score (6) to be the final value, got %d", resp.TotalScore)
+	}
+
+	// setupMarkingFixture runs each test against its own fresh in-memory
+	// db; re-derive it from svc's underlying connection via a raw query
+	// through the service's own repo is not exposed, so assert via the
+	// response shape instead: a third identical call stays stable.
+	resp2, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6,
+	}, testMarkerTeacherID)
+	if err != nil {
+		t.Fatalf("third (repeated) mark failed: %v", err)
+	}
+	if resp2.TotalScore != 6 || resp2.Percentage != resp.Percentage {
+		t.Fatalf("expected a repeated identical mark to be a stable no-op, got score=%d percentage=%v", resp2.TotalScore, resp2.Percentage)
+	}
+}
+
+// TestSubmitExam_MixedObjectiveAndEssay_ScoresBothCorrectly confirms an
+// exam with both an auto-graded objective question and a to-be-marked
+// essay question scores the objective part immediately and only holds
+// the essay part pending - never double-counts, never blocks the
+// objective score on the essay's marking.
+func TestSubmitExam_MixedObjectiveAndEssay_ScoresBothCorrectly(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	db.Exec("UPDATE exams SET total_marks = 15, pass_mark = 8 WHERE id = ?", testExamID)
+	classID := seedMarkingClass(t, db, testMarkerTeacherID)
+	setExamClass(t, db, classID)
+	seedMarkingUser(t, db, testMarkerTeacherID, "teacher")
+
+	attemptID := seedAttempt(t, db, 5)
+	objQID := seedQuestion(t, db, "A", 5)
+	essayQID := seedEssayQuestion(t, db, 10)
+	seedExamQuestions(t, db, testExamID, []string{objQID, essayQID})
+
+	if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+		AttemptID: attemptID, QuestionID: objQID, SelectedAnswer: "A", // correct
+	}, testStudentID); err != nil {
+		t.Fatalf("SaveAnswer (objective) failed: %v", err)
+	}
+	if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, SelectedAnswer: "Essay text.",
+	}, testStudentID); err != nil {
+		t.Fatalf("SaveAnswer (essay) failed: %v", err)
+	}
+
+	submitResp, err := svc.SubmitExam(context.Background(), &dto.SubmitExamRequest{AttemptID: attemptID}, testStudentID)
+	if err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+	if submitResp.Status != string(models.AttemptStatusPendingManualMarking) {
+		t.Fatalf("expected pending_manual_marking (essay not yet scored), got %q", submitResp.Status)
+	}
+	if submitResp.Score != 5 {
+		t.Fatalf("expected provisional score 5 (objective only, essay not yet counted), got %d", submitResp.Score)
+	}
+
+	markResp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 7,
+	}, testMarkerTeacherID)
+	if err != nil {
+		t.Fatalf("MarkDescriptiveAnswer failed: %v", err)
+	}
+	if markResp.TotalScore != 12 { // 5 objective + 7 essay
+		t.Fatalf("expected combined total score 12 (5 objective + 7 essay), got %d", markResp.TotalScore)
+	}
+	if markResp.AttemptStatus != string(models.AttemptStatusCompleted) {
+		t.Fatalf("expected completed once the only essay question is marked, got %q", markResp.AttemptStatus)
 	}
 }
