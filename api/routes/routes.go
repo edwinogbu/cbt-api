@@ -135,7 +135,7 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== EXAM ROUTES ====================
 		// ALL 23 EXAM ENDPOINTS ORGANIZED UNDER /v1/exams
-		setupExamRoutes(v1, examH)
+		setupExamRoutes(v1, examH, studentRepo)
 		setupStudentExamRoutes(v1, examH, studentRepo)
 
 		// ==================== QUESTION ROUTES ====================
@@ -272,7 +272,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 // ============================================
 // EXAM ROUTES - ALL 23 ENDPOINTS
 // ============================================
-func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler) {
+func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, studentRepo *academicRepo.StudentRepository) {
 	exams := rg.Group("/exams")
 	exams.Use(middleware.AuthMiddleware())
 	{
@@ -285,10 +285,24 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler) {
 		exams.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
 		exams.POST("/:id/assign", handler.AssignExam)
 		exams.GET("/:id/assignments", handler.GetExamAssignments)
-		exams.POST("/start", handler.StartExam)
-		exams.POST("/save-answer", handler.SaveAnswer)
-		exams.POST("/bulk-answer", handler.BulkSaveAnswers)
-		exams.POST("/submit", handler.SubmitExam)
+		// These four handlers (StartExam/SaveAnswer/BulkSaveAnswers/SubmitExam)
+		// call middleware.GetStudentID(c), which reads the "student_id" key
+		// set by StudentContextMiddleware - every other route in this group
+		// only has AuthMiddleware, which never sets that key. Before this
+		// fix, every request through this exact group (as opposed to the
+		// parallel /student/exams/* group, which already had both
+		// middlewares - see setupStudentExamRoutes below) got "student
+		// context not found" (401) regardless of whose attempt it was,
+		// for every student, not just a cross-tenant one. Confirmed via a
+		// live request with a real student JWT. The live frontend doesn't
+		// call this group's save-answer/bulk-answer/submit paths (it uses
+		// /student/exams/answer etc., via student.service.ts), but this
+		// group's routes are still real, reachable, public API surface
+		// (e.g. for a future client, mobile app, or direct integration).
+		exams.POST("/start", middleware.StudentContextMiddleware(studentRepo), handler.StartExam)
+		exams.POST("/save-answer", middleware.StudentContextMiddleware(studentRepo), handler.SaveAnswer)
+		exams.POST("/bulk-answer", middleware.StudentContextMiddleware(studentRepo), handler.BulkSaveAnswers)
+		exams.POST("/submit", middleware.StudentContextMiddleware(studentRepo), handler.SubmitExam)
 		exams.GET("/:id/results/class", handler.GetClassResults)
 		exams.GET("/:id/results/export", handler.ExportResults)
 		exams.GET("/:id/results/rankings", handler.GetExamRankings)
