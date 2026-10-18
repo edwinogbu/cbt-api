@@ -905,6 +905,16 @@ func min(a, b int) int {
 
 func (p *DOCXParser) extractTextFromDOCX(xmlData []byte) string {
 	text := string(xmlData)
+	// Insert a newline at each paragraph/line-break boundary BEFORE the
+	// generic tag-stripping regex below collapses every tag to a single
+	// space. Found live: without this, a real multi-paragraph Word
+	// document (one line per option, as every template/guide tells
+	// teachers to write) was extracted as one unbroken line of text, so
+	// parseQuestionsFromText's line-based option/answer detection (which
+	// matches "^[A-D][).] ..." at the START of a line) could never match
+	// anything - every real DOCX upload with options on separate lines
+	// silently lost its options and answer key.
+	text = regexp.MustCompile(`</w:p>|<w:br\s*/?>|<w:cr\s*/?>`).ReplaceAllString(text, "\n")
 	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, " ")
 	text = strings.ReplaceAll(text, "&lt;", "<")
 	text = strings.ReplaceAll(text, "&gt;", ">")
@@ -912,8 +922,17 @@ func (p *DOCXParser) extractTextFromDOCX(xmlData []byte) string {
 	text = strings.ReplaceAll(text, "&quot;", "\"")
 	text = strings.ReplaceAll(text, "&apos;", "'")
 	text = strings.ReplaceAll(text, "&nbsp;", " ")
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
-	return strings.TrimSpace(text)
+	// Collapse runs of horizontal whitespace, but keep the newlines just inserted.
+	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
+	lines := strings.Split(text, "\n")
+	var trimmed []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			trimmed = append(trimmed, line)
+		}
+	}
+	return strings.Join(trimmed, "\n")
 }
 
 func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, error) {
