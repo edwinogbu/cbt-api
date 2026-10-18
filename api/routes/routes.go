@@ -535,6 +535,8 @@ func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.Que
 		q.POST("/tags/create", handler.CreateTag)
 		q.GET("/tags/list", handler.ListTags)
 
+		q.GET("/templates/:format", handler.DownloadImportTemplate)
+
 		q.GET("/statistics", handler.GetStatistics)
 
 		q.POST("/ai/generate", handler.GenerateQuestionsWithAI)

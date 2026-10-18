@@ -795,6 +795,65 @@ func (h *QuestionHandler) ListTags(c *gin.Context) {
 }
 
 // ============================================
+// IMPORT TEMPLATES
+// ============================================
+
+// DownloadImportTemplate godoc
+// @Summary      Download a bulk-import template
+// @Description  Returns a real, downloadable template file (csv, excel, txt, or docx) whose columns/format exactly match the corresponding parser used by POST /questions/bulk-upload.
+// @Tags         Questions
+// @Produce      application/octet-stream
+// @Param        format path string true "Template format: csv, excel, txt, or docx"
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/templates/{format} [get]
+func (h *QuestionHandler) DownloadImportTemplate(c *gin.Context) {
+	format := c.Param("format")
+
+	var (
+		data        []byte
+		err         error
+		filename    string
+		contentType string
+	)
+
+	switch format {
+	case "csv":
+		data, err = dto.GenerateCSVTemplate()
+		filename = "question_import_template.csv"
+		contentType = "text/csv"
+	case "excel", "xlsx":
+		data, err = dto.GenerateExcelTemplate()
+		filename = "question_import_template.xlsx"
+		contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "txt":
+		data = dto.GenerateTXTTemplate()
+		filename = "question_import_template.txt"
+		contentType = "text/plain"
+	case "docx":
+		data, err = dto.GenerateDOCXTemplate()
+		filename = "question_import_template.docx"
+		contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid template format",
+			"details": "format must be one of: csv, excel, txt, docx",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate template", "details": err.Error()})
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// ============================================
 // AI OPERATIONS
 // ============================================
 
