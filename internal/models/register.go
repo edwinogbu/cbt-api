@@ -64,6 +64,7 @@ func init() {
 	// ============================================
 	Register(&QuestionBank{})      // ✅ Questions stored here
 	Register(&Tag{})               // ✅ Tags for questions (was QuestionTag)
+	Register(&QuestionTagMapping{}) // ✅ Question<->Tag join table (attachTagsByNames writes here; was missing from AutoMigrate, so a fresh schema could never actually save a tagged question)
 	Register(&QuestionBankAttachment{})
 	Register(&BulkImportJob{})
 	Register(&AIQuestionGenerationJob{})

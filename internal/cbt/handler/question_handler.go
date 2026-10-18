@@ -1382,6 +1382,12 @@ func (h *QuestionHandler) handleError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question ID"})
 	case errors.Is(err, ErrPermissionDenied):
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+	case strings.HasPrefix(err.Error(), "unauthorized"):
+		// authorizeQuestionWrite/authorizeRoleOnly (question_service.go) return
+		// plain errors.New("unauthorized: ...") rather than a sentinel, since
+		// the message itself (which class/school mismatch, which role) is
+		// useful to the caller - but it must still map to 403, not 500.
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrTagAlreadyExists):
 		c.JSON(http.StatusConflict, gin.H{"error": "tag already exists"})
 	case errors.Is(err, ErrValidationFailed):
