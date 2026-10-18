@@ -558,7 +558,7 @@ attempt/answer/result rows through several more entity layers, and the
 service-layer tests already exercise the real conflict logic against a
 real database, not a mock. Committed and pushed as `83dcdfd`.
 
-### 14c. Offline PWA reload - root-caused with genuine (non-emulated) evidence, fix attempted and reverted
+### 14c. Offline PWA reload - two root causes found and FIXED; genuine offline reload now verified working
 
 The prior session's open question (§6) was whether the "zero responses
 served offline" result was a DevTools-Protocol-emulation artifact or a
@@ -571,51 +571,133 @@ kernel-level link-down, the same primitive used when a real network
 adapter is disabled, not `context.set_offline()` or
 `Network.emulateNetworkConditions`.
 
-**Result: the same failure reproduces with a genuine disconnect.** With
-the service worker confirmed `activated` and `controller: true`, and
-Cache Storage confirmed populated (257 precache entries), reloading a
-live, previously-visited exam-attempt page while genuinely offline
-produced **zero** response/request events of any kind within 20+ seconds
-and the page never rendered. This rules out the "it's just a Playwright/
-DevTools quirk" explanation the prior session could not rule out.
+**Initial result: the same failure reproduces with a genuine disconnect.**
+With the service worker confirmed `activated` and `controller: true`, and
+the build-time precache populated (257 entries), reloading a live,
+previously-visited exam-attempt page while genuinely offline produced
+**zero** response/request events of any kind within 20+ seconds and the
+page never rendered. This ruled out "it's just a Playwright/DevTools
+quirk" as the explanation.
 
-**Root cause, found and confirmed live**: the exam-attempt page
-(`/dashboard/student/exams/[examId]/attempt/[attemptId]`) is served with
-`Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`
-(confirmed via the actual response header on a real navigation) - Next.js
-App Router's default for a route with dynamic segments and no
-`generateStaticParams`. The service worker's own catch-all `NetworkFirst`
-"pages-cache" route (in `public/sw.js`) therefore has nothing to ever
-cache for this exact URL: `caches.match()` for this URL returned empty
-even after multiple online visits/reloads, so when offline, NetworkFirst
-has no fallback to serve and the navigation simply never resolves.
+**Root cause #1 (the page's own response was never cacheable)**: the
+exam-attempt page (`/dashboard/student/exams/[examId]/attempt/[attemptId]`)
+was served with `Cache-Control: private, no-cache, no-store, max-age=0,
+must-revalidate` (confirmed via the actual response header on a real
+navigation) - Next.js App Router's default for a route with dynamic
+segments and no `generateStaticParams`.
 
-**Fix attempted, found to need a larger change than this pass should risk,
-and reverted**: `export const dynamic = 'force-static'` on the page had no
-effect on the header (verified live - still `no-store`). `export const
-revalidate = 3600` (the documented correct directive for caching a
-per-request dynamic-segment page without `generateStaticParams`) **broke
-the page with a live HTTP 500** - Next.js 16 does not allow the
-`revalidate` route-segment-config export in a file that also has `'use
-client'` at the top (confirmed via the real server's error log:
-`Invalid revalidate value "function(){throw Error(...revalidate is on the
-client...)}"`). This page is a 17,800+ line client component; the correct
-fix is the standard Next.js pattern of splitting it into a thin **server**
-`page.tsx` (holding the `revalidate` export) that renders the existing
-code as a separate client component - a real, mechanical, but non-trivial
-refactor of the single highest-stakes page in the app (the one students
-are actively taking timed exams on). Given the size and blast radius,
-this was not attempted blind under this session's time budget. The broken
-`revalidate` export was reverted immediately; `elias-cbt-portal`'s working
-tree is clean, back to `604730a` (confirmed via `git diff`), and `npm run
-build`/`npx tsc --noEmit` both pass on the reverted state. **No fix is
-deployed for this gap** - it is accurately `Still broken, root cause
-known, fix path identified but not yet implemented`.
+**Fix #1**: split the 17,800+ line client component into a thin **server**
+`page.tsx` (new file, ~35 lines) that renders the unchanged original code
+as a new `AttemptClient.tsx` ('use client') - Next.js disallows route
+segment config exports in a file with `'use client'`, so the config has
+to live in a separate server-component wrapper. `page.tsx` carries:
+```ts
+export async function generateStaticParams() { return []; }
+export const revalidate = 3600;
+```
+`generateStaticParams` returning `[]` turned out to be required, not
+optional: `revalidate` alone (without it) had **no effect at all** on the
+response header - confirmed live by comparing headers against a
+known-static sibling route (`/dashboard/student`) under the identical auth
+middleware, which got a normal cacheable header while the attempt page
+stayed `no-store` even with `revalidate` set. Next.js's App Router only
+applies ISR-style caching to a dynamic-segment route that also calls
+`generateStaticParams` (even with an empty array - there's nothing to
+enumerate ahead of time); without it, the route never enters the
+prerender/ISR manifest and `revalidate` is silently ignored. With both
+together, the live response header changed to
+`s-maxage=3600, stale-while-revalidate=31532400` and the build's route
+table now marks this exact route `●` (SSG via `generateStaticParams`)
+instead of `ƒ` (fully dynamic). A diff of `AttemptClient.tsx` against the
+original `page.tsx` shows **exactly two differences**: the file-header
+comment and the function's name (`ExamAttemptPage` → `AttemptClient`) -
+zero logic changes.
 
-**Separately confirmed still true and unaffected by the above**: the app
-survives connectivity loss fine *as long as the tab is not reloaded*
-(§14d) - this reload-specific gap only affects a full page reload/restart
-while already offline, not an in-progress exam session that stays open.
+**Root cause #2 (found only after fixing #1, and the deeper one): the
+service worker's runtime-caching routes never matched ANYTHING, for ANY
+page, ever**. Even with the attempt page's own response now cacheable,
+re-running the genuine offline test still failed identically - `pages-
+cache` never existed in Cache Storage at all (confirmed: `caches.keys()`
+after reloading `/dashboard/student`, a plain static page, online,
+multiple times, with the SW active and controlling, showed only the
+build-time precache - no `pages-cache`, no `api-cache`). A manual
+`caches.open('x').put(url, response)` of the exact same response
+succeeded instantly, ruling out any Cache-API-level rejection. Root cause,
+confirmed by reading `node_modules/workbox-routing/RegExpRoute.js`
+directly: Workbox tests a `RegExp` `urlPattern` against the request's
+**full `url.href`** (e.g. `"http://host:3000/dashboard/..."`), not just
+the pathname. `next.config.ts`'s `runtimeCaching` patterns were all
+written as `/^\/api\/.../ ` and `/^\/.*/ ` - anchored on a literal leading
+`/`, which `url.href` never starts with (it always starts with
+`"http://"` or `"https://"`). These patterns could not match any request,
+same-origin or cross-origin, ever - meaning `api-cache` and `pages-cache`
+have never actually cached anything in this PWA's entire history,
+independent of anything from this session or the earlier one.
+
+**Fix #2**: changed the three affected `urlPattern` entries in
+`next.config.ts` from regexes to Workbox-style function matchers testing
+`url.pathname` (what they all actually intended to test), e.g.
+`({ url }) => url.pathname.startsWith("/api/verify-payment")` and the
+catch-all `({ url }) => url.origin === self.location.origin`. The
+project's own hand-written ambient type declaration for `next-pwa`
+(`src/types/next-pwa.d.ts`) only allowed `RegExp` for `urlPattern` (an
+incomplete declaration, not a real constraint - `next-pwa` ships no
+types of its own, and the underlying `workbox-build` library it wraps
+genuinely supports function matchers) - widened to
+`RegExp | ((options: { url: URL; request?: Request }) => boolean)`.
+
+**Security check on fix #2**: the `verify-payment` `NetworkOnly` rule,
+which previously *also* never matched (same bug), now correctly
+intercepts and bypasses caching for that path - fixing the catch-all
+without this would have been a regression (payment verification could
+have started being cached). The `api-cache` rule only ever applies to
+`GET` requests (`registerRoute(..., "GET")`, confirmed in the generated
+`sw.js`); the Next.js-side AI endpoints it covers
+(`extract-text`/`gemini-*`) are POST-only, so the Cache API still never
+actually stores a response for them - unchanged from before. The
+`pages-cache` catch-all only matches same-origin requests
+(`url.origin === self.location.origin`); the real Go backend API is a
+different origin and was never reachable by this rule either before or
+after. The cached exam-attempt page shell contains no embedded
+per-student data (it's a pure client component - page.tsx passes it zero
+props, and every real value is fetched/read client-side after hydration),
+and Cache Storage is scoped per browser profile, never shared across
+students' devices - so caching this shell introduces no cross-student
+exposure.
+
+**Genuine offline reload re-tested and PASSED**, end to end, with the
+same real kernel-level-disconnect methodology, after both fixes:
+- `pages-cache` now populates (confirmed non-empty for the exact attempt
+  URL after an online reload).
+- Reload while genuinely offline: **no error, no timeout** - 23 responses
+  observed, every single one with `from_service_worker: true`, including
+  the HTML document itself (status 200) and all its JS/CSS/font/icon
+  dependencies.
+- The page did not just return a 200 - it **rendered the real exam UI**:
+  confirmed the body text progressed from a brief "Loading your exam...
+  Preparing questions" state into the actual question content
+  ("Question 1 of 5", "Lifecycle test Q1: 2+2=?", the countdown timer,
+  "0/5" progress) within ~5 seconds, entirely offline.
+- `IndexedDB` databases (`CBTDatabase`, `ExamOfflineDB`) remained present
+  and queryable throughout.
+
+**UI regression check after the fix (clicking a real answer option,
+not a raw API call)**: confirmed the split did not break answer-saving.
+Clicking an `OptionButton` wrote a real, encrypted `answers` record to
+Dexie (`syncStatus: "PENDING"`) and queued a sync-queue entry - this app
+is deliberately local-first (`saveAnswer`'s own comment: "SAVE → LOCK →
+QUEUE → SYNC, never SEND → WAIT → HOPE"), so no immediate network call is
+expected or correct; the durable local write is the thing that matters,
+and it was confirmed present via a direct read of the raw IndexedDB
+object stores, not just the UI's own summary counters (which are bound to
+server-fetched `attemptData.answered_count`, not the optimistic local
+state, and so don't move until the next full refetch - this is
+pre-existing behavior, unchanged by the split).
+
+**Separately confirmed still true**: the app also survives connectivity
+loss fine *without* a reload, as already shown in the prior session and
+re-confirmed this session (§14d) - that was never the broken path; the
+reload-while-offline path specifically is what §14c fixes.
 
 ### 14d. Complete offline exam lifecycle, public internet genuinely disabled - verified
 
@@ -662,38 +744,51 @@ here with a genuine kernel-level disconnect specifically.
 | `cbt-api`: `go test ./...` | pass (all packages, including 7 new manual-marking tests and 6 new nodesync conflict tests) |
 | `cbt-api`: `go test -race ./internal/cbt/service/... ./internal/sync/... ./internal/nodesync/...` | pass, no races |
 | `cbt-api`: JWT signing-secret fix | re-checked - still reads `JWT_SECRET` with the same production-startup refusal in both `config.go` and the actual signing path `pkg/utils/utils.go`; no hardcoded fallback has returned |
-| `elias-cbt-portal`: `npx tsc --noEmit` | 0 errors (reverted state) |
-| `elias-cbt-portal`: `npm run build` (webpack, PWA gen) | pass (reverted state) |
+| `elias-cbt-portal`: `npx tsc --noEmit` | 0 errors (after the offline-reload fix) |
+| `elias-cbt-portal`: `npm run build` (webpack, PWA gen) | pass; `/dashboard/student/exams/[examId]/attempt/[attemptId]` now shows `●` (SSG) instead of `ƒ` (dynamic) in the route table |
+| `elias-cbt-portal`: `npx vitest run` | 28/28 pass |
+| `elias-cbt-portal`: genuine kernel-level-disconnect offline reload | **pass** - see §14c |
 
 ### 14f. Updated priority list
 
-1. **Offline-reload fix** (§14c): split the exam-attempt page into a
-   thin server `page.tsx` (carrying `export const revalidate`) + a client
-   component holding the existing logic, then re-run the exact genuine
-   (kernel-level-disconnect) reload test in this report to confirm the
-   service worker actually serves it offline.
-2. Exercise the app's own Dexie-queue auto-sync path specifically under a
-   genuine kernel-level disconnect (§14d's one explicitly-undone item).
-3. Live HTTP-layer verification of the nodesync conflict-detection logic
+1. Exercise the app's own Dexie-queue auto-sync path's *network delivery*
+   specifically under a genuine kernel-level disconnect (§14d's one
+   explicitly-undone item) - the local write side of this is now confirmed
+   (§14c's UI regression check), only the "does it actually reach the
+   server after reconnect" half via the real queue (not a raw API call)
+   remains unverified with this specific disconnect method.
+2. Live HTTP-layer verification of the nodesync conflict-detection logic
    (§14b) against the real running API, beyond the service-layer tests.
-4. Everything still outstanding from §12 that this session did not touch:
+3. Everything still outstanding from §12 that this session did not touch:
    duplicate-question detection beyond exact-text matching, Electron code
    signing, dead-code deletion, broader LAN hardware testing.
 
-### 14g. What this session does not claim
+### 14g. What this session does and does not claim
 
-- Does not claim offline PWA reload works - §14c documents a real,
-  reproduced failure with a known root cause and an identified-but-not-yet-
-  safely-implemented fix, not a pass.
+- **Does** claim offline PWA reload now works, for the exam-attempt page
+  specifically: proven via a genuine kernel-level network disconnect (not
+  DevTools emulation), with the service worker demonstrably serving the
+  HTML document and all its dependencies from Cache Storage, and the page
+  rendering the real exam UI (not a blank or error page) while offline.
+  Two independent, previously-undiscovered root causes were found and
+  fixed to get here (§14c) - not assumed from a cacheable header or a
+  successful build alone.
+- Does not claim every page in the app has been individually re-tested
+  for offline reload - only the exam-attempt page was driven through the
+  full genuine-disconnect test; the `pages-cache`/`api-cache` matcher fix
+  is app-wide (it was broken for every same-origin page, not just this
+  one), but only this one page's reload was end-to-end re-verified.
 - Does not claim the LAN conflict-detection logic has been exercised
   through the live HTTP API, only through real-database service-layer
   tests.
-- Does not claim the app's internal offline-sync-queue path was
-  re-verified under a genuine (non-CDP-emulated) disconnect - only that
-  raw, direct API calls fail safely under one, and that the queue path
-  itself was shown working under CDP-level offline emulation in the prior
-  session.
-- Manual/essay grading (§14a) and the exam-submission/duplicate-protection
-  behavior under genuine offline-then-reconnect (§14d) are the two
-  findings in this session backed by full live, non-simulated
-  verification end to end.
+- Does not claim the app's internal offline-sync-queue *network delivery*
+  path was re-verified under a genuine (non-CDP-emulated) disconnect -
+  only that the queue's local write succeeds via the real UI (confirmed
+  this session) and that raw, direct API calls fail safely when offline;
+  the queue's own reconnect-and-flush behavior was shown working under
+  CDP-level offline emulation in the prior session, not re-verified here
+  with a genuine disconnect specifically.
+- Manual/essay grading (§14a), the offline PWA reload fix (§14c), and the
+  exam-submission/duplicate-protection behavior under genuine
+  offline-then-reconnect (§14d) are backed by full live, non-simulated
+  verification end to end this session.
