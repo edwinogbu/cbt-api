@@ -1612,6 +1612,14 @@ func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest
 		return nil, errors.New("exam already submitted")
 	}
 
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
+	}
+
 	// Find or create answer
 	existing, _ := s.examRepo.FindAnswer(req.AttemptID, req.QuestionID)
 

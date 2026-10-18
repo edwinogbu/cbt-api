@@ -294,3 +294,52 @@ func TestSubmitExam_RetriedAfterSuccess_ReturnsExistingResult(t *testing.T) {
 		t.Fatalf("expected exactly 1 Result row after a retried submit, got %d", count)
 	}
 }
+
+// TestMarkReview_AfterTimeLimit_Rejected is the regression test for the
+// same class of gap Fix A covered for SaveAnswer/BulkSaveAnswers/AutoSave:
+// MarkReview also writes to student_answers (via IsMarked) but had no
+// checkWithinTimeLimit call at all, so a device that stayed connected
+// past the exam deadline could still toggle mark-for-review flags via
+// this path even though every other answer-writing path correctly
+// rejected writes past the deadline.
+func TestMarkReview_AfterTimeLimit_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	attemptID := seedAttempt(t, db, 45) // started 45 min ago, 30 min duration - expired
+	questionID := seedQuestion(t, db, "A", 2)
+
+	_, err := svc.MarkReview(context.Background(), &dto.MarkReviewRequest{
+		AttemptID: attemptID, QuestionID: questionID, IsMarked: true,
+	}, testStudentID)
+	if err == nil || err.Error() != "time limit exceeded" {
+		t.Fatalf("expected \"time limit exceeded\", got: %v", err)
+	}
+
+	var count int64
+	db.Model(&models.StudentAnswer{}).Where("attempt_id = ?", attemptID).Count(&count)
+	if count != 0 {
+		t.Fatalf("expected no answer rows written after a rejected mark-review call, got %d", count)
+	}
+}
+
+// TestMarkReview_WithinTimeLimit_Accepted is the companion test: a
+// legitimate mark-for-review toggle while the attempt is still active
+// must keep working.
+func TestMarkReview_WithinTimeLimit_Accepted(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	attemptID := seedAttempt(t, db, 5) // 5 of 30 minutes elapsed
+	questionID := seedQuestion(t, db, "A", 2)
+
+	resp, err := svc.MarkReview(context.Background(), &dto.MarkReviewRequest{
+		AttemptID: attemptID, QuestionID: questionID, IsMarked: true,
+	}, testStudentID)
+	if err != nil {
+		t.Fatalf("expected mark-review within time limit to be accepted, got: %v", err)
+	}
+	if !resp.IsMarked {
+		t.Fatalf("expected IsMarked true in response, got false")
+	}
+}
