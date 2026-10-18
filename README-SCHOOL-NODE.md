@@ -89,6 +89,48 @@ address kept as the fallback if the node ever goes down.
   production frontend build, falling back to Cloud, until a TLS-terminating
   reverse proxy is put in front of this node and `NEXT_PUBLIC_LAN_API_URL`
   is pointed at its `https://` address instead.
+
+  **A public CA will not issue a certificate for this node's address as-is.**
+  This node is reached by a private LAN IP (e.g. `192.168.x.x`) or a bare
+  local hostname - public CAs (Let's Encrypt included) cannot issue for a
+  private IP at all, and can't validate a hostname they can't publicly
+  resolve/reach either. Don't assume dropping a reverse proxy in front of
+  this node with no further certificate planning gets you a browser-trusted
+  `https://` address; pick one of these, matched to what the school
+  actually has:
+
+  - **No real domain/DNS available (smallest school, no IT staff)**:
+    self-signed certificate on the reverse proxy, root CA distributed to
+    every student/staff device once (e.g. via whatever device-management
+    tooling the school already uses, or manually on a one-time setup pass).
+    No ongoing renewal-automation infrastructure needed, but the trust
+    distribution step has to be redone for every new device and doesn't
+    scale past a small, IT-light deployment.
+  - **School already owns a domain + can manage DNS (recommended default)**:
+    split-horizon DNS - point a subdomain (e.g. `node1.yourschool.example`)
+    at this node's private LAN IP in the school's *internal* DNS only (the
+    public DNS record for that name doesn't need to exist, or can point
+    anywhere; LAN clients resolve it internally), and get a real
+    Let's Encrypt certificate for that subdomain via the **DNS-01**
+    challenge (not HTTP-01 - the node isn't publicly reachable, so HTTP-01
+    will fail). DNS-01 needs API access to whoever hosts the domain's DNS
+    (Cloudflare, Route53, etc.) to create the challenge TXT record, and a
+    renewal job (certbot or similar, run from wherever that DNS-01
+    automation lives, not necessarily the node itself) since Let's Encrypt
+    certs expire every 90 days. Every device trusts it with zero manual
+    steps, since it's a real publicly-trusted cert - this is the
+    recommended path once a school has a domain at all.
+  - **Multiple nodes across a school group with existing IT/MDM**: a
+    private internal CA, root distributed once via the same device
+    management the IT team already uses, node certs signed by that CA and
+    renewed by the IT team's own tooling. Only worth it at a scale where
+    self-signed-per-node trust distribution becomes unmanageable.
+
+  Whichever path is chosen, note the expiry and renewal cadence
+  explicitly in that school's own deployment runbook - an expired
+  certificate silently reproduces the exact "LAN sync falls back to
+  Cloud" behavior the plain-HTTP case does, just later and without the
+  original misconfiguration being the obvious first guess.
 - **Backups**: `cbt_node_pgdata` is a named Docker volume. Set up your own
   periodic `pg_dump` (or volume snapshot) - nothing here backs it up for you.
 - **Multi-node**: this guide is for one node. Repeat steps 1-3 per school,
