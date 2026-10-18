@@ -1,6 +1,7 @@
 package config
 
 import (
+    "log"
     "os"
     "strconv"
     "time"
@@ -72,7 +73,7 @@ type AppConfig struct {
 
 // LoadConfig loads all configuration from environment variables
 func LoadConfig() *Config {
-    return &Config{
+    cfg := &Config{
         Server: ServerConfig{
             Port:         getEnv("PORT", "8080"),
             Environment:  getEnv("ENVIRONMENT", "development"),
@@ -122,6 +123,32 @@ func LoadConfig() *Config {
             Debug:    getEnvBool("APP_DEBUG", true),
             Timezone: getEnv("APP_TIMEZONE", "UTC"),
         },
+    }
+
+    cfg.validateProductionSecrets()
+    return cfg
+}
+
+// insecureDefaultJWTSecret and insecureDefaultJWTRefreshSecret are the
+// hardcoded fallbacks above. A School CBT Node (or any production
+// deployment) that forgot to set JWT_SECRET/JWT_REFRESH_SECRET would
+// otherwise start up silently signing tokens with a secret checked into
+// this repo - every deployed node sharing the same default would let a
+// token forged for one school authenticate against every other school's
+// node. This does not fix the deeper tenant-isolation findings tracked
+// separately; it only ensures a node can't come up misconfigured this way.
+const insecureDefaultJWTSecret = "your-secret-key-change-in-production"
+const insecureDefaultJWTRefreshSecret = "your-refresh-secret-key-change-in-production"
+
+func (c *Config) validateProductionSecrets() {
+    if c.Server.Environment != "production" {
+        return
+    }
+    if c.JWT.Secret == "" || c.JWT.Secret == insecureDefaultJWTSecret {
+        log.Fatal("FATAL: JWT_SECRET must be set to a real, per-deployment secret in production (ENVIRONMENT=production). Refusing to start with the insecure default.")
+    }
+    if c.JWT.RefreshSecret == "" || c.JWT.RefreshSecret == insecureDefaultJWTRefreshSecret {
+        log.Fatal("FATAL: JWT_REFRESH_SECRET must be set to a real, per-deployment secret in production (ENVIRONMENT=production). Refusing to start with the insecure default.")
     }
 }
 

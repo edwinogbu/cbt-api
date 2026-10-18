@@ -1,0 +1,43 @@
+name: Build, test, and deploy to Render
+
+# render.yaml sets autoDeploy: false deliberately - this workflow is the
+# actual deploy trigger, so a build/test gate always runs before Render
+# pulls new code, instead of deploying whatever was last pushed sight
+# unseen.
+
+on:
+  push:
+    branches:
+      - claude/awesome-einstein-df5zdb # update once this work merges to main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # No test suite worth gating on yet (internal/sync/service has one;
+      # the rest of the codebase doesn't). Add `go test ./...` here once
+      # that changes.
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL repo secret is not set - see DEPLOY.md" >&2
+            exit 1
+          fi
+          curl -fsS "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"

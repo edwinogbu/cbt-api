@@ -6,6 +6,7 @@ import (
 	"cbt-api/internal/models"
 	"cbt-api/pkg/utils"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AuthRepository struct {
@@ -167,6 +168,22 @@ func (r *AuthRepository) VerifyEmail(userID string) error {
 func (r *AuthRepository) SoftDeleteUser(userID string) error {
 	now := time.Now()
 	return r.db.Model(&models.User{}).Where("id = ?", userID).Update("deleted_at", now).Error
+}
+
+// Role grant operations - see models.UserRoleGrant for how these combine
+// with User.Role to form a user's full set of available roles.
+func (r *AuthRepository) FindRoleGrantsByUserID(userID string) ([]models.UserRoleGrant, error) {
+	var grants []models.UserRoleGrant
+	err := r.db.Where("user_id = ?", userID).Find(&grants).Error
+	return grants, err
+}
+
+func (r *AuthRepository) CreateRoleGrant(grant *models.UserRoleGrant) error {
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(grant).Error
+}
+
+func (r *AuthRepository) DeleteRoleGrant(userID string, role models.UserRole) error {
+	return r.db.Where("user_id = ? AND role = ?", userID, role).Delete(&models.UserRoleGrant{}).Error
 }
 
 

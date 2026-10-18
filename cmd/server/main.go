@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"cbt-api/internal/ai/providers"
 	"cbt-api/internal/ai/queue"
 	"cbt-api/internal/middleware"
+	nodeSyncClient "cbt-api/internal/nodesync/client"
+	nodeSyncRepo "cbt-api/internal/nodesync/repository"
 	"cbt-api/pkg/database"
 
 	"github.com/gin-contrib/cors"
@@ -54,12 +58,30 @@ func main() {
 	// ============================================
 
 	// 1. Redis Queue
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
+	// REDIS_URL (a full redis:// or rediss:// connection string, as
+	// managed providers like Upstash issue) takes precedence - it carries
+	// auth and TLS that a bare host:port address can't express. Falls
+	// back to REDIS_ADDR for local/dev use against a plain Redis with no
+	// auth.
+	var redisQueue *queue.RedisQueue
+	redisDescription := ""
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		var err error
+		redisQueue, err = queue.NewRedisQueueFromURL(redisURL)
+		if err != nil {
+			log.Fatalf("❌ Invalid REDIS_URL: %v", err)
+		}
+		redisDescription = "REDIS_URL"
+		log.Println("✅ Redis Queue initialized from REDIS_URL")
+	} else {
+		redisAddr := os.Getenv("REDIS_ADDR")
+		if redisAddr == "" {
+			redisAddr = "localhost:6379"
+		}
+		redisQueue = queue.NewRedisQueue(redisAddr)
+		redisDescription = redisAddr
+		log.Printf("✅ Redis Queue initialized at %s", redisAddr)
 	}
-	redisQueue := queue.NewRedisQueue(redisAddr)
-	log.Printf("✅ Redis Queue initialized at %s", redisAddr)
 
 	// 2. AI Providers (with graceful fallback)
 	providerRouter := providers.NewRouter()
@@ -103,14 +125,7 @@ func main() {
 	r := gin.Default()
 
 	// Global middleware
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	r.Use(cors.New(corsConfig()))
 	r.Use(middleware.LoggerMiddleware())
 	r.Use(middleware.RecoveryMiddleware())
 
@@ -133,7 +148,7 @@ func main() {
 	log.Printf("🚀 CBT API Server starting on port %s", port)
 	log.Printf("📚 Environment: %s", cfg.Server.Environment)
 	log.Printf("🤖 AI Providers: %v", providerRouter.List())
-	log.Printf("🔄 Redis Queue: %s", redisAddr)
+	log.Printf("🔄 Redis Queue: %s", redisDescription)
 	log.Printf("========================================")
 	log.Printf("✅ Server is ready to accept requests")
 	log.Printf("📖 Swagger UI available at http://localhost:%s/swagger/index.html", port)
@@ -147,6 +162,33 @@ func main() {
 			log.Fatal("Failed to start server:", err)
 		}
 	}()
+
+	// ============================================
+	// SCHOOL NODE <-> CLOUD SYNC (opt-in)
+	// ============================================
+	// Only a School CBT Node deployment sets these - the cloud instance
+	// itself never runs this loop. Same binary, two roles, per the
+	// offline-first plan.
+	nodeSyncCtx, stopNodeSync := context.WithCancel(context.Background())
+	defer stopNodeSync()
+	if os.Getenv("CLOUD_SYNC_ENABLED") == "true" {
+		cloudAPIURL := os.Getenv("CLOUD_API_URL")
+		nodeAPIKey := os.Getenv("NODE_API_KEY")
+		if cloudAPIURL == "" || nodeAPIKey == "" {
+			log.Println("⚠️ CLOUD_SYNC_ENABLED=true but CLOUD_API_URL/NODE_API_KEY not set - School<->Cloud sync NOT started")
+		} else {
+			intervalSeconds := 60
+			if v := os.Getenv("CLOUD_SYNC_INTERVAL_SECONDS"); v != "" {
+				if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+					intervalSeconds = parsed
+				}
+			}
+			nodeSyncRepository := nodeSyncRepo.NewNodeSyncRepository(database.DB)
+			syncClient := nodeSyncClient.NewSyncClient(nodeSyncRepository, cloudAPIURL, nodeAPIKey)
+			go syncClient.RunSyncLoop(nodeSyncCtx, time.Duration(intervalSeconds)*time.Second)
+			log.Printf("🔄 School<->Cloud sync started: pushing/pulling every %ds against %s", intervalSeconds, cloudAPIURL)
+		}
+	}
 
 	// ============================================
 	// GRACEFUL SHUTDOWN
@@ -164,6 +206,29 @@ func main() {
 	}
 
 	log.Println("✅ Server shutdown complete")
+}
+
+// corsConfig is the CORS configuration applied to every route. Extracted
+// from main() so the exact config the server runs can be exercised by an
+// HTTP-layer test (cmd/server/main_test.go) without starting the full
+// app (DB, Redis, AI workers).
+func corsConfig() cors.Config {
+	return cors.Config{
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		// Idempotency-Key and X-Operation-Id are sent by the offline sync
+		// client (src/lib/storage/sync/cloudSync.ts, lanSync.ts) on every
+		// POST to /api/v1/sync/:type. Without them here, the browser's CORS
+		// preflight succeeds (OPTIONS -> 204) but the actual POST is never
+		// sent - fetch() surfaces this as an opaque network error with no
+		// further detail, which the sync client's catch-all then reports as
+		// a generic REJECTED/NETWORK_ERROR indistinguishable from being
+		// genuinely offline.
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key", "X-Operation-Id"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
 }
 
 // Helper function to mask API keys for logging

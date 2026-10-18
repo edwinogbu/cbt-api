@@ -11,7 +11,16 @@ import (
 type CreateExamRequest struct {
 	Title            string     `json:"title" binding:"required"`
 	SubjectID        string     `json:"subject_id" binding:"required,uuid"`
-	ClassID          string     `json:"class_id,omitempty"`
+	ClassID          string     `json:"class_id" binding:"required,uuid"`
+	// SessionID/TermID: models.Exam declares both NOT NULL with no
+	// database default (internal/models/cbt.go:332-333), but this
+	// request had no fields for either - every call to this endpoint
+	// failed at the DB layer with "invalid input syntax for type uuid:
+	// ''" (GORM inserting the Go zero-value empty string), confirmed
+	// live. Required here, matching the same explicit session_id/
+	// term_id pattern CreateQuestionRequest already uses.
+	SessionID        string     `json:"session_id" binding:"required,uuid"`
+	TermID           string     `json:"term_id" binding:"required,uuid"`
 	DurationMinutes  int        `json:"duration_minutes" binding:"required,min=1"`
 	TotalMarks       int        `json:"total_marks" binding:"required,min=1"`
 	PassMark         int        `json:"pass_mark" binding:"required,min=0"`
@@ -216,6 +225,19 @@ type StartExamResponse struct {
 	Exam         *ExamDetailResponse  `json:"exam"`
 	Questions    []QuestionResponse   `json:"questions"`
 	ProctoringID string               `json:"proctoring_id,omitempty"`
+}
+
+// ExamPackageResponse is the read-only "download for offline" payload:
+// exam + all questions/options up front, authorized but WITHOUT creating
+// an attempt or starting the exam clock (unlike StartExamResponse, which
+// does both). ContentHash lets the client detect a changed package on a
+// later re-download without comparing every field.
+type ExamPackageResponse struct {
+	Exam           *ExamDetailResponse `json:"exam"`
+	Questions      []QuestionResponse  `json:"questions"`
+	PackageVersion int64               `json:"package_version"`
+	ContentHash    string              `json:"content_hash"`
+	GeneratedAt    time.Time           `json:"generated_at"`
 }
 
 type ExamDetailResponse struct {
@@ -1342,4 +1364,51 @@ func GetQuestionCountRange(examType string) (min, max int) {
     default:
         return 5, 100 // Safe fallback
     }
+}
+
+// ============================================
+// MANUAL / ESSAY MARKING DTOs
+// ============================================
+
+// PendingMarkingItem is one essay/descriptive answer awaiting a manual
+// score, scoped to exams the requesting marker is authorized for.
+type PendingMarkingItem struct {
+    AttemptID     string     `json:"attempt_id"`
+    QuestionID    string     `json:"question_id"`
+    ExamID        string     `json:"exam_id"`
+    ExamTitle     string     `json:"exam_title"`
+    StudentID     string     `json:"student_id"`
+    StudentName   string     `json:"student_name"`
+    QuestionText  string     `json:"question_text"`
+    EssayResponse string     `json:"essay_response"`
+    MaxMarks      int        `json:"max_marks"`
+    SubmittedAt   *time.Time `json:"submitted_at"`
+}
+
+type ListPendingMarkingResponse struct {
+    Items []PendingMarkingItem `json:"items"`
+    Total int                  `json:"total"`
+}
+
+// MarkAnswerRequest scores one essay/descriptive answer. MarksAwarded
+// must fall within [0, the question's own Marks] - validated in the
+// service layer against the real question record, not just a generic
+// "min=0" tag, since the upper bound varies per question.
+type MarkAnswerRequest struct {
+    AttemptID    string `json:"attempt_id" binding:"required,uuid"`
+    QuestionID   string `json:"question_id" binding:"required,uuid"`
+    MarksAwarded int    `json:"marks_awarded" binding:"min=0"`
+    Feedback     string `json:"feedback"`
+}
+
+type MarkAnswerResponse struct {
+    AttemptID      string  `json:"attempt_id"`
+    QuestionID     string  `json:"question_id"`
+    MarksAwarded   int     `json:"marks_awarded"`
+    MaxMarks       int     `json:"max_marks"`
+    AttemptStatus  string  `json:"attempt_status"`
+    FullyGraded    bool    `json:"fully_graded"`
+    TotalScore     int     `json:"total_score"`
+    Percentage     float64 `json:"percentage"`
+    Passed         bool    `json:"passed"`
 }

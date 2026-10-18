@@ -3,11 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"  
+	"strings"
 	"time"
 
 	"cbt-api/internal/cbt/dto"
@@ -15,8 +17,9 @@ import (
 	"cbt-api/internal/models"
 
 	"github.com/xuri/excelize/v2"
-	"go.uber.org/zap"  
+	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================
@@ -418,15 +421,47 @@ func (s *ExamService) convertOptionsToPreview(storage models.OptionStorage) []dt
 }
 
 // AutoSave auto-saves answers for offline support
-func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest) (*dto.AutoSaveResponse, error) {
+func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest, studentID string) (*dto.AutoSaveResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
 	}
-	_ = attempt // Use attempt
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
+	}
+
+	if attempt.Status != string(models.AttemptStatusInProgress) {
+		return nil, errors.New("exam already submitted")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
+	}
 
 	savedCount := 0
 	for _, item := range req.Answers {
+		// AutoSave previously never fetched the question or set
+		// IsCorrect at all, unlike SaveAnswer/BulkSaveAnswers - any
+		// answer whose most recent write came through this path kept
+		// IsCorrect=false forever regardless of whether it was actually
+		// correct, silently under-grading it at submission. Confirmed
+		// live: a lifecycle test run where 4 of 40 answers were saved
+		// only via AutoSave scored 4 marks lower than the same answers
+		// saved via save-answer/bulk-answer. gradeAnswer fixes this and
+		// also handles essay/descriptive questions consistently with
+		// the other two save paths.
+		q, err := s.questionRepo.FindByID(ctx, item.QuestionID)
+		if err != nil {
+			continue
+		}
+		isCorrect, essayResponse := s.gradeAnswer(q, item.SelectedAnswer)
+
 		existing, err := s.examRepo.FindAnswer(req.AttemptID, item.QuestionID)
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
@@ -434,6 +469,8 @@ func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest) (*
 
 		if existing != nil {
 			existing.SelectedAnswer = item.SelectedAnswer
+			existing.EssayResponse = essayResponse
+			existing.IsCorrect = isCorrect
 			existing.IsMarked = item.IsMarked
 			existing.TimeSpent = item.TimeSpent
 			if err := s.examRepo.UpdateAnswer(existing); err != nil {
@@ -445,6 +482,8 @@ func (s *ExamService) AutoSave(ctx context.Context, req *dto.AutoSaveRequest) (*
 				AttemptID:      req.AttemptID,
 				QuestionID:     item.QuestionID,
 				SelectedAnswer: item.SelectedAnswer,
+				EssayResponse:  essayResponse,
+				IsCorrect:      isCorrect,
 				IsMarked:       item.IsMarked,
 				TimeSpent:      item.TimeSpent,
 			}
@@ -618,10 +657,19 @@ func (s *ExamService) GetStudentDashboard(ctx context.Context, studentID string)
 				EndTime:   exam.EndTime,
 			},
 			Result: dto.ResultInfo{
-				Score:       result.TotalScore,
-				Percentage:  result.Percentage,
-				Grade:       result.Grade,
-				Passed:      result.Percentage >= float64(exam.PassMark),
+				Score:      result.TotalScore,
+				Percentage: result.Percentage,
+				Grade:      result.Grade,
+				// result.Passed was already computed correctly at
+				// submission time (SubmitExam converts the raw-marks
+				// PassMark to a percentage before comparing) -
+				// recomputing it here by comparing a percentage
+				// directly against the raw PassMark mixed scales
+				// (confirmed live: this always evaluated true for any
+				// real percentage against a typical single-digit
+				// PassMark), silently overriding the correct stored
+				// value with a meaningless one on every dashboard read.
+				Passed:      result.Passed,
 				CompletedAt: *result.PublishedAt,
 			},
 			HasCompleted:    true,
@@ -803,6 +851,8 @@ func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest
 		Title:            req.Title,
 		SubjectID:        req.SubjectID,
 		ClassID:          req.ClassID,
+		SessionID:        req.SessionID,
+		TermID:           req.TermID,
 		DurationMinutes:  req.DurationMinutes,
 		TotalMarks:       req.TotalMarks,
 		PassMark:         req.PassMark,
@@ -1196,11 +1246,20 @@ func (s *ExamService) buildStartExamResponse(ctx context.Context, attempt *model
 	answered, _ := s.examRepo.GetAnsweredCountWithContext(ctx, attempt.ID)
 	timeRemaining := s.calculateRemainingTime(attempt.StartTime, exam.DurationMinutes)
 
+	// Subject name isn't on the Exam model itself - same lookup pattern
+	// used in StartExamForStudent's new-attempt path.
+	var subject models.Subject
+	subjectName := ""
+	if err := s.db.WithContext(ctx).Where("id = ?", exam.SubjectID).First(&subject).Error; err == nil {
+		subjectName = subject.Name
+	}
+
 	// Build exam detail
 	examDetail := &dto.ExamDetailResponse{
 		ID:               exam.ID,
 		Title:            exam.Title,
 		SubjectID:        exam.SubjectID,
+		SubjectName:      subjectName,
 		DurationMinutes:  exam.DurationMinutes,
 		TotalMarks:       exam.TotalMarks,
 		PassMark:         exam.PassMark,
@@ -1253,10 +1312,15 @@ func (s *ExamService) buildStartExamResponse(ctx context.Context, attempt *model
 }
 
 // GetAttemptState gets the current state of an attempt
-func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string) (*dto.GetAttemptStateResponse, error) {
+func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string, studentID string) (*dto.GetAttemptStateResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, attemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
@@ -1367,11 +1431,321 @@ func (s *ExamService) GetAttemptState(ctx context.Context, attemptID string) (*d
 	}, nil
 }
 
-// SaveAnswer saves a student's answer
-func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest) (*dto.SaveAnswerResponse, error) {
+// checkWithinTimeLimit is the one server-authoritative gate against a
+// client extending its own exam time by staying offline past the
+// deadline and only writing/syncing answers afterward. Every path that
+// writes a StudentAnswer must call this - SaveAnswer always has; before
+// this fix, BulkSaveAnswers and AutoSave did not, so a student whose
+// device went offline could keep answering past the exam's duration and
+// have those late answers accepted (and graded) via the bulk-sync or
+// auto-save path even though the real-time single-answer path would
+// have rejected the very same write.
+func (s *ExamService) checkWithinTimeLimit(attempt *models.ExamAttempt, exam *models.Exam) error {
+	if time.Since(attempt.StartTime).Minutes() > float64(exam.DurationMinutes) {
+		return errors.New("time limit exceeded")
+	}
+	return nil
+}
+
+// gradeAnswer is the single place every answer-writing path (SaveAnswer,
+// BulkSaveAnswers, AutoSave) decides correctness and essay storage, so
+// the three paths can't drift out of sync with each other again (the
+// AutoSave bug above was exactly that: a second, duplicated, incomplete
+// copy of this logic). An essay/descriptive question can't be
+// auto-graded by text equality - IsCorrect stays false until a marker
+// sets MarksAwarded - but the student's actual response still needs to
+// be captured somewhere for marking to ever see it, hence EssayResponse.
+func (s *ExamService) gradeAnswer(q *models.QuestionBank, submittedText string) (isCorrect bool, essayResponse string) {
+	if q.QuestionType == models.QuestionTypeEssay {
+		return false, submittedText
+	}
+	return submittedText == q.CorrectAnswer, ""
+}
+
+// ============================================
+// MANUAL / ESSAY MARKING
+// ============================================
+
+// authorizeMarking mirrors QuestionService.authorizeQuestionWrite's
+// class-ownership pattern (admin/super_admin bypass; a teacher must be
+// the assigned teacher of the class the exam belongs to) rather than
+// introducing a separate authorization scheme for marking. ExamService
+// has no injected userRepo/classRepo, so this queries s.db directly,
+// same as several existing methods in this file (e.g.
+// buildStartExamResponse's subject lookup).
+func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classID string) error {
+	if markerUserID == "" {
+		return errors.New("unauthorized: user not authenticated")
+	}
+	var user models.User
+	if err := s.db.WithContext(ctx).Where("id = ?", markerUserID).First(&user).Error; err != nil {
+		return errors.New("unauthorized: user not found")
+	}
+	switch user.Role {
+	case models.RoleAdmin, models.RoleSuperAdmin:
+		return nil
+	case models.RoleTeacher:
+		// fall through to the class-ownership check below
+	default:
+		return errors.New("unauthorized: only teachers and admins may mark descriptive answers")
+	}
+	if classID == "" {
+		return errors.New("unauthorized: class_id is required")
+	}
+	var class models.Class
+	if err := s.db.WithContext(ctx).Where("id = ?", classID).First(&class).Error; err != nil {
+		return errors.New("unauthorized: class not found")
+	}
+	if class.TeacherID == nil || *class.TeacherID != markerUserID {
+		return errors.New("unauthorized: you are not the assigned teacher for this class")
+	}
+	return nil
+}
+
+// GetPendingManualMarking lists essay/descriptive answers awaiting a
+// score, scoped to exams the marker is authorized for: every exam for
+// an admin/super_admin, only exams whose class this teacher owns for a
+// teacher. A student or any other role gets an authorization error, not
+// an empty list - an empty list would look like "nothing pending"
+// rather than "you can't do this."
+func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID string) (*dto.ListPendingMarkingResponse, error) {
+	if markerUserID == "" {
+		return nil, errors.New("unauthorized: user not authenticated")
+	}
+	var user models.User
+	if err := s.db.WithContext(ctx).Where("id = ?", markerUserID).First(&user).Error; err != nil {
+		return nil, errors.New("unauthorized: user not found")
+	}
+
+	type pendingRow struct {
+		AttemptID     string
+		QuestionID    string
+		ExamID        string
+		ExamTitle     string
+		StudentID     string
+		FirstName     string
+		LastName      string
+		QuestionText  string
+		EssayResponse string
+		MaxMarks      int
+		SubmittedAt   *time.Time
+	}
+
+	q := s.db.WithContext(ctx).
+		Table("student_answers").
+		Select(`student_answers.attempt_id AS attempt_id, student_answers.question_id AS question_id,
+			exam_attempts.exam_id AS exam_id, exams.title AS exam_title,
+			exam_attempts.student_id AS student_id, users.first_name AS first_name, users.last_name AS last_name,
+			question_bank.question_text AS question_text, student_answers.essay_response AS essay_response,
+			question_bank.marks AS max_marks, exam_attempts.end_time AS submitted_at`).
+		Joins("JOIN exam_attempts ON exam_attempts.id = student_answers.attempt_id").
+		Joins("JOIN exams ON exams.id = exam_attempts.exam_id").
+		Joins("JOIN question_bank ON question_bank.id = student_answers.question_id").
+		Joins("JOIN students ON students.id = exam_attempts.student_id").
+		Joins("JOIN users ON users.id = students.user_id").
+		Where("question_bank.question_type = ?", string(models.QuestionTypeEssay)).
+		Where("student_answers.marks_awarded IS NULL").
+		Where("student_answers.essay_response != ''").
+		Where("exam_attempts.status = ?", string(models.AttemptStatusPendingManualMarking))
+
+	switch user.Role {
+	case models.RoleAdmin, models.RoleSuperAdmin:
+		// no further scoping - every school's pending marking is visible
+	case models.RoleTeacher:
+		q = q.Joins("JOIN classes ON classes.id = exams.class_id").
+			Where("classes.teacher_id = ?", markerUserID)
+	default:
+		return nil, errors.New("unauthorized: only teachers and admins may view pending marking")
+	}
+
+	var rows []pendingRow
+	if err := q.Order("exam_attempts.end_time ASC").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	items := make([]dto.PendingMarkingItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, dto.PendingMarkingItem{
+			AttemptID:     r.AttemptID,
+			QuestionID:    r.QuestionID,
+			ExamID:        r.ExamID,
+			ExamTitle:     r.ExamTitle,
+			StudentID:     r.StudentID,
+			StudentName:   strings.TrimSpace(r.FirstName + " " + r.LastName),
+			QuestionText:  r.QuestionText,
+			EssayResponse: r.EssayResponse,
+			MaxMarks:      r.MaxMarks,
+			SubmittedAt:   r.SubmittedAt,
+		})
+	}
+	return &dto.ListPendingMarkingResponse{Items: items, Total: len(items)}, nil
+}
+
+// MarkDescriptiveAnswer records a marker's score (and optional
+// feedback) for one essay/descriptive answer, then recomputes and
+// persists the attempt's total score/percentage/grade/passed and
+// decides whether the attempt is now fully graded. Safe to call
+// repeatedly for the same answer (a retry, or a deliberate correction
+// after the fact): it always overwrites in place and always recomputes
+// from the authoritative StudentAnswer rows, so there is no
+// incremental/delta math that could double-count or drift.
+func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAnswerRequest, markerUserID string) (*dto.MarkAnswerResponse, error) {
+	answer, err := s.examRepo.FindAnswer(req.AttemptID, req.QuestionID)
+	if err != nil || answer == nil {
+		return nil, errors.New("answer not found")
+	}
+
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, errors.New("exam not found")
+	}
+
+	// Unauthorized users cannot mark another school's exams or alter
+	// results outside their permissions - the same class-ownership gate
+	// as every other teacher-facing write in this codebase.
+	if err := s.authorizeMarking(ctx, markerUserID, exam.ClassID); err != nil {
+		return nil, err
+	}
+
+	q, err := s.questionRepo.FindByID(ctx, req.QuestionID)
+	if err != nil {
+		return nil, errors.New("question not found")
+	}
+	// Objective questions remain automatically marked - manual marking
+	// is only for the one question type that can't be auto-graded by
+	// text equality.
+	if q.QuestionType != models.QuestionTypeEssay {
+		return nil, errors.New("only essay/descriptive questions can be manually marked")
+	}
+	if req.MarksAwarded < 0 || req.MarksAwarded > q.Marks {
+		return nil, fmt.Errorf("marks_awarded must be between 0 and %d for this question", q.Marks)
+	}
+	// A student can only be marked after they've actually submitted -
+	// marking an in-progress attempt would let a score exist for an
+	// exam the student could still be actively answering.
+	if attempt.Status != string(models.AttemptStatusPendingManualMarking) && attempt.Status != string(models.AttemptStatusCompleted) {
+		return nil, errors.New("attempt has not been submitted yet")
+	}
+
+	now := time.Now()
+	marksAwarded := req.MarksAwarded
+	markerID := markerUserID
+	answer.MarksAwarded = &marksAwarded
+	answer.MarkedBy = &markerID
+	answer.MarkedAt = &now
+	answer.MarkerFeedback = req.Feedback
+	if err := s.examRepo.UpdateAnswer(answer); err != nil {
+		return nil, err
+	}
+
+	return s.finalizeMarkingForAttempt(ctx, attempt, exam, req.QuestionID, marksAwarded)
+}
+
+// finalizeMarkingForAttempt recomputes an attempt's score/percentage/
+// grade/passed from every StudentAnswer row currently on record (the
+// same actual-question-marks-denominator formula SubmitExam uses - see
+// its comments for why exam.TotalMarks alone can't be trusted), updates
+// the attempt's status (pending_manual_marking while any essay answer
+// is still unscored, completed once none are), and updates the ONE
+// existing Result row for this attempt in place - never creates a
+// second one, preserving the same invariant SubmitExam's idempotent
+// resubmit already relies on.
+func (s *ExamService) finalizeMarkingForAttempt(ctx context.Context, attempt *models.ExamAttempt, exam *models.Exam, justMarkedQuestionID string, justMarkedMarks int) (*dto.MarkAnswerResponse, error) {
+	answers, err := s.examRepo.FindAnswersByAttemptWithContext(ctx, attempt.ID)
+	if err != nil {
+		return nil, err
+	}
+	examQuestions, err := s.examRepo.GetExamQuestionsWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	actualTotalMarks := 0
+	questionByID := make(map[string]models.QuestionBank, len(examQuestions))
+	for _, q := range examQuestions {
+		actualTotalMarks += q.Marks
+		questionByID[q.ID] = q
+	}
+	if actualTotalMarks == 0 {
+		actualTotalMarks = exam.TotalMarks
+	}
+
+	totalScore := 0
+	needsManualMarking := false
+	for _, ans := range answers {
+		q, ok := questionByID[ans.QuestionID]
+		if !ok {
+			continue
+		}
+		if q.QuestionType == models.QuestionTypeEssay {
+			if ans.MarksAwarded != nil {
+				totalScore += *ans.MarksAwarded
+			} else if ans.EssayResponse != "" {
+				needsManualMarking = true
+			}
+			continue
+		}
+		if ans.IsCorrect {
+			totalScore += q.Marks
+		}
+	}
+
+	percentage := float64(totalScore) / float64(actualTotalMarks) * 100
+	passMarkPercentage := float64(exam.PassMark) / float64(actualTotalMarks) * 100
+	passed := percentage >= passMarkPercentage
+	grade, _, _ := dto.GetGrade(percentage)
+
+	if needsManualMarking {
+		attempt.Status = string(models.AttemptStatusPendingManualMarking)
+	} else {
+		attempt.Status = string(models.AttemptStatusCompleted)
+	}
+	attempt.Score = &totalScore
+	attempt.Percentage = &percentage
+	if err := s.examRepo.UpdateAttempt(attempt); err != nil {
+		return nil, err
+	}
+
+	result, err := s.examRepo.FindResultByAttempt(ctx, attempt.ID)
+	if err != nil || result == nil {
+		return nil, errors.New("result not found for this attempt - it may not have been submitted yet")
+	}
+	result.TotalScore = totalScore
+	result.Percentage = percentage
+	result.Grade = grade
+	result.Passed = passed
+	result.FullyGraded = !needsManualMarking
+	if err := s.examRepo.UpdateResult(result); err != nil {
+		return nil, err
+	}
+
+	return &dto.MarkAnswerResponse{
+		AttemptID:     attempt.ID,
+		QuestionID:    justMarkedQuestionID,
+		MarksAwarded:  justMarkedMarks,
+		MaxMarks:      questionByID[justMarkedQuestionID].Marks,
+		AttemptStatus: attempt.Status,
+		FullyGraded:   !needsManualMarking,
+		TotalScore:    totalScore,
+		Percentage:    percentage,
+		Passed:        passed,
+	}, nil
+}
+
+// SaveAnswer saves a student's answer
+func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest, studentID string) (*dto.SaveAnswerResponse, error) {
+	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
+	if err != nil {
+		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1383,9 +1757,8 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 		return nil, err
 	}
 
-	// Check time limit
-	if time.Since(attempt.StartTime).Minutes() > float64(exam.DurationMinutes) {
-		return nil, errors.New("time limit exceeded")
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	// Get question
@@ -1397,11 +1770,12 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 	// Check if answer already exists
 	existing, _ := s.examRepo.FindAnswer(req.AttemptID, req.QuestionID)
 
-	isCorrect := (req.SelectedAnswer == q.CorrectAnswer)
+	isCorrect, essayResponse := s.gradeAnswer(q, req.SelectedAnswer)
 
 	var answer *models.StudentAnswer
 	if existing != nil {
 		existing.SelectedAnswer = req.SelectedAnswer
+		existing.EssayResponse = essayResponse
 		existing.IsCorrect = isCorrect
 		existing.TimeSpent = req.TimeSpent
 		existing.IsMarked = req.IsMarked
@@ -1415,6 +1789,7 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 			AttemptID:      req.AttemptID,
 			QuestionID:     req.QuestionID,
 			SelectedAnswer: req.SelectedAnswer,
+			EssayResponse:  essayResponse,
 			IsCorrect:      isCorrect,
 			IsMarked:       req.IsMarked,
 			TimeSpent:      req.TimeSpent,
@@ -1452,14 +1827,27 @@ func (s *ExamService) SaveAnswer(ctx context.Context, req *dto.SaveAnswerRequest
 }
 
 // BulkSaveAnswers saves multiple answers (for offline sync)
-func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnswerRequest) (*dto.BulkSaveAnswerResponse, error) {
+func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnswerRequest, studentID string) (*dto.BulkSaveAnswerResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
 	}
 
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
+	}
+
 	if attempt.Status != string(models.AttemptStatusInProgress) {
 		return nil, errors.New("exam already submitted")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	var errorsList []string
@@ -1473,13 +1861,14 @@ func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnsw
 			continue
 		}
 
-		isCorrect := (item.SelectedAnswer == q.CorrectAnswer)
+		isCorrect, essayResponse := s.gradeAnswer(q, item.SelectedAnswer)
 
 		// Check if answer exists
 		existing, _ := s.examRepo.FindAnswer(req.AttemptID, item.QuestionID)
 
 		if existing != nil {
 			existing.SelectedAnswer = item.SelectedAnswer
+			existing.EssayResponse = essayResponse
 			existing.IsCorrect = isCorrect
 			existing.TimeSpent = item.TimeSpent
 			existing.IsMarked = item.IsMarked
@@ -1493,6 +1882,7 @@ func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnsw
 				AttemptID:      req.AttemptID,
 				QuestionID:     item.QuestionID,
 				SelectedAnswer: item.SelectedAnswer,
+				EssayResponse:  essayResponse,
 				IsCorrect:      isCorrect,
 				IsMarked:       item.IsMarked,
 				TimeSpent:      item.TimeSpent,
@@ -1531,14 +1921,27 @@ func (s *ExamService) BulkSaveAnswers(ctx context.Context, req *dto.BulkSaveAnsw
 }
 
 // MarkReview marks a question for review
-func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest) (*dto.MarkReviewResponse, error) {
+func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest, studentID string) (*dto.MarkReviewResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
 	}
 
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
+	}
+
 	if attempt.Status != string(models.AttemptStatusInProgress) {
 		return nil, errors.New("exam already submitted")
+	}
+
+	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkWithinTimeLimit(attempt, exam); err != nil {
+		return nil, err
 	}
 
 	// Find or create answer
@@ -1586,14 +1989,16 @@ func (s *ExamService) MarkReview(ctx context.Context, req *dto.MarkReviewRequest
 }
 
 // SubmitExam submits an exam for grading
-func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest) (*dto.SubmitExamResponse, error) {
+func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest, studentID string) (*dto.SubmitExamResponse, error) {
+    // Fast-path check outside the transaction (cheap "not found"/"not
+    // yours" rejection). The authoritative check is repeated below,
+    // inside the transaction, under a row lock.
     attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
     if err != nil {
         return nil, errors.New("attempt not found")
     }
-
-    if attempt.Status != string(models.AttemptStatusInProgress) {
-        return nil, errors.New("exam already submitted")
+    if attempt.StudentID != studentID {
+        return nil, errors.New("unauthorized")
     }
 
     tx := s.db.Begin()
@@ -1602,6 +2007,64 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
             tx.Rollback()
         }
     }()
+    // Previously this transaction was decorative: UpdateAttempt/
+    // CreateResult below went through s.examRepo, which holds the
+    // original (non-tx) *gorm.DB, so a rollback would not actually have
+    // undone a write that had already landed. txExamRepo binds the same
+    // repository methods to this transaction instead.
+    txExamRepo := repository.NewExamRepository(tx)
+
+    // Re-read and row-lock the attempt inside the transaction so a
+    // concurrent SubmitExam call for the same attempt (a client retry
+    // racing the original request, or a genuine duplicate submit)
+    // blocks here instead of both racing past the status check below -
+    // previously the status check happened before any transaction was
+    // even opened, so two concurrent calls could both observe
+    // "in progress" and both proceed to grade and create a Result row.
+    var lockedAttempt models.ExamAttempt
+    if err := tx.WithContext(ctx).
+        Clauses(clause.Locking{Strength: "UPDATE"}).
+        Where("id = ?", req.AttemptID).
+        First(&lockedAttempt).Error; err != nil {
+        tx.Rollback()
+        return nil, errors.New("attempt not found")
+    }
+
+    if lockedAttempt.Status != string(models.AttemptStatusInProgress) {
+        tx.Rollback()
+        // Idempotent re-submit: a retried request for an attempt that's
+        // already graded (e.g. the first call's response was lost in
+        // transit but it actually committed) returns the existing
+        // result instead of erroring - the caller cannot otherwise tell
+        // "already submitted by someone else" apart from "your own
+        // earlier submit already succeeded." Never creates or
+        // overwrites a second Result row.
+        if existing, findErr := s.examRepo.FindResultByAttempt(ctx, req.AttemptID); findErr == nil && existing != nil {
+            exam, _ := s.examRepo.FindExamByIDWithContext(ctx, lockedAttempt.ExamID)
+            totalMarks := 0
+            if exam != nil {
+                totalMarks = exam.TotalMarks
+            }
+            submittedAt := time.Now()
+            if lockedAttempt.EndTime != nil {
+                submittedAt = *lockedAttempt.EndTime
+            }
+            timeTaken := int(submittedAt.Sub(lockedAttempt.StartTime).Minutes())
+            return &dto.SubmitExamResponse{
+                AttemptID:        req.AttemptID,
+                ResultID:         existing.ID,
+                Score:            existing.TotalScore,
+                TotalMarks:       totalMarks,
+                Percentage:       existing.Percentage,
+                Grade:            existing.Grade,
+                Passed:           existing.Passed,
+                TimeTakenMinutes: timeTaken,
+                Status:           lockedAttempt.Status,
+                SubmittedAt:      submittedAt,
+            }, nil
+        }
+        return nil, errors.New("exam already submitted")
+    }
 
     // Get all answers
     answers, err := s.examRepo.FindAnswersByAttemptWithContext(ctx, req.AttemptID)
@@ -1611,59 +2074,124 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
     }
 
     // Calculate score
-    exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
+    exam, err := s.examRepo.FindExamByIDWithContext(ctx, lockedAttempt.ExamID)
     if err != nil {
         tx.Rollback()
         return nil, err
     }
 
+    // exam.TotalMarks is a separate, teacher-entered field on the Exam
+    // record (set at exam-creation time) - nothing keeps it in sync with
+    // the marks of the questions actually attached later via
+    // AddQuestionsToExam, so it can legitimately drift from the real
+    // sum. Confirmed live: a 40-question, 1-mark-each exam created with
+    // TotalMarks=15 produced a graded percentage of 186.67% (totalScore
+    // 28 / exam.TotalMarks 15 * 100) - a passed/graded Result with an
+    // impossible percentage, silently stored. The denominator must be
+    // the actual sum of the attached questions' marks, not the
+    // independently-set declarative field.
+    examQuestions, err := s.examRepo.GetExamQuestionsWithContext(ctx, lockedAttempt.ExamID)
+    if err != nil {
+        tx.Rollback()
+        return nil, err
+    }
+    actualTotalMarks := 0
+    questionByID := make(map[string]models.QuestionBank, len(examQuestions))
+    for _, q := range examQuestions {
+        actualTotalMarks += q.Marks
+        questionByID[q.ID] = q
+    }
+    if actualTotalMarks == 0 {
+        // No questions attached (shouldn't happen - AddQuestionsToExam
+        // enforces a minimum count - but avoids a division by zero if
+        // it somehow does) - fall back to the declarative field.
+        actualTotalMarks = exam.TotalMarks
+    }
+
+    // Score and detect outstanding manual marking in one pass. An
+    // objective question's marks come from IsCorrect as before. An
+    // essay/descriptive question can't be auto-graded (gradeAnswer
+    // never sets IsCorrect for one) - its marks come from MarksAwarded
+    // once a marker sets it, and contribute 0 until then. An essay
+    // question the student actually answered but that has no
+    // MarksAwarded yet means this submission can't be finalized as
+    // AttemptStatusCompleted - it goes to AttemptStatusPendingManualMarking
+    // instead, which every existing status=="completed" query (results,
+    // rankings, the student's own completed-exams list) already
+    // excludes without further changes. An essay question the student
+    // left blank has nothing to mark, so it doesn't block finalization -
+    // it simply contributes 0, same as an unanswered objective question.
     totalScore := 0
+    needsManualMarking := false
     for _, ans := range answers {
-        if ans.IsCorrect {
-            q, err := s.questionRepo.FindByID(ctx, ans.QuestionID)
-            if err != nil {
-                continue
+        q, ok := questionByID[ans.QuestionID]
+        if !ok {
+            continue
+        }
+        if q.QuestionType == models.QuestionTypeEssay {
+            if ans.MarksAwarded != nil {
+                totalScore += *ans.MarksAwarded
+            } else if ans.EssayResponse != "" {
+                needsManualMarking = true
             }
+            continue
+        }
+        if ans.IsCorrect {
             totalScore += q.Marks
         }
     }
 
     now := time.Now()
-    attempt.Status = string(models.AttemptStatusCompleted)
-    attempt.EndTime = &now
-    attempt.Score = &totalScore
+    if needsManualMarking {
+        lockedAttempt.Status = string(models.AttemptStatusPendingManualMarking)
+    } else {
+        lockedAttempt.Status = string(models.AttemptStatusCompleted)
+    }
+    lockedAttempt.EndTime = &now
+    lockedAttempt.Score = &totalScore
 
-    percentage := float64(totalScore) / float64(exam.TotalMarks) * 100
-    attempt.Percentage = &percentage
+    percentage := float64(totalScore) / float64(actualTotalMarks) * 100
+    lockedAttempt.Percentage = &percentage
 
-    if err := s.examRepo.UpdateAttempt(attempt); err != nil {
+    if err := txExamRepo.UpdateAttempt(&lockedAttempt); err != nil {
         tx.Rollback()
         return nil, err
     }
 
-    // Calculate grade and passed status
-    passed := percentage >= float64(exam.PassMark)
+    // Calculate grade and passed status. exam.PassMark is a raw mark
+    // threshold on the same scale as total marks (e.g. "8" out of a
+    // 15-mark exam), not a percentage - comparing it directly against
+    // `percentage` (always 0-100) mixed two different scales, and since
+    // a real percentage score almost always numerically exceeds a
+    // single-digit-to-low-double-digit pass mark, this made "passed"
+    // true for nearly any attempt regardless of actual performance.
+    // Converting PassMark to the same percentage scale before comparing
+    // fixes this, using the same actualTotalMarks denominator as above
+    // for consistency.
+    passMarkPercentage := float64(exam.PassMark) / float64(actualTotalMarks) * 100
+    passed := percentage >= passMarkPercentage
     grade, _, _ := dto.GetGrade(percentage)
 
-    // Create result - NOW using the passed variable
     result := &models.Result{
         ID:          models.GenerateID(),
-        ExamID:      attempt.ExamID,
-        StudentID:   attempt.StudentID,
-        AttemptID:   attempt.ID,
+        ExamID:      lockedAttempt.ExamID,
+        StudentID:   lockedAttempt.StudentID,
+        AttemptID:   lockedAttempt.ID,
         TotalScore:  totalScore,
         Percentage:  percentage,
         Grade:       grade,
-        Passed:      passed,  // ✅ FIXED: Now using the passed variable
+        Passed:      passed,
+        FullyGraded: !needsManualMarking,
         PublishedAt: &now,
     }
-    if err := s.examRepo.CreateResult(result); err != nil {
+    if err := txExamRepo.CreateResult(result); err != nil {
         tx.Rollback()
         return nil, err
     }
 
-    // Update proctoring session
-    proctoring, _ := s.examRepo.FindProctoringByAttempt(ctx, attempt.ID)
+    // Update proctoring session (unchanged: not part of the exam-result
+    // transaction - a failure here does not affect grading correctness)
+    proctoring, _ := s.examRepo.FindProctoringByAttempt(ctx, lockedAttempt.ID)
     if proctoring != nil {
         proctoring.Status = "completed"
         proctoring.EndedAt = &now
@@ -1674,7 +2202,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         return nil, err
     }
 
-    timeTaken := int(now.Sub(attempt.StartTime).Minutes())
+    timeTaken := int(now.Sub(lockedAttempt.StartTime).Minutes())
 
     return &dto.SubmitExamResponse{
         AttemptID:        req.AttemptID,
@@ -1683,18 +2211,23 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         TotalMarks:       exam.TotalMarks,
         Percentage:       percentage,
         Grade:            grade,
-        Passed:           passed,  // ✅ CORRECT
+        Passed:           passed,
         TimeTakenMinutes: timeTaken,
-        Status:           string(models.AttemptStatusCompleted),
+        Status:           lockedAttempt.Status,
         SubmittedAt:      now,
     }, nil
 }
 
 // OfflineSubmit submits an exam offline
-func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitRequest) (*dto.OfflineSubmitResponse, error) {
+func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitRequest, studentID string) (*dto.OfflineSubmitResponse, error) {
 	attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
 	if err != nil {
 		return nil, errors.New("attempt not found")
+	}
+
+	// Verify ownership
+	if attempt.StudentID != studentID {
+		return nil, errors.New("unauthorized")
 	}
 
 	if attempt.Status != string(models.AttemptStatusInProgress) {
@@ -1880,10 +2413,15 @@ func (s *ExamService) OfflineSubmit(ctx context.Context, req *dto.OfflineSubmitR
 
 
 // SyncOfflineAnswers syncs offline answers when online
-func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswersRequest) (*dto.SyncAnswersResponse, error) {
+func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswersRequest, studentID string) (*dto.SyncAnswersResponse, error) {
     attempt, err := s.examRepo.FindAttemptByIDWithContext(ctx, req.AttemptID)
     if err != nil {
         return nil, errors.New("attempt not found")
+    }
+
+    // Verify ownership
+    if attempt.StudentID != studentID {
+        return nil, errors.New("unauthorized")
     }
 
     if attempt.Status != string(models.AttemptStatusSubmitted) {
@@ -3545,6 +4083,86 @@ func (s *ExamService) StartExamForStudent(ctx context.Context, examID string, st
     )
 
     return s.buildStartExamResponse(ctx, attempt)
+}
+
+// GetExamPackageForStudent authorizes and returns a full exam package
+// (exam detail + every question/option, no correct answers) for offline
+// download, WITHOUT creating an ExamAttempt or starting the exam clock -
+// unlike StartExamForStudent, which does both. This is what lets a
+// student download an exam ahead of time while still online, per the
+// offline-first plan's "download exam package before the exam" flow.
+func (s *ExamService) GetExamPackageForStudent(ctx context.Context, examID string, studentID string) (*dto.ExamPackageResponse, error) {
+    if studentID == "" {
+        return nil, errors.New("student ID is required")
+    }
+
+    student, err := s.examRepo.GetStudentByID(ctx, studentID)
+    if err != nil {
+        return nil, errors.New("student not found")
+    }
+
+    exam, questions, err := s.examRepo.FindExamWithQuestionsWithContext(ctx, examID)
+    if err != nil {
+        return nil, errors.New("exam not found")
+    }
+
+    if exam.ClassID != "" && exam.ClassID != student.ClassID {
+        return nil, errors.New("exam not assigned to your class")
+    }
+
+    // Deliberately NOT checking "has not started yet" here - downloading
+    // ahead of the exam's start time is the entire point of this
+    // endpoint. Still block downloads once the exam window has closed.
+    if exam.EndTime != nil && time.Now().After(*exam.EndTime) {
+        return nil, errors.New("exam has already ended")
+    }
+
+    var subject models.Subject
+    subjectName := ""
+    if err := s.db.WithContext(ctx).Where("id = ?", exam.SubjectID).First(&subject).Error; err == nil {
+        subjectName = subject.Name
+    }
+
+    examDetail := &dto.ExamDetailResponse{
+        ID:               exam.ID,
+        Title:            exam.Title,
+        SubjectID:        exam.SubjectID,
+        SubjectName:      subjectName,
+        DurationMinutes:  exam.DurationMinutes,
+        TotalMarks:       exam.TotalMarks,
+        PassMark:         exam.PassMark,
+        Instructions:     exam.Instructions,
+        StartTime:        exam.StartTime,
+        EndTime:          exam.EndTime,
+        ShuffleQuestions: exam.ShuffleQuestions,
+        ShuffleOptions:   exam.ShuffleOptions,
+    }
+
+    var qResponses []dto.QuestionResponse
+    hasher := sha256.New()
+    for i, q := range questions {
+        qr := dto.QuestionResponse{
+            ID:           q.ID,
+            QuestionText: q.QuestionText,
+            OptionA:      s.extractOptionFromStorage(q.Options, "A"),
+            OptionB:      s.extractOptionFromStorage(q.Options, "B"),
+            OptionC:      s.extractOptionFromStorage(q.Options, "C"),
+            OptionD:      s.extractOptionFromStorage(q.Options, "D"),
+            Marks:        q.Marks,
+            SortOrder:    i + 1,
+        }
+        qResponses = append(qResponses, qr)
+        fmt.Fprintf(hasher, "%s|%s|%s|%s|%s|%s|%d|%d;",
+            qr.ID, qr.QuestionText, qr.OptionA, qr.OptionB, qr.OptionC, qr.OptionD, qr.Marks, qr.SortOrder)
+    }
+
+    return &dto.ExamPackageResponse{
+        Exam:           examDetail,
+        Questions:      qResponses,
+        PackageVersion: exam.UpdatedAt.Unix(),
+        ContentHash:    hex.EncodeToString(hasher.Sum(nil)),
+        GeneratedAt:    time.Now(),
+    }, nil
 }
 
 // ============================================

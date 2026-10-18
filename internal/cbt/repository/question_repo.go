@@ -115,14 +115,12 @@ func (r *QuestionRepository) Create(ctx context.Context, question *models.Questi
 
 	// Validate Exam Type
 	if question.ExamType != "" {
-		validExamTypes := map[string]bool{
-			"weekly_test": true,
-			"mid_term":    true,
-			"main_exam":   true,
-			"practice":    true,
+		validExamTypes := make(map[string]bool)
+		for _, t := range dto.AllExamTypes() {
+			validExamTypes[t] = true
 		}
 		if !validExamTypes[question.ExamType] {
-			return fmt.Errorf("invalid exam_type: %s (must be one of: weekly_test, mid_term, main_exam, practice)", question.ExamType)
+			return fmt.Errorf("invalid exam_type: %s (must be one of: %s)", question.ExamType, strings.Join(dto.AllExamTypes(), ", "))
 		}
 	}
 
@@ -522,8 +520,7 @@ func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjec
 		stats[r.ExamType] = r.Count
 	}
 
-	examTypes := []string{"weekly_test", "mid_term", "main_exam", "practice"}
-	for _, et := range examTypes {
+	for _, et := range dto.AllExamTypes() {
 		if _, ok := stats[et]; !ok {
 			stats[et] = 0
 		}

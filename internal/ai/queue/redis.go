@@ -19,13 +19,25 @@ type RedisQueue struct {
 	client *redis.Client
 }
 
-// NewRedisQueue creates a new Redis queue.
+// NewRedisQueue creates a new Redis queue from a plain host:port address,
+// no auth or TLS. Kept for local/dev use (e.g. a bare localhost:6379).
 func NewRedisQueue(addr string) *RedisQueue {
 	return &RedisQueue{
 		client: redis.NewClient(&redis.Options{
 			Addr: addr,
 		}),
 	}
+}
+
+// NewRedisQueueFromURL creates a new Redis queue from a connection URL,
+// e.g. redis://:password@host:port or rediss://default:password@host:port
+// (rediss:// enables TLS, as required by managed providers like Upstash).
+func NewRedisQueueFromURL(url string) (*RedisQueue, error) {
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		return nil, err
+	}
+	return &RedisQueue{client: redis.NewClient(opts)}, nil
 }
 
 func (q *RedisQueue) Push(ctx context.Context, key string, value string) error {

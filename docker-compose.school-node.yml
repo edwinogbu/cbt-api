@@ -1,0 +1,78 @@
+# Stands up a complete, self-contained School CBT Node: the cbt-api
+# binary plus its own local Postgres and Redis, all on the school's LAN
+# with no dependency on internet/cloud reachability. See
+# README-SCHOOL-NODE.md for the full setup walkthrough.
+#
+# Usage:
+#   cp .env.school-node.example .env.school-node   # then edit it - see README
+#   docker compose -f docker-compose.school-node.yml --env-file .env.school-node up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-cbt_node}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required - see .env.school-node.example}
+      POSTGRES_DB: ${DB_NAME:-cbt_db}
+    volumes:
+      - cbt_node_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-cbt_node} -d ${DB_NAME:-cbt_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cbt_node
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - cbt_node_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cbt_node
+
+  cbt-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      PORT: 8080
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-cbt_node}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required - see .env.school-node.example}
+      DB_NAME: ${DB_NAME:-cbt_db}
+      DB_SSLMODE: disable
+      AUTO_MIGRATE: "true"
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - generate a unique one per node, see README-SCHOOL-NODE.md}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required - generate a unique one per node, see README-SCHOOL-NODE.md}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      GIN_MODE: release
+    ports:
+      - "${SCHOOL_NODE_PORT:-8080}:8080"
+    networks:
+      - cbt_node
+
+volumes:
+  cbt_node_pgdata:
+  cbt_node_redisdata:
+
+networks:
+  cbt_node:
+    driver: bridge

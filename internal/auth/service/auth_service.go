@@ -235,11 +235,21 @@ func (s *AuthService) Login(req *dto.LoginRequest, clientIP, userAgent string) (
 }
 
 func (s *AuthService) completeLogin(user *models.User, clientIP, userAgent string) (*dto.LoginResponse, error) {
+	return s.completeLoginWithRole(user, string(user.Role), clientIP, userAgent)
+}
+
+// completeLoginWithRole issues tokens for activeRole rather than always
+// the account's primary user.Role - used by both the normal login path
+// (activeRole == user.Role) and SwitchRole (activeRole == the granted
+// role being switched to). Every existing permission check reads the
+// JWT's role claim, so this is the one place that needs to know the
+// difference between "primary role" and "active role for this session".
+func (s *AuthService) completeLoginWithRole(user *models.User, activeRole, clientIP, userAgent string) (*dto.LoginResponse, error) {
 	emailStr := ""
 	if user.Email != nil {
 		emailStr = *user.Email
 	}
-	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role))
+	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, activeRole)
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +263,12 @@ func (s *AuthService) completeLogin(user *models.User, clientIP, userAgent strin
 	}
 	_ = s.repo.CreateSession(session)
 	_ = s.repo.UpdateLastLogin(user.ID)
+	availableRoles, err := s.GetAvailableRoles(user.ID)
+	if err != nil {
+		// Available-role lookup failing shouldn't block login/switch -
+		// the active role (already validated by the caller) still works.
+		availableRoles = []string{activeRole}
+	}
 	return &dto.LoginResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -265,14 +281,89 @@ func (s *AuthService) completeLogin(user *models.User, clientIP, userAgent strin
 			FirstName:        user.FirstName,
 			LastName:         user.LastName,
 			PhoneNumber:      user.PhoneNumber,
-			Role:             string(user.Role),
+			Role:             activeRole,
 			Status:           string(user.Status),
 			EmailVerified:    user.EmailVerified,
 			TwoFactorEnabled: user.TwoFactorEnabled,
 			SchoolID:         user.SchoolID,
 			CreatedAt:        user.CreatedAt,
+			AvailableRoles:   availableRoles,
 		},
 	}, nil
+}
+
+// GetAvailableRoles returns every role this account can act as: its
+// primary Role plus any extra UserRoleGrant rows, deduplicated.
+func (s *AuthService) GetAvailableRoles(userID string) ([]string, error) {
+	user, err := s.repo.FindUserByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	grants, err := s.repo.FindRoleGrantsByUserID(userID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{string(user.Role): true}
+	roles := []string{string(user.Role)}
+	for _, g := range grants {
+		if !seen[string(g.Role)] {
+			seen[string(g.Role)] = true
+			roles = append(roles, string(g.Role))
+		}
+	}
+	return roles, nil
+}
+
+// SwitchRole re-issues tokens with a different active role, without
+// requiring the user to log out. targetRole must be the account's
+// primary role or one of its granted roles (GetAvailableRoles) - this
+// is the server-side authorization check; it does not trust the
+// client's claim that it's allowed to switch, and the resulting JWT's
+// role claim is what every downstream permission check actually
+// enforces (switching never writes to user.Role, so revoking a grant
+// takes effect the next time that role is checked against the grants
+// table - see RevokeRole).
+func (s *AuthService) SwitchRole(userID, targetRole, clientIP, userAgent string) (*dto.LoginResponse, error) {
+	user, err := s.repo.FindUserByID(userID)
+	if err != nil {
+		return nil, errors.New("user not found")
+	}
+	available, err := s.GetAvailableRoles(userID)
+	if err != nil {
+		return nil, err
+	}
+	allowed := false
+	for _, r := range available {
+		if r == targetRole {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, errors.New("role not granted to this account")
+	}
+	return s.completeLoginWithRole(user, targetRole, clientIP, userAgent)
+}
+
+// GrantRole gives an additional role to a user. grantedBy is the admin
+// user ID performing the grant, recorded for audit purposes.
+func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
+	if _, err := s.repo.FindUserByID(targetUserID); err != nil {
+		return errors.New("user not found")
+	}
+	grant := &models.UserRoleGrant{
+		ID:        uuid.New().String(),
+		UserID:    targetUserID,
+		Role:      models.UserRole(role),
+		GrantedBy: &grantedBy,
+	}
+	return s.repo.CreateRoleGrant(grant)
+}
+
+// RevokeRole removes a previously granted role. It never removes a
+// user's primary Role - only additional grants.
+func (s *AuthService) RevokeRole(targetUserID, role string) error {
+	return s.repo.DeleteRoleGrant(targetUserID, models.UserRole(role))
 }
 
 // Verify2FALogin verifies 2FA code during login

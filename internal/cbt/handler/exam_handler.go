@@ -1,9 +1,10 @@
 package handler
 
 import (
-	// "context" 
+	// "context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/service"
@@ -760,6 +761,51 @@ func (h *ExamHandler) StartExamForUser(c *gin.Context) {
     })
 }
 
+// GetExamPackageForUser godoc
+// @Summary      Download an exam package for offline use (no attempt created)
+// @Tags         Student Exams
+// @Produce      json
+// @Param        examId path string true "Exam ID"
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Failure      404 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/package/{examId} [get]
+func (h *ExamHandler) GetExamPackageForUser(c *gin.Context) {
+    examID := c.Param("examId")
+    if examID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "exam id is required in the URL path"})
+        return
+    }
+
+    studentID := middleware.GetStudentID(c)
+    if studentID == "" {
+        c.JSON(http.StatusNotFound, gin.H{"error": "student context not found"})
+        return
+    }
+
+    resp, err := h.examService.GetExamPackageForStudent(c.Request.Context(), examID, studentID)
+    if err != nil {
+        status := http.StatusInternalServerError
+        switch err.Error() {
+        case "exam has already ended":
+            status = http.StatusForbidden
+        case "exam not found", "student not found":
+            status = http.StatusNotFound
+        case "exam not assigned to your class":
+            status = http.StatusForbidden
+        }
+        c.JSON(status, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "status": "success",
+        "data":   resp,
+    })
+}
+
 // GetStudentExamResultForUser godoc
 // @Summary      Get exam result for authenticated student
 // @Tags         Student Results
@@ -1007,9 +1053,19 @@ func (h *ExamHandler) GetAttemptState(c *gin.Context) {
 		return
 	}
 
-	state, err := h.examService.GetAttemptState(c.Request.Context(), attemptID)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	state, err := h.examService.GetAttemptState(c.Request.Context(), attemptID, studentID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		status := http.StatusNotFound
+		if err.Error() == "unauthorized" {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1037,10 +1093,17 @@ func (h *ExamHandler) SaveAnswer(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.SaveAnswer(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.SaveAnswer(c.Request.Context(), &req, studentID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err.Error() == "time limit exceeded" {
+		switch err.Error() {
+		case "time limit exceeded", "unauthorized":
 			status = http.StatusForbidden
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -1071,9 +1134,20 @@ func (h *ExamHandler) BulkSaveAnswers(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.BulkSaveAnswers(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.BulkSaveAnswers(c.Request.Context(), &req, studentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		switch err.Error() {
+		case "time limit exceeded", "unauthorized":
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1100,9 +1174,19 @@ func (h *ExamHandler) MarkReview(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.MarkReview(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.MarkReview(c.Request.Context(), &req, studentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if err.Error() == "unauthorized" {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1129,9 +1213,100 @@ func (h *ExamHandler) AutoSave(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.AutoSave(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.AutoSave(c.Request.Context(), &req, studentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		switch err.Error() {
+		case "time limit exceeded", "unauthorized", "exam already submitted":
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   resp,
+	})
+}
+
+// GetPendingManualMarking godoc
+// @Summary      List essay/descriptive answers awaiting manual marking
+// @Tags         Marking
+// @Produce      json
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/marking/pending [get]
+func (h *ExamHandler) GetPendingManualMarking(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	resp, err := h.examService.GetPendingManualMarking(c.Request.Context(), userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.HasPrefix(err.Error(), "unauthorized") {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   resp,
+	})
+}
+
+// MarkDescriptiveAnswer godoc
+// @Summary      Record a manual score for one essay/descriptive answer
+// @Tags         Marking
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.MarkAnswerRequest true "Mark answer request"
+// @Success      200 {object} map[string]interface{} "data"
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      403 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/marking/grade [post]
+func (h *ExamHandler) MarkDescriptiveAnswer(c *gin.Context) {
+	var req dto.MarkAnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	resp, err := h.examService.MarkDescriptiveAnswer(c.Request.Context(), &req, userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case strings.HasPrefix(err.Error(), "unauthorized"):
+			status = http.StatusForbidden
+		case strings.Contains(err.Error(), "not found"):
+			status = http.StatusNotFound
+		case strings.Contains(err.Error(), "must be between"),
+			strings.Contains(err.Error(), "only essay"),
+			strings.Contains(err.Error(), "has not been submitted"):
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1159,10 +1334,17 @@ func (h *ExamHandler) SubmitExam(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.SubmitExam(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.SubmitExam(c.Request.Context(), &req, studentID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err.Error() == "exam already submitted" {
+		switch err.Error() {
+		case "exam already submitted", "unauthorized":
 			status = http.StatusForbidden
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -1192,9 +1374,19 @@ func (h *ExamHandler) OfflineSubmit(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.OfflineSubmit(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.OfflineSubmit(c.Request.Context(), &req, studentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if err.Error() == "unauthorized" {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1221,9 +1413,19 @@ func (h *ExamHandler) SyncOfflineAnswers(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.SyncOfflineAnswers(c.Request.Context(), &req)
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
+		return
+	}
+
+	resp, err := h.examService.SyncOfflineAnswers(c.Request.Context(), &req, studentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if err.Error() == "unauthorized" {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 

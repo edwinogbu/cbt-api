@@ -33,6 +33,7 @@ func init() {
 	Register(&User{})
 	Register(&UserSession{})
 	Register(&OTP{})
+	Register(&UserRoleGrant{})
 
 	// ============================================
 	// ACADEMIC MODELS
@@ -64,6 +65,7 @@ func init() {
 	// ============================================
 	Register(&QuestionBank{})      // ✅ Questions stored here
 	Register(&Tag{})               // ✅ Tags for questions (was QuestionTag)
+	Register(&QuestionTagMapping{}) // ✅ Question<->Tag join table (attachTagsByNames writes here; was missing from AutoMigrate, so a fresh schema could never actually save a tagged question)
 	Register(&QuestionBankAttachment{})
 	Register(&BulkImportJob{})
 	Register(&AIQuestionGenerationJob{})
@@ -74,10 +76,23 @@ func init() {
 	Register(&ExamAssignment{})
 	Register(&Subject{})           // ✅ Subjects
 	Register(&Exam{})              // ✅ Exams
+	Register(&ExamQuestion{})      // ✅ Exam<->question pivot - was never registered, so AUTO_MIGRATE never created this table on a fresh database
 	// REMOVED: Register(&Question{}) - This model doesn't exist
 	Register(&ExamAttempt{})       // ✅ Exam attempts
 	Register(&StudentAnswer{})     // ✅ Student answers
 	Register(&Result{})            // ✅ Results
+
+	// ============================================
+	// OFFLINE-FIRST SYNC MODELS
+	// ============================================
+	Register(&SyncOperation{})
+	Register(&ExamEventLog{})
+
+	// ============================================
+	// SCHOOL NODE SYNC MODELS
+	// ============================================
+	Register(&SchoolNodeCredential{})
+	Register(&NodeSyncState{})
 }
 
 

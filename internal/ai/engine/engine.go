@@ -147,6 +147,13 @@ func (e *Engine) GetCritic() *Critic {
 	return e.critic
 }
 
+// Router returns the underlying provider router, for callers that need to
+// send a one-off prompt outside the full exam-generation pipeline (e.g.
+// structured lesson extraction, which produces lessons, not Questions, and
+// so doesn't fit GenerateExam).
+func (e *Engine) Router() *providers.Router {
+	return e.router
+}
 
 // package engine
 

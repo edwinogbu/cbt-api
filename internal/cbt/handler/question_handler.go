@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -619,16 +620,14 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	}
 
 	// Validate exam type
-	validExamTypes := map[string]bool{
-		"weekly_test": true,
-		"mid_term":    true,
-		"main_exam":   true,
-		"practice":    true,
+	validExamTypes := make(map[string]bool)
+	for _, t := range dto.AllExamTypes() {
+		validExamTypes[t] = true
 	}
 	if !validExamTypes[examType] {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid exam_type",
-			"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+			"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 		})
 		return
 	}
@@ -647,6 +646,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	}
 	preserveFormatting := c.PostForm("preserve_formatting") == "true" || c.PostForm("preserve_formatting") == "1"
 	curriculumType := c.PostForm("curriculum_type")
+	preview := c.PostForm("preview") == "true" || c.PostForm("preview") == "1"
 
 	// Get file
 	file, err := c.FormFile("file")
@@ -686,6 +686,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 		TextMode:           textMode,
 		PreserveFormatting: preserveFormatting,
 		CurriculumType:     curriculumType,
+		Preview:            preview,
 	}
 
 	src, err := file.Open()
@@ -696,6 +697,21 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	defer src.Close()
 
 	ctx := c.Request.Context()
+
+	if preview {
+		resp, err := h.questionService.PreviewBulkUpload(ctx, src, format, req, userID.(string))
+		if err != nil {
+			h.handleError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"data":    resp,
+			"message": "Preview only - nothing has been saved. Review the rows below, then POST the approved questions to /questions/bulk to save them.",
+		})
+		return
+	}
+
 	resp, err := h.questionService.BulkUploadFromFile(ctx, src, format, req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
@@ -796,6 +812,65 @@ func (h *QuestionHandler) ListTags(c *gin.Context) {
 }
 
 // ============================================
+// IMPORT TEMPLATES
+// ============================================
+
+// DownloadImportTemplate godoc
+// @Summary      Download a bulk-import template
+// @Description  Returns a real, downloadable template file (csv, excel, txt, or docx) whose columns/format exactly match the corresponding parser used by POST /questions/bulk-upload.
+// @Tags         Questions
+// @Produce      application/octet-stream
+// @Param        format path string true "Template format: csv, excel, txt, or docx"
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/templates/{format} [get]
+func (h *QuestionHandler) DownloadImportTemplate(c *gin.Context) {
+	format := c.Param("format")
+
+	var (
+		data        []byte
+		err         error
+		filename    string
+		contentType string
+	)
+
+	switch format {
+	case "csv":
+		data, err = dto.GenerateCSVTemplate()
+		filename = "question_import_template.csv"
+		contentType = "text/csv"
+	case "excel", "xlsx":
+		data, err = dto.GenerateExcelTemplate()
+		filename = "question_import_template.xlsx"
+		contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case "txt":
+		data = dto.GenerateTXTTemplate()
+		filename = "question_import_template.txt"
+		contentType = "text/plain"
+	case "docx":
+		data, err = dto.GenerateDOCXTemplate()
+		filename = "question_import_template.docx"
+		contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid template format",
+			"details": "format must be one of: csv, excel, txt, docx",
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate template", "details": err.Error()})
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// ============================================
 // AI OPERATIONS
 // ============================================
 
@@ -847,8 +922,14 @@ func (h *QuestionHandler) GenerateQuestionsWithAI(c *gin.Context) {
 		return
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req)
+	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -910,8 +991,14 @@ func (h *QuestionHandler) ExtractQuestionsFromText(c *gin.Context) {
 		return
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req)
+	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -945,6 +1032,90 @@ func (h *QuestionHandler) GetJobStatus(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	resp, err := h.questionService.GetJobStatus(ctx, id)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// ============================================
+// SYNCHRONOUS, REVIEW-FIRST AI ENDPOINTS
+//
+// Unlike GenerateQuestionsWithAI/ExtractQuestionsFromText above, these
+// respond synchronously and never write to the question bank - the teacher
+// reviews the drafts and saves approved ones via POST /questions/bulk.
+// ============================================
+
+// ExtractLessonStructure godoc
+// @Summary      Extract structured lesson data from text for teacher review
+// @Tags         Questions
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.ExtractLessonRequest true "Source text"
+// @Success      200 {object} dto.ExtractLessonResponse
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/ai/extract-lesson [post]
+func (h *QuestionHandler) ExtractLessonStructure(c *gin.Context) {
+	var req dto.ExtractLessonRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid request body",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	resp, err := h.questionService.ExtractLessonStructure(ctx, &req, userID.(string))
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// GenerateGroundedQuestions godoc
+// @Summary      Generate draft questions for teacher review (does not persist)
+// @Tags         Questions
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.GenerateGroundedQuestionsRequest true "Generation parameters"
+// @Success      200 {object} dto.GenerateGroundedQuestionsResponse
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      500 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /questions/ai/generate-grounded [post]
+func (h *QuestionHandler) GenerateGroundedQuestions(c *gin.Context) {
+	var req dto.GenerateGroundedQuestionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid request body",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	resp, err := h.questionService.GenerateGroundedQuestions(ctx, &req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1287,6 +1458,19 @@ func (h *QuestionHandler) handleError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question ID"})
 	case errors.Is(err, ErrPermissionDenied):
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+	case strings.HasPrefix(err.Error(), "validation failed"):
+		// Many service methods in this package wrap request-validation
+		// failures as fmt.Errorf("validation failed: %w", err) rather than
+		// the ErrValidationFailed sentinel - this fell through to 500
+		// (confirmed live via a bulk-upload row-count-limit test) even
+		// though it's a client error, not a server fault.
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case strings.HasPrefix(err.Error(), "unauthorized"):
+		// authorizeQuestionWrite/authorizeRoleOnly (question_service.go) return
+		// plain errors.New("unauthorized: ...") rather than a sentinel, since
+		// the message itself (which class/school mismatch, which role) is
+		// useful to the caller - but it must still map to 403, not 500.
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
 	case errors.Is(err, ErrTagAlreadyExists):
 		c.JSON(http.StatusConflict, gin.H{"error": "tag already exists"})
 	case errors.Is(err, ErrValidationFailed):
@@ -1427,16 +1611,14 @@ func (h *QuestionHandler) GetQuestionsGrouped(c *gin.Context) {
 	}
 
 	if req.ExamType != "" {
-		validExamTypes := map[string]bool{
-			"weekly_test": true,
-			"mid_term":    true,
-			"main_exam":   true,
-			"practice":    true,
+		validExamTypes := make(map[string]bool)
+		for _, t := range dto.AllExamTypes() {
+			validExamTypes[t] = true
 		}
 		if !validExamTypes[req.ExamType] {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error":   "invalid exam_type",
-				"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+				"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 			})
 			return
 		}
@@ -1542,16 +1724,14 @@ func (h *QuestionHandler) GetQuestionsByExamType(c *gin.Context) {
 		return
 	}
 
-	validExamTypes := map[string]bool{
-		"weekly_test": true,
-		"mid_term":    true,
-		"main_exam":   true,
-		"practice":    true,
+	validExamTypes := make(map[string]bool)
+	for _, t := range dto.AllExamTypes() {
+		validExamTypes[t] = true
 	}
 	if !validExamTypes[examType] {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid exam_type",
-			"details": "exam_type must be one of: weekly_test, mid_term, main_exam, practice",
+			"details": "exam_type must be one of: " + strings.Join(dto.AllExamTypes(), ", "),
 		})
 		return
 	}

@@ -37,6 +37,17 @@ import (
 	onboardingRepo "cbt-api/internal/onboarding/repository"
 	onboardingService "cbt-api/internal/onboarding/service"
 
+	// OFFLINE-FIRST SYNC
+	syncHandler "cbt-api/internal/sync/handler"
+	syncRepo "cbt-api/internal/sync/repository"
+	syncService "cbt-api/internal/sync/service"
+
+	// SCHOOL NODE <-> CLOUD SYNC
+	nodeSyncHandler "cbt-api/internal/nodesync/handler"
+	nodeSyncMiddleware "cbt-api/internal/nodesync/middleware"
+	nodeSyncRepo "cbt-api/internal/nodesync/repository"
+	nodeSyncService "cbt-api/internal/nodesync/service"
+
 	"cbt-api/pkg/email"
 	"cbt-api/pkg/payment"
 	"cbt-api/pkg/database"
@@ -84,6 +95,14 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 	// ✅ ONBOARDING INITIALIZATION
 	onboardingH := initOnboardingHandler()
 
+	// OFFLINE-FIRST SYNC INITIALIZATION
+	syncH := initSyncHandler()
+
+	// SCHOOL NODE <-> CLOUD SYNC INITIALIZATION
+	nodeSyncRepository := nodeSyncRepo.NewNodeSyncRepository(database.DB)
+	nodeSyncSvc := nodeSyncService.NewNodeSyncService(nodeSyncRepository)
+	nodeSyncH := nodeSyncHandler.NewNodeSyncHandler(nodeSyncSvc)
+
 	// API version 1 group
 	v1 := r.Group("/api/v1")
 	{
@@ -116,7 +135,7 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== EXAM ROUTES ====================
 		// ALL 23 EXAM ENDPOINTS ORGANIZED UNDER /v1/exams
-		setupExamRoutes(v1, examH)
+		setupExamRoutes(v1, examH, studentRepo)
 		setupStudentExamRoutes(v1, examH, studentRepo)
 
 		// ==================== QUESTION ROUTES ====================
@@ -124,6 +143,12 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== NEW ACTOR ROUTES ====================
 		setupActorRoutes(v1, adminH, teacherH, parentH)
+
+		// ==================== OFFLINE-FIRST SYNC ROUTES ====================
+		setupSyncRoutes(v1, syncH, studentRepo)
+
+		// ==================== SCHOOL NODE <-> CLOUD SYNC ROUTES ====================
+		setupNodeSyncRoutes(v1, nodeSyncH, nodeSyncSvc)
 	}
 
 	// Swagger UI endpoint (no version prefix, accessible directly)
@@ -227,6 +252,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 	{
 		student.GET("/dashboard", handler.GetStudentDashboardForUser)
 		student.GET("/performance", handler.GetStudentPerformanceForUser)
+		student.GET("/package/:examId", handler.GetExamPackageForUser)
 		student.POST("/start/:examId", handler.StartExamForUser)
 		student.GET("/attempt/:attemptId", handler.GetAttemptState)
 		student.POST("/answer", handler.SaveAnswer)
@@ -246,7 +272,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 // ============================================
 // EXAM ROUTES - ALL 23 ENDPOINTS
 // ============================================
-func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler) {
+func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, studentRepo *academicRepo.StudentRepository) {
 	exams := rg.Group("/exams")
 	exams.Use(middleware.AuthMiddleware())
 	{
@@ -259,10 +285,24 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler) {
 		exams.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
 		exams.POST("/:id/assign", handler.AssignExam)
 		exams.GET("/:id/assignments", handler.GetExamAssignments)
-		exams.POST("/start", handler.StartExam)
-		exams.POST("/save-answer", handler.SaveAnswer)
-		exams.POST("/bulk-answer", handler.BulkSaveAnswers)
-		exams.POST("/submit", handler.SubmitExam)
+		// These four handlers (StartExam/SaveAnswer/BulkSaveAnswers/SubmitExam)
+		// call middleware.GetStudentID(c), which reads the "student_id" key
+		// set by StudentContextMiddleware - every other route in this group
+		// only has AuthMiddleware, which never sets that key. Before this
+		// fix, every request through this exact group (as opposed to the
+		// parallel /student/exams/* group, which already had both
+		// middlewares - see setupStudentExamRoutes below) got "student
+		// context not found" (401) regardless of whose attempt it was,
+		// for every student, not just a cross-tenant one. Confirmed via a
+		// live request with a real student JWT. The live frontend doesn't
+		// call this group's save-answer/bulk-answer/submit paths (it uses
+		// /student/exams/answer etc., via student.service.ts), but this
+		// group's routes are still real, reachable, public API surface
+		// (e.g. for a future client, mobile app, or direct integration).
+		exams.POST("/start", middleware.StudentContextMiddleware(studentRepo), handler.StartExam)
+		exams.POST("/save-answer", middleware.StudentContextMiddleware(studentRepo), handler.SaveAnswer)
+		exams.POST("/bulk-answer", middleware.StudentContextMiddleware(studentRepo), handler.BulkSaveAnswers)
+		exams.POST("/submit", middleware.StudentContextMiddleware(studentRepo), handler.SubmitExam)
 		exams.GET("/:id/results/class", handler.GetClassResults)
 		exams.GET("/:id/results/export", handler.ExportResults)
 		exams.GET("/:id/results/rankings", handler.GetExamRankings)
@@ -279,6 +319,17 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler) {
 		exams.POST("/:id/bulk-questions", handler.BulkAddQuestionsToExam)
 		exams.GET("/:id/preview", handler.PreviewExam)
 		exams.POST("/:id/publish", handler.PublishExam)
+
+		// Manual/essay marking - teacher/admin/super_admin only (same
+		// role gate as the question-bank group below); authorization
+		// against the specific exam's class is enforced inside
+		// ExamService.authorizeMarking, not just this role check.
+		marking := exams.Group("/marking")
+		marking.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
+		{
+			marking.GET("/pending", handler.GetPendingManualMarking)
+			marking.POST("/grade", handler.MarkDescriptiveAnswer)
+		}
 	}
 }
 
@@ -355,6 +406,21 @@ func setupAuthRoutes(rg *gin.RouterGroup, handler *authHandler.AuthHandler) {
 		protected.DELETE("/profile", handler.DeleteAccount)
 		protected.GET("/subscription/check", handler.CheckSubscription)
 		protected.GET("/status", handler.GetAuthStatus)
+
+		// Multi-role support: switching re-issues tokens with a
+		// different active role (never requires logging out) - see
+		// internal/auth/service/auth_service.go's SwitchRole.
+		protected.GET("/available-roles", handler.GetAvailableRoles)
+		protected.POST("/switch-role", handler.SwitchRole)
+	}
+
+	// Admin-only role grant/revoke management - who gets which extra
+	// role is an admin decision, enforced server-side.
+	roleAdmin := rg.Group("/auth/users")
+	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin"))
+	{
+		roleAdmin.POST("/:id/roles", handler.GrantRole)
+		roleAdmin.DELETE("/:id/roles/:role", handler.RevokeRole)
 	}
 }
 
@@ -486,6 +552,12 @@ func setupSubscriptionRoutes(rg *gin.RouterGroup, handler *subscriptionHandler.S
 func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.QuestionHandler) {
 	q := rg.Group("/questions")
 	q.Use(middleware.AuthMiddleware())
+	// Question bank management is a teacher/admin surface: students and
+	// parents have no legitimate call into it (confirmed - the frontend's
+	// question.service.ts is only wired into /dashboard/admin and teacher
+	// pages), and the FKs trusted inside these handlers (school/class/subject)
+	// are only safe once the caller's role is restricted here.
+	q.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
 	{
 		q.POST("/create", handler.CreateQuestion)
 		q.GET("/:id", handler.GetQuestion)
@@ -503,11 +575,19 @@ func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.Que
 		q.POST("/tags/create", handler.CreateTag)
 		q.GET("/tags/list", handler.ListTags)
 
+		q.GET("/templates/:format", handler.DownloadImportTemplate)
+
 		q.GET("/statistics", handler.GetStatistics)
 
 		q.POST("/ai/generate", handler.GenerateQuestionsWithAI)
 		q.POST("/extract", handler.ExtractQuestionsFromText)
 		q.GET("/jobs/:id", handler.GetJobStatus)
+
+		// Synchronous, review-first AI endpoints: these never write to the
+		// question bank. The teacher reviews the returned drafts and saves
+		// approved ones via POST /questions/bulk (above).
+		q.POST("/ai/extract-lesson", handler.ExtractLessonStructure)
+		q.POST("/ai/generate-grounded", handler.GenerateGroundedQuestions)
 
 		q.GET("/by-term", handler.GetQuestionsByTerm)
 		q.GET("/by-session", handler.GetQuestionsBySession)
@@ -524,6 +604,58 @@ func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.Que
 		q.GET("/by-session-grouped", handler.GetQuestionsBySessionGrouped)
 		q.GET("/all-grouped", handler.GetAllQuestionsGrouped)
 	}
+}
+
+// ============================================
+// OFFLINE-FIRST SYNC ROUTES
+// ============================================
+// Implements the endpoint the frontend's offline-first sync engine
+// (src/lib/storage/sync/{lanSync,cloudSync}.ts) already calls but which
+// did not previously exist server-side. See internal/sync/service for the
+// sessionId/attemptId convention and idempotency contract.
+func setupSyncRoutes(rg *gin.RouterGroup, handler *syncHandler.SyncHandler, studentRepo *academicRepo.StudentRepository) {
+	sync := rg.Group("/sync")
+	sync.Use(middleware.AuthMiddleware())
+	sync.Use(middleware.StudentContextMiddleware(studentRepo))
+	{
+		sync.POST("/:type", handler.Sync)
+	}
+}
+
+// ============================================
+// SCHOOL NODE <-> CLOUD SYNC ROUTES
+// ============================================
+// Go-to-Go sync between a School CBT Node (see Dockerfile/
+// docker-compose.school-node.yml) and this cloud instance, using the same
+// idempotent-upsert conventions as the device sync routes above.
+// /nodesync/* authenticates via a node's own API key (nodeSyncMiddleware.
+// NodeAuthMiddleware), never the human-user JWT - a node is a long-lived
+// server-to-server caller. Credential issuance is a human-admin action,
+// so it sits under the existing /admin group instead.
+func setupNodeSyncRoutes(rg *gin.RouterGroup, handler *nodeSyncHandler.NodeSyncHandler, svc *nodeSyncService.NodeSyncService) {
+	nodesync := rg.Group("/nodesync")
+	nodesync.Use(nodeSyncMiddleware.NodeAuthMiddleware(svc))
+	{
+		nodesync.POST("/push", handler.Push)
+		nodesync.GET("/pull", handler.Pull)
+	}
+
+	adminNodes := rg.Group("/admin/school-nodes")
+	adminNodes.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	{
+		adminNodes.POST("/credentials", handler.CreateCredential)
+	}
+}
+
+func initSyncHandler() *syncHandler.SyncHandler {
+	examRepo := cbtExamRepo.NewExamRepository(database.DB)
+	questionRepo := cbtQuestionRepo.NewQuestionRepository(database.DB)
+	examSvc := cbtExamService.NewExamService(examRepo, questionRepo, database.DB)
+
+	syncRepository := syncRepo.NewSyncRepository(database.DB)
+	syncSvc := syncService.NewSyncService(syncRepository, examSvc)
+
+	return syncHandler.NewSyncHandler(syncSvc)
 }
 
 // ============================================

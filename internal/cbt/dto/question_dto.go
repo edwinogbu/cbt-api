@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/extrame/xls"
+	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -49,11 +51,24 @@ const (
 	StatusPublished = "published"
 	StatusArchived  = "archived"
 
-	// Exam Types - Nigerian Academic Context
-	ExamTypeWeeklyTest = "weekly_test"
-	ExamTypeMidTerm    = "mid_term"
-	ExamTypeMainExam   = "main_exam"
-	ExamTypePractice   = "practice"
+	// Exam Types - Nigerian Academic Context (assessment purposes).
+	// Stored in a varchar column (not a native enum), so widening this list
+	// is a validation-only change - no migration required.
+	ExamTypeWeeklyTest           = "weekly_test"
+	ExamTypeContinuousAssessment = "continuous_assessment"
+	ExamTypeMidTerm              = "mid_term"
+	ExamTypeEndOfTerm            = "end_of_term"
+	ExamTypeMainExam             = "main_exam"
+	ExamTypeMockExam             = "mock_exam"
+	ExamTypeRevision             = "revision"
+	ExamTypePractice             = "practice"
+	ExamTypeAssignment           = "assignment"
+	ExamTypeQuiz                 = "quiz"
+	ExamTypeEntrance             = "entrance"
+	ExamTypePlacement            = "placement"
+	ExamTypePromotional          = "promotional"
+	ExamTypeFinalExam            = "final_exam"
+	ExamTypeCustom               = "custom"
 
 	// ============================================================
 	// FILE UPLOAD FORMATS
@@ -67,7 +82,12 @@ const (
 
 	// Excel sub-formats (for debugging)
 	UploadFormatXLSX = "xlsx"
-	UploadFormatXLS  = "xls"
+	// UploadFormatXLS is the legacy Excel 97-2004 binary format, parsed by
+	// XLSParser - distinct from UploadFormatExcel (modern .xlsx via
+	// excelize, which cannot read the legacy binary format at all).
+	UploadFormatXLS = "xls"
+	UploadFormatRTF = "rtf"
+	UploadFormatPDF = "pdf"
 
 	// ============================================================
 	// TEXT MODES FOR TXT PARSING
@@ -87,6 +107,30 @@ const (
 	MaxRubricCriteria = 10
 )
 
+// AllExamTypes returns every supported assessment-purpose identifier.
+// Used wherever the Go-code side needs the full set as a slice (binding
+// tags on struct fields list the same values literally, since `oneof=`
+// can't reference a function).
+func AllExamTypes() []string {
+	return []string{
+		ExamTypeWeeklyTest,
+		ExamTypeContinuousAssessment,
+		ExamTypeMidTerm,
+		ExamTypeEndOfTerm,
+		ExamTypeMainExam,
+		ExamTypeMockExam,
+		ExamTypeRevision,
+		ExamTypePractice,
+		ExamTypeAssignment,
+		ExamTypeQuiz,
+		ExamTypeEntrance,
+		ExamTypePlacement,
+		ExamTypePromotional,
+		ExamTypeFinalExam,
+		ExamTypeCustom,
+	}
+}
+
 // ============================================
 // REQUEST DTOs
 // ============================================
@@ -99,7 +143,7 @@ type CreateQuestionRequest struct {
 	ClassLevelID      string            `json:"class_level_id" binding:"required,uuid"`
 	ClassID           string            `json:"class_id" binding:"required,uuid"`
 	SubjectID         string            `json:"subject_id" binding:"required,uuid"`
-	ExamType          string            `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          string            `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	QuestionText      string            `json:"question_text" binding:"required"`
 	QuestionType      string            `json:"question_type" binding:"required,oneof=single_choice multiple_choice true_false essay fill_blank"`
 	Difficulty        string            `json:"difficulty" binding:"required,oneof=easy medium hard expert"`
@@ -132,7 +176,7 @@ type UpdateQuestionRequest struct {
 	ClassLevelID      *string           `json:"class_level_id,omitempty" binding:"omitempty,uuid"`
 	ClassID           *string           `json:"class_id,omitempty" binding:"omitempty,uuid"`
 	SubjectID         *string           `json:"subject_id,omitempty" binding:"omitempty,uuid"`
-	ExamType          *string           `json:"exam_type,omitempty" binding:"omitempty,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          *string           `json:"exam_type,omitempty" binding:"omitempty,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	QuestionText      *string           `json:"question_text"`
 	Topic             *string           `json:"topic"`
 	SubTopic          *string           `json:"sub_topic"`
@@ -230,14 +274,43 @@ type BulkUploadRequest struct {
 	ClassLevelID       string                `form:"class_level_id" binding:"required,uuid"`
 	ClassID            string                `form:"class_id" binding:"required,uuid"`
 	SubjectID          string                `form:"subject_id" binding:"required,uuid"`
-	ExamType           string                `form:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType           string                `form:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	File               *multipart.FileHeader `form:"file" binding:"required"`
-	Format             string                `form:"format" binding:"omitempty,oneof=auto csv excel json docx txt"`
+	Format             string                `form:"format" binding:"omitempty,oneof=auto csv excel json docx txt rtf pdf xls"`
 	HasHeader          bool                  `form:"has_header"`
 	SheetName          string                `form:"sheet_name"`
 	TextMode           string                `form:"text_mode" binding:"omitempty,oneof=plain qa numbered"`
 	PreserveFormatting bool                  `form:"preserve_formatting"`
 	CurriculumType     string                `form:"curriculum_type"`
+	// Preview, when true, parses/validates/detects duplicates exactly as
+	// a real upload would but writes nothing to the database - the
+	// teacher reviews the returned candidate rows (editing/excluding as
+	// needed) and then submits the approved set to POST /questions/bulk
+	// to actually persist them.
+	Preview bool `form:"preview"`
+}
+
+// ImportPreviewRow is one candidate question detected by a preview
+// (dry-run) bulk upload, for teacher review before anything is saved.
+type ImportPreviewRow struct {
+	RowNumber int    `json:"row_number"`
+	Status    string `json:"status"` // valid | invalid | duplicate
+	Reason    string `json:"reason,omitempty"`
+	// Question is populated for valid/duplicate rows - the exact shape
+	// POST /questions/bulk expects, so an approved preview can be
+	// resubmitted with no remapping on the client.
+	Question *CreateQuestionRequest `json:"question,omitempty"`
+}
+
+// BulkUploadPreviewResponse is returned instead of BulkUploadResponse when
+// BulkUploadRequest.Preview is true. Nothing has been saved yet.
+type BulkUploadPreviewResponse struct {
+	TotalDetected  int                `json:"total_detected"`
+	ValidCount     int                `json:"valid_count"`
+	InvalidCount   int                `json:"invalid_count"`
+	DuplicateCount int                `json:"duplicate_count"`
+	Rows           []ImportPreviewRow `json:"rows"`
+	Persisted      bool               `json:"persisted"`
 }
 
 // ============================================================
@@ -323,14 +396,22 @@ func DetectFormatFromExtension(filename string) string {
 	switch ext {
 	case ".csv":
 		return UploadFormatCSV
-	case ".xlsx", ".xls":
+	case ".xlsx":
 		return UploadFormatExcel
+	case ".xls":
+		// Legacy binary Excel - excelize (used for .xlsx) cannot read this
+		// format at all, so this must NOT be routed to UploadFormatExcel.
+		return UploadFormatXLS
 	case ".json":
 		return UploadFormatJSON
 	case ".docx":
 		return UploadFormatDOCX
 	case ".txt":
 		return UploadFormatTXT
+	case ".rtf":
+		return UploadFormatRTF
+	case ".pdf":
+		return UploadFormatPDF
 	default:
 		return ""
 	}
@@ -350,21 +431,28 @@ func IsValidFormat(format string) bool {
 		UploadFormatJSON:  true,
 		UploadFormatDOCX:  true,
 		UploadFormatTXT:   true,
+		UploadFormatRTF:   true,
+		UploadFormatPDF:   true,
+		UploadFormatXLS:   true,
 	}
 	return validFormats[format]
 }
+
+// supportedFormatsList is the human-readable list used in error messages,
+// kept in one place so it can't drift from IsValidFormat above.
+const supportedFormatsList = "csv, excel (.xlsx), xls (legacy .xls), json, docx, txt, rtf, pdf"
 
 // GetFormatFromRequest determines the actual format to use
 func GetFormatFromRequest(format string, filename string) (string, error) {
 	if ShouldAutoDetect(format) {
 		detected := DetectFormatFromExtension(filename)
 		if detected == "" {
-			return "", fmt.Errorf("unable to detect format from file '%s'. Please specify format explicitly (csv, excel, json, docx, txt)", filename)
+			return "", fmt.Errorf("unable to detect format from file '%s'. Please specify format explicitly (%s)", filename, supportedFormatsList)
 		}
 		return detected, nil
 	}
 	if !IsValidFormat(format) {
-		return "", fmt.Errorf("invalid format '%s'. Supported formats: csv, excel, json, docx, txt", format)
+		return "", fmt.Errorf("invalid format '%s'. Supported formats: %s", format, supportedFormatsList)
 	}
 	return format, nil
 }
@@ -630,15 +718,34 @@ func (p *ExcelParser) getColumn(row []string, colMap map[string]int, colName str
 	return ""
 }
 
+// xlsEpoch is the day-zero the extrame/xls library uses when it guesses a
+// plain numeric cell is actually a date (see parseInt below).
+var xlsEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+
 func (p *ExcelParser) parseInt(str string) int {
+	str = strings.TrimSpace(str)
 	if str == "" {
 		return 0
 	}
-	val, err := strconv.Atoi(strings.TrimSpace(str))
-	if err != nil {
-		return 0
+	if val, err := strconv.Atoi(str); err == nil {
+		return val
 	}
-	return val
+	// Legacy .xls cells (read via XLSParser, which reuses this method) can
+	// come back as a formatted float string (e.g. "1" stored as "1.0")
+	// rather than a clean integer.
+	if f, err := strconv.ParseFloat(str, 64); err == nil {
+		return int(f)
+	}
+	// Found live: extrame/xls sometimes misreads a plain small-integer
+	// numeric cell (e.g. marks=1) as a date, since XLS stores both as the
+	// same underlying number distinguished only by a format flag this
+	// library's simple Col() accessor doesn't expose. Recover the
+	// original integer from the day offset against its date epoch rather
+	// than silently losing the marks value to the "" -> 0 -> default path.
+	if t, err := time.Parse(time.RFC3339, str); err == nil {
+		return int(t.Sub(xlsEpoch).Hours() / 24)
+	}
+	return 0
 }
 
 func (p *ExcelParser) setDefaults(q *QuestionImportItem) {
@@ -827,6 +934,16 @@ func min(a, b int) int {
 
 func (p *DOCXParser) extractTextFromDOCX(xmlData []byte) string {
 	text := string(xmlData)
+	// Insert a newline at each paragraph/line-break boundary BEFORE the
+	// generic tag-stripping regex below collapses every tag to a single
+	// space. Found live: without this, a real multi-paragraph Word
+	// document (one line per option, as every template/guide tells
+	// teachers to write) was extracted as one unbroken line of text, so
+	// parseQuestionsFromText's line-based option/answer detection (which
+	// matches "^[A-D][).] ..." at the START of a line) could never match
+	// anything - every real DOCX upload with options on separate lines
+	// silently lost its options and answer key.
+	text = regexp.MustCompile(`</w:p>|<w:br\s*/?>|<w:cr\s*/?>`).ReplaceAllString(text, "\n")
 	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, " ")
 	text = strings.ReplaceAll(text, "&lt;", "<")
 	text = strings.ReplaceAll(text, "&gt;", ">")
@@ -834,8 +951,17 @@ func (p *DOCXParser) extractTextFromDOCX(xmlData []byte) string {
 	text = strings.ReplaceAll(text, "&quot;", "\"")
 	text = strings.ReplaceAll(text, "&apos;", "'")
 	text = strings.ReplaceAll(text, "&nbsp;", " ")
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
-	return strings.TrimSpace(text)
+	// Collapse runs of horizontal whitespace, but keep the newlines just inserted.
+	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
+	lines := strings.Split(text, "\n")
+	var trimmed []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			trimmed = append(trimmed, line)
+		}
+	}
+	return strings.Join(trimmed, "\n")
 }
 
 func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, error) {
@@ -1358,6 +1484,189 @@ func (p *TXTParser) setDefaults(q *QuestionImportItem) {
 }
 
 // ============================================================
+// RTF PARSER
+// ============================================================
+
+// RTFParser parses Rich Text Format files by stripping RTF control words
+// down to plain text, then reusing TXTParser's Q&A text parsing - the same
+// approach DOCXParser takes for extracting plain text from OOXML.
+type RTFParser struct{}
+
+func NewRTFParser() *RTFParser {
+	return &RTFParser{}
+}
+
+func (p *RTFParser) SupportedFormat() string {
+	return UploadFormatRTF
+}
+
+func (p *RTFParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RTF file: %w", err)
+	}
+	text := extractTextFromRTF(string(data))
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("no readable text found in RTF file")
+	}
+	return (&TXTParser{textMode: TextModeQA}).parseQuestionsFromText(text)
+}
+
+// rtfControlWord matches a backslash control word with an optional numeric
+// parameter, e.g. \par, \b0, \fs24 - these carry formatting, not content.
+var rtfControlWord = regexp.MustCompile(`\\[a-zA-Z]+-?\d*\s?`)
+
+// rtfHexEscape matches a literal byte escape, e.g. \'e9.
+var rtfHexEscape = regexp.MustCompile(`\\'[0-9a-fA-F]{2}`)
+
+// extractTextFromRTF does a best-effort plain-text extraction from RTF
+// source: drops control words, groups, and font/color tables, keeps the
+// visible document text. RTF has no page/text-stream layout ambiguity the
+// way legacy binary formats do, so a textual pass is a reasonable,
+// dependency-free approach - it will not perfectly handle every RTF
+// producer's output, but handles the common case of plain text with basic
+// formatting that Word/WordPad/LibreOffice produce.
+func extractTextFromRTF(rtf string) string {
+	// Drop the font table, color table, and other header groups that
+	// contain no body text but would otherwise leak raw names into output.
+	for _, group := range []string{"fonttbl", "colortbl", "stylesheet", "info", "pict", "object"} {
+		re := regexp.MustCompile(`\{\\` + group + `[^{}]*(\{[^{}]*\}[^{}]*)*\}`)
+		rtf = re.ReplaceAllString(rtf, "")
+	}
+
+	rtf = rtfHexEscape.ReplaceAllString(rtf, "")
+	rtf = rtfControlWord.ReplaceAllString(rtf, " ")
+	rtf = strings.ReplaceAll(rtf, "{", "")
+	rtf = strings.ReplaceAll(rtf, "}", "")
+	rtf = strings.ReplaceAll(rtf, "\\par", "\n")
+	rtf = strings.ReplaceAll(rtf, "\\line", "\n")
+
+	lines := strings.Split(rtf, "\n")
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// ============================================================
+// PDF PARSER (text-based PDFs only - no OCR)
+// ============================================================
+
+// PDFParser extracts plain text from text-based PDF documents using
+// github.com/ledongthuc/pdf, then reuses TXTParser's Q&A text parsing.
+// Scanned/image-only PDFs produce no extractable text and are reported as
+// an error rather than silently returning zero questions - see the error
+// message below.
+type PDFParser struct{}
+
+func NewPDFParser() *PDFParser {
+	return &PDFParser{}
+}
+
+func (p *PDFParser) SupportedFormat() string {
+	return UploadFormatPDF
+}
+
+func (p *PDFParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PDF file: %w", err)
+	}
+
+	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open PDF file (it may be encrypted or corrupted): %w", err)
+	}
+
+	textReader, err := reader.GetPlainText()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract text from PDF: %w", err)
+	}
+	textBytes, err := io.ReadAll(textReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read extracted PDF text: %w", err)
+	}
+
+	text := string(textBytes)
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("no extractable text found in PDF - this usually means it is a scanned/image-only document, which is not supported (OCR is not implemented)")
+	}
+	return (&TXTParser{textMode: TextModeQA}).parseQuestionsFromText(text)
+}
+
+// ============================================================
+// LEGACY XLS PARSER (Excel 97-2004 binary format)
+// ============================================================
+
+// XLSParser parses legacy binary .xls workbooks using github.com/extrame/xls
+// (excelize, used by ExcelParser above, only reads the modern OOXML .xlsx
+// format). Reuses ExcelParser's column-mapping/row-parsing logic since both
+// ultimately deal with the same [][]string row shape.
+type XLSParser struct{}
+
+func NewXLSParser() *XLSParser {
+	return &XLSParser{}
+}
+
+func (p *XLSParser) SupportedFormat() string {
+	return UploadFormatXLS
+}
+
+func (p *XLSParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read XLS file: %w", err)
+	}
+
+	wb, err := xls.OpenReader(bytes.NewReader(data), "utf-8")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open legacy XLS file: %w", err)
+	}
+	if wb.NumSheets() == 0 {
+		return nil, fmt.Errorf("XLS file has no sheets")
+	}
+	sheet := wb.GetSheet(0)
+	if sheet == nil || sheet.MaxRow == 0 {
+		return nil, fmt.Errorf("XLS sheet has no data rows")
+	}
+
+	var rows [][]string
+	for i := 0; i <= int(sheet.MaxRow); i++ {
+		row := sheet.Row(i)
+		if row == nil {
+			rows = append(rows, []string{})
+			continue
+		}
+		var cells []string
+		for c := row.FirstCol(); c < row.LastCol(); c++ {
+			cells = append(cells, row.Col(c))
+		}
+		rows = append(rows, cells)
+	}
+
+	if len(rows) < 2 {
+		return nil, fmt.Errorf("XLS sheet must have header + at least one data row")
+	}
+
+	excel := &ExcelParser{}
+	colMap := excel.buildColumnMap(rows[0])
+
+	var questions []QuestionImportItem
+	for i := 1; i < len(rows); i++ {
+		q, err := excel.parseRow(rows[i], colMap)
+		if err != nil {
+			continue
+		}
+		questions = append(questions, q)
+	}
+	return questions, nil
+}
+
+// ============================================================
 // PARSER FACTORY
 // ============================================================
 
@@ -1382,6 +1691,12 @@ func (f *ParserFactory) GetParser(format string) (QuestionParser, error) {
 		return NewDOCXParser(), nil
 	case UploadFormatTXT:
 		return NewTXTParser(), nil
+	case UploadFormatRTF:
+		return NewRTFParser(), nil
+	case UploadFormatPDF:
+		return NewPDFParser(), nil
+	case UploadFormatXLS:
+		return NewXLSParser(), nil
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
@@ -1399,7 +1714,7 @@ type AIGenerateQuestionsRequest struct {
 	ClassLevelID      string   `json:"class_level_id" binding:"required,uuid"`
 	ClassID           string   `json:"class_id" binding:"required,uuid"`
 	SubjectID         string   `json:"subject_id" binding:"required,uuid"`
-	ExamType          string   `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType          string   `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	Topic             string   `json:"topic" binding:"required"`
 	NumberOfQuestions int      `json:"number_of_questions" binding:"required,min=1,max=100"`
 	Difficulty        string   `json:"difficulty" binding:"required,oneof=easy medium hard expert"`
@@ -1417,9 +1732,112 @@ type ExtractTextQuestionsRequest struct {
 	ClassLevelID string `json:"class_level_id" binding:"required,uuid"`
 	ClassID      string `json:"class_id" binding:"required,uuid"`
 	SubjectID    string `json:"subject_id" binding:"required,uuid"`
-	ExamType     string `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType     string `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	Text         string `json:"text" binding:"required"`
 	Format       string `json:"format" binding:"required,oneof=plain markdown html"`
+}
+
+// ============================================================
+// SYNCHRONOUS, REVIEW-FIRST AI DTOs
+//
+// Unlike AIGenerateQuestionsRequest/ExtractTextQuestionsRequest above (which
+// enqueue an async job that auto-saves straight to the question bank as
+// soon as the worker finishes), these never persist anything. They return
+// drafts for the teacher to review/edit; nothing reaches the question bank
+// until the teacher explicitly saves the approved drafts via POST
+// /questions/bulk, which runs full ownership and schema validation.
+// ============================================================
+
+// ExtractLessonRequest asks the AI to extract structured lesson/topic data
+// from raw text already pulled from an uploaded document (see the
+// Next.js /api/extract-text route) for teacher review.
+type ExtractLessonRequest struct {
+	SchoolID     string `json:"school_id" binding:"required,uuid"`
+	SubjectID    string `json:"subject_id" binding:"required,uuid"`
+	ClassLevelID string `json:"class_level_id" binding:"required,uuid"`
+	Text         string `json:"text" binding:"required"`
+	FileName     string `json:"file_name,omitempty"`
+}
+
+// ExtractedLessonItem is one lesson/topic unit detected in the source text.
+type ExtractedLessonItem struct {
+	Topic           string   `json:"topic"`
+	SubTopic        string   `json:"sub_topic"`
+	Objectives      []string `json:"objectives"`
+	KeyTerms        []string `json:"key_terms"`
+	AssessmentAreas []string `json:"assessment_areas"`
+	// Confidence is "low" when the extraction had to infer rather than read
+	// this directly from the source text - the teacher should double-check it.
+	Confidence string `json:"confidence"`
+}
+
+// ExtractLessonResponse is returned for teacher review and correction; it
+// is not persisted anywhere by this endpoint.
+type ExtractLessonResponse struct {
+	Lessons  []ExtractedLessonItem `json:"lessons"`
+	Provider string                `json:"provider"`
+	Warning  string                `json:"warning,omitempty"`
+}
+
+// GenerateGroundedQuestionsRequest generates draft questions grounded in
+// teacher-approved lesson content for review. DifficultyDistribution (e.g.
+// {"easy":3,"medium":5,"hard":2}) takes priority over the flat
+// Difficulty+NumberOfQuestions fields when provided.
+type GenerateGroundedQuestionsRequest struct {
+	SchoolID                string         `json:"school_id" binding:"required,uuid"`
+	SessionID               string         `json:"session_id" binding:"required,uuid"`
+	TermID                  string         `json:"term_id" binding:"required,uuid"`
+	ClassLevelID            string         `json:"class_level_id" binding:"required,uuid"`
+	ClassID                 string         `json:"class_id" binding:"required,uuid"`
+	SubjectID               string         `json:"subject_id" binding:"required,uuid"`
+	ExamType                string         `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
+	Topic                   string         `json:"topic" binding:"required"`
+	SubTopic                string         `json:"sub_topic,omitempty"`
+	SourceText              string         `json:"source_text" binding:"required"`
+	Keywords                []string       `json:"keywords,omitempty"`
+	CurriculumType          string         `json:"curriculum_type,omitempty"`
+	DifficultyDistribution  map[string]int `json:"difficulty_distribution,omitempty"`
+	NumberOfQuestions       int            `json:"number_of_questions,omitempty" binding:"omitempty,min=1,max=100"`
+	Difficulty              string         `json:"difficulty,omitempty" binding:"omitempty,oneof=easy medium hard expert"`
+	BloomLevel              string         `json:"bloom_level,omitempty" binding:"omitempty,oneof=remember understand apply analyse evaluate create"`
+	IncludeAnswers          bool           `json:"include_answers"`
+	IncludeExplanations     bool           `json:"include_explanations"`
+}
+
+// GeneratedQuestionDraft is one AI-proposed question awaiting teacher
+// review. It mirrors CreateQuestionRequest's shape so an approved draft can
+// be submitted to POST /questions/bulk with minimal remapping.
+type GeneratedQuestionDraft struct {
+	QuestionText      string           `json:"question_text"`
+	QuestionType      string           `json:"question_type"`
+	Options           []QuestionOption `json:"options,omitempty"`
+	CorrectOptionKeys []string         `json:"correct_option_keys,omitempty"`
+	CorrectAnswer     string           `json:"correct_answer,omitempty"`
+	Explanation       string           `json:"explanation,omitempty"`
+	Marks             int              `json:"marks"`
+	Difficulty        string           `json:"difficulty"`
+	BloomLevel        string           `json:"bloom_level"`
+	Topic             string           `json:"topic"`
+	SubTopic          string           `json:"sub_topic,omitempty"`
+	LearningObjective string           `json:"learning_objective,omitempty"`
+	// Rubric is a suggested marking scheme for essay-type drafts - the
+	// response always labels it as teacher-reviewable, never authoritative.
+	Rubric           []RubricCriteria `json:"rubric,omitempty"`
+	ValidationStatus string           `json:"validation_status"` // approved | needs_review | rejected
+	ValidationErrors []string         `json:"validation_errors,omitempty"`
+}
+
+// GenerateGroundedQuestionsResponse is returned for teacher review; nothing
+// is saved to the question bank by this endpoint (Persisted is always false).
+type GenerateGroundedQuestionsResponse struct {
+	Questions []GeneratedQuestionDraft `json:"questions"`
+	// RequestedCount is how many questions were asked for; GeneratedCount is
+	// how many survived provider generation and validation. A shortfall is
+	// reported via Warning rather than silently returning fewer than asked.
+	RequestedCount int    `json:"requested_count"`
+	GeneratedCount int    `json:"generated_count"`
+	Persisted      bool   `json:"persisted"`
+	Warning        string `json:"warning,omitempty"`
 }
 
 // BulkQuestionImportRequest represents bulk import from structured data
@@ -1430,7 +1848,7 @@ type BulkQuestionImportRequest struct {
 	ClassLevelID   string               `json:"class_level_id" binding:"required,uuid"`
 	ClassID        string               `json:"class_id" binding:"required,uuid"`
 	SubjectID      string               `json:"subject_id" binding:"required,uuid"`
-	ExamType       string               `json:"exam_type" binding:"required,oneof=weekly_test mid_term main_exam practice"`
+	ExamType       string               `json:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	CurriculumType string               `json:"curriculum_type"`
 	SourceType     string               `json:"source_type"`
 	Status         string               `json:"status"`
@@ -1459,6 +1877,44 @@ type QuestionImportItem struct {
 	Tags              []string         `json:"tags"`
 	Order             int              `json:"order"`
 	IsRequired        bool             `json:"is_required"`
+}
+
+// ToCreateQuestionRequest maps a parsed import row onto the exact shape
+// POST /questions/bulk (BulkCreateQuestionRequest.Questions) expects,
+// filling in the academic context from the surrounding upload request -
+// used both by the real (non-preview) upload path and by preview mode, so
+// an approved preview row can be resubmitted to /questions/bulk unchanged.
+func (item *QuestionImportItem) ToCreateQuestionRequest(req *BulkUploadRequest) CreateQuestionRequest {
+	return CreateQuestionRequest{
+		SchoolID:          req.SchoolID,
+		SessionID:         req.SessionID,
+		TermID:            req.TermID,
+		ClassLevelID:      req.ClassLevelID,
+		ClassID:           req.ClassID,
+		SubjectID:         req.SubjectID,
+		ExamType:          req.ExamType,
+		Topic:             item.Topic,
+		SubTopic:          item.SubTopic,
+		LearningObjective: item.LearningObjective,
+		QuestionText:      item.QuestionText,
+		QuestionType:      item.QuestionType,
+		Difficulty:        item.Difficulty,
+		BloomLevel:        item.BloomLevel,
+		OptionsArray:      item.Options,
+		CorrectAnswer:     item.CorrectAnswer,
+		CorrectOptionKeys: item.CorrectOptionKeys,
+		Rubric:            item.Rubric,
+		Explanation:       item.Explanation,
+		Marks:             item.Marks,
+		NegativeMarks:     item.NegativeMarks,
+		TimeLimitSeconds:  &item.TimeLimitSeconds,
+		Tags:              item.Tags,
+		CurriculumType:    req.CurriculumType,
+		SourceType:        "bulk_import",
+		ExternalID:        item.ExternalID,
+		Order:             item.Order,
+		IsRequired:        item.IsRequired,
+	}
 }
 
 // CloneQuestionRequest represents question cloning request
@@ -1665,7 +2121,14 @@ type BulkUploadResponse struct {
 	TotalProcessed int      `json:"total_processed"`
 	SuccessCount   int      `json:"success_count"`
 	FailedCount    int      `json:"failed_count"`
+	// DuplicateCount counts rows skipped as exact duplicates of an earlier
+	// row in the SAME file - these are not saved. Warnings (below) flag
+	// rows that merely resemble an EXISTING question bank entry; those are
+	// still saved, since a human should decide whether it's really a
+	// duplicate or a legitimate variation.
+	DuplicateCount int      `json:"duplicate_count"`
 	Errors         []string `json:"errors,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // BulkImportStatusResponse represents bulk import status
@@ -1847,7 +2310,7 @@ func (req *UpdateQuestionRequest) Validate() error {
 		}
 	}
 	if req.ExamType != nil {
-		validExamTypes := []string{"weekly_test", "mid_term", "main_exam", "practice"}
+		validExamTypes := AllExamTypes()
 		valid := false
 		for _, e := range validExamTypes {
 			if e == *req.ExamType {

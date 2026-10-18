@@ -637,6 +637,14 @@ func (r *ExamRepository) CreateResult(result *models.Result) error {
 	return r.db.Create(result).Error
 }
 
+// UpdateResult persists a correction to an existing Result row (used by
+// manual-marking finalization, which recomputes TotalScore/Percentage/
+// Grade/Passed/FullyGraded once an essay answer is scored) - never
+// creates a second Result row for the same attempt.
+func (r *ExamRepository) UpdateResult(result *models.Result) error {
+	return r.db.Save(result).Error
+}
+
 // FindResultByExamAndStudent finds a result by exam and student
 func (r *ExamRepository) FindResultByExamAndStudent(examID, studentID string) (*models.Result, error) {
 	var res models.Result
