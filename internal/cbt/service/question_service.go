@@ -644,6 +644,92 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 	return resp, nil
 }
 
+// PreviewBulkUpload parses, validates, and detects duplicates in an
+// uploaded file EXACTLY as BulkUploadFromFile does, but never writes to
+// the database - it returns the candidate rows (each mapped to the exact
+// shape POST /questions/bulk expects) for the teacher to review, edit, or
+// exclude before explicitly confirming the save via that endpoint.
+func (s *QuestionService) PreviewBulkUpload(ctx context.Context, file io.Reader, format string, req *dto.BulkUploadRequest, userID string) (*dto.BulkUploadPreviewResponse, error) {
+	if err := s.validateBulkUploadRequest(req); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
+		return nil, err
+	}
+
+	format, err := dto.GetFormatFromRequest(format, req.File.Filename)
+	if err != nil {
+		return nil, err
+	}
+	parser, err := dto.NewParserFactory().GetParser(format)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported format '%s': %w", format, err)
+	}
+	importItems, err := parser.Parse(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse %s file: %w", format, err)
+	}
+	if len(importItems) == 0 {
+		return nil, errors.New("no valid questions found in file")
+	}
+	const maxImportRows = 1000
+	if len(importItems) > maxImportRows {
+		return nil, fmt.Errorf("validation failed: too many questions in file: found %d, maximum %d per upload", len(importItems), maxImportRows)
+	}
+
+	existingNormalized := make(map[string]bool)
+	if req.SubjectID != "" && req.ClassID != "" {
+		var existingTexts []string
+		s.db.WithContext(ctx).Model(&models.QuestionBank{}).
+			Where("subject_id = ? AND class_id = ? AND deleted_at IS NULL", req.SubjectID, req.ClassID).
+			Pluck("question_text", &existingTexts)
+		for _, t := range existingTexts {
+			existingNormalized[normalizeQuestionText(t)] = true
+		}
+	}
+
+	resp := &dto.BulkUploadPreviewResponse{
+		TotalDetected: len(importItems),
+		Persisted:     false,
+	}
+	seenInFile := make(map[string]int)
+
+	for idx, item := range importItems {
+		rowNumber := idx + 1
+
+		if err := s.validateImportItem(&item); err != nil {
+			resp.InvalidCount++
+			resp.Rows = append(resp.Rows, dto.ImportPreviewRow{RowNumber: rowNumber, Status: "invalid", Reason: err.Error()})
+			continue
+		}
+
+		normalized := normalizeQuestionText(item.QuestionText)
+		if firstRow, dup := seenInFile[normalized]; dup {
+			resp.DuplicateCount++
+			resp.Rows = append(resp.Rows, dto.ImportPreviewRow{
+				RowNumber: rowNumber,
+				Status:    "duplicate",
+				Reason:    fmt.Sprintf("duplicates row %d in this file", firstRow),
+			})
+			continue
+		}
+		seenInFile[normalized] = rowNumber
+
+		question := item.ToCreateQuestionRequest(req)
+		row := dto.ImportPreviewRow{RowNumber: rowNumber, Status: "valid", Question: &question}
+		if existingNormalized[normalized] {
+			row.Status = "duplicate"
+			row.Reason = "looks identical or very similar to an existing question already saved for this class/subject - review before confirming"
+			resp.DuplicateCount++
+		} else {
+			resp.ValidCount++
+		}
+		resp.Rows = append(resp.Rows, row)
+	}
+
+	return resp, nil
+}
+
 // ============================================
 // VALIDATION HELPERS FOR BULK UPLOAD
 // ============================================

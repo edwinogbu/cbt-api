@@ -282,6 +282,35 @@ type BulkUploadRequest struct {
 	TextMode           string                `form:"text_mode" binding:"omitempty,oneof=plain qa numbered"`
 	PreserveFormatting bool                  `form:"preserve_formatting"`
 	CurriculumType     string                `form:"curriculum_type"`
+	// Preview, when true, parses/validates/detects duplicates exactly as
+	// a real upload would but writes nothing to the database - the
+	// teacher reviews the returned candidate rows (editing/excluding as
+	// needed) and then submits the approved set to POST /questions/bulk
+	// to actually persist them.
+	Preview bool `form:"preview"`
+}
+
+// ImportPreviewRow is one candidate question detected by a preview
+// (dry-run) bulk upload, for teacher review before anything is saved.
+type ImportPreviewRow struct {
+	RowNumber int    `json:"row_number"`
+	Status    string `json:"status"` // valid | invalid | duplicate
+	Reason    string `json:"reason,omitempty"`
+	// Question is populated for valid/duplicate rows - the exact shape
+	// POST /questions/bulk expects, so an approved preview can be
+	// resubmitted with no remapping on the client.
+	Question *CreateQuestionRequest `json:"question,omitempty"`
+}
+
+// BulkUploadPreviewResponse is returned instead of BulkUploadResponse when
+// BulkUploadRequest.Preview is true. Nothing has been saved yet.
+type BulkUploadPreviewResponse struct {
+	TotalDetected  int                `json:"total_detected"`
+	ValidCount     int                `json:"valid_count"`
+	InvalidCount   int                `json:"invalid_count"`
+	DuplicateCount int                `json:"duplicate_count"`
+	Rows           []ImportPreviewRow `json:"rows"`
+	Persisted      bool               `json:"persisted"`
 }
 
 // ============================================================
@@ -1848,6 +1877,44 @@ type QuestionImportItem struct {
 	Tags              []string         `json:"tags"`
 	Order             int              `json:"order"`
 	IsRequired        bool             `json:"is_required"`
+}
+
+// ToCreateQuestionRequest maps a parsed import row onto the exact shape
+// POST /questions/bulk (BulkCreateQuestionRequest.Questions) expects,
+// filling in the academic context from the surrounding upload request -
+// used both by the real (non-preview) upload path and by preview mode, so
+// an approved preview row can be resubmitted to /questions/bulk unchanged.
+func (item *QuestionImportItem) ToCreateQuestionRequest(req *BulkUploadRequest) CreateQuestionRequest {
+	return CreateQuestionRequest{
+		SchoolID:          req.SchoolID,
+		SessionID:         req.SessionID,
+		TermID:            req.TermID,
+		ClassLevelID:      req.ClassLevelID,
+		ClassID:           req.ClassID,
+		SubjectID:         req.SubjectID,
+		ExamType:          req.ExamType,
+		Topic:             item.Topic,
+		SubTopic:          item.SubTopic,
+		LearningObjective: item.LearningObjective,
+		QuestionText:      item.QuestionText,
+		QuestionType:      item.QuestionType,
+		Difficulty:        item.Difficulty,
+		BloomLevel:        item.BloomLevel,
+		OptionsArray:      item.Options,
+		CorrectAnswer:     item.CorrectAnswer,
+		CorrectOptionKeys: item.CorrectOptionKeys,
+		Rubric:            item.Rubric,
+		Explanation:       item.Explanation,
+		Marks:             item.Marks,
+		NegativeMarks:     item.NegativeMarks,
+		TimeLimitSeconds:  &item.TimeLimitSeconds,
+		Tags:              item.Tags,
+		CurriculumType:    req.CurriculumType,
+		SourceType:        "bulk_import",
+		ExternalID:        item.ExternalID,
+		Order:             item.Order,
+		IsRequired:        item.IsRequired,
+	}
 }
 
 // CloneQuestionRequest represents question cloning request

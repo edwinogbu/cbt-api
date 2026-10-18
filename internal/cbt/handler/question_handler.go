@@ -646,6 +646,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	}
 	preserveFormatting := c.PostForm("preserve_formatting") == "true" || c.PostForm("preserve_formatting") == "1"
 	curriculumType := c.PostForm("curriculum_type")
+	preview := c.PostForm("preview") == "true" || c.PostForm("preview") == "1"
 
 	// Get file
 	file, err := c.FormFile("file")
@@ -685,6 +686,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 		TextMode:           textMode,
 		PreserveFormatting: preserveFormatting,
 		CurriculumType:     curriculumType,
+		Preview:            preview,
 	}
 
 	src, err := file.Open()
@@ -695,6 +697,21 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	defer src.Close()
 
 	ctx := c.Request.Context()
+
+	if preview {
+		resp, err := h.questionService.PreviewBulkUpload(ctx, src, format, req, userID.(string))
+		if err != nil {
+			h.handleError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"data":    resp,
+			"message": "Preview only - nothing has been saved. Review the rows below, then POST the approved questions to /questions/bulk to save them.",
+		})
+		return
+	}
+
 	resp, err := h.questionService.BulkUploadFromFile(ctx, src, format, req, userID.(string))
 	if err != nil {
 		h.handleError(c, err)
