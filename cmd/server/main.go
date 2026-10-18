@@ -126,9 +126,17 @@ func main() {
 
 	// Global middleware
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		// Idempotency-Key and X-Operation-Id are sent by the offline sync
+		// client (src/lib/storage/sync/cloudSync.ts, lanSync.ts) on every
+		// POST to /api/v1/sync/:type. Without them here, the browser's CORS
+		// preflight succeeds (OPTIONS -> 204) but the actual POST is never
+		// sent - fetch() surfaces this as an opaque network error with no
+		// further detail, which the sync client's catch-all then reports as
+		// a generic REJECTED/NETWORK_ERROR indistinguishable from being
+		// genuinely offline.
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "Idempotency-Key", "X-Operation-Id"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
