@@ -542,6 +542,76 @@ func (h *AuthHandler) GetProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": profile})
 }
 
+// SwitchRole godoc
+// @Summary      Switch the active role on the current account
+// @Description  Re-issues tokens with a different active role (the account's primary role or a granted one), without logging out.
+// @Tags         Authentication
+func (h *AuthHandler) SwitchRole(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+
+	var req dto.SwitchRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "role is required"})
+		return
+	}
+
+	resp, err := h.service.SwitchRole(userID, req.Role, c.ClientIP(), c.Request.UserAgent())
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": resp})
+}
+
+// GetAvailableRoles godoc
+// @Summary      List roles the current account can switch to
+func (h *AuthHandler) GetAvailableRoles(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+
+	roles, err := h.service.GetAvailableRoles(userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found."})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"roles": roles}})
+}
+
+// GrantRole godoc
+// @Summary      Grant an additional role to a user (admin only)
+func (h *AuthHandler) GrantRole(c *gin.Context) {
+	targetUserID := c.Param("id")
+	grantedBy := middleware.GetUserID(c)
+
+	var req dto.GrantRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "role is required"})
+		return
+	}
+
+	if err := h.service.GrantRole(targetUserID, req.Role, grantedBy); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Role granted"})
+}
+
+// RevokeRole godoc
+// @Summary      Revoke a previously granted role from a user (admin only)
+func (h *AuthHandler) RevokeRole(c *gin.Context) {
+	targetUserID := c.Param("id")
+	role := c.Param("role")
+
+	if err := h.service.RevokeRole(targetUserID, role); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Role revoked"})
+}
+
 // UpdateProfile godoc
 // @Summary      Update user profile
 // @Description  Update the authenticated user's profile (first name, last name, phone number).

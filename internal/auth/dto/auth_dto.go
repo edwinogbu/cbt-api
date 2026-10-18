@@ -94,6 +94,20 @@ type UserDTO struct {
 	TwoFactorEnabled bool      `json:"two_factor_enabled"`
 	SchoolID         *string   `json:"school_id,omitempty"` // ADDED
 	CreatedAt        time.Time `json:"created_at"`
+	// AvailableRoles is every role this account can act as right now -
+	// the primary Role plus any extra grants (models.UserRoleGrant). Role
+	// is always the CURRENT TOKEN's active role (the one just logged in
+	// with, or switched to via POST /auth/switch-role), which may differ
+	// from the account's primary role.
+	AvailableRoles []string `json:"available_roles"`
+}
+
+type SwitchRoleRequest struct {
+	Role string `json:"role" binding:"required"`
+}
+
+type GrantRoleRequest struct {
+	Role string `json:"role" binding:"required"`
 }
 
 type SessionDTO struct {

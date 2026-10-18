@@ -381,6 +381,21 @@ func setupAuthRoutes(rg *gin.RouterGroup, handler *authHandler.AuthHandler) {
 		protected.DELETE("/profile", handler.DeleteAccount)
 		protected.GET("/subscription/check", handler.CheckSubscription)
 		protected.GET("/status", handler.GetAuthStatus)
+
+		// Multi-role support: switching re-issues tokens with a
+		// different active role (never requires logging out) - see
+		// internal/auth/service/auth_service.go's SwitchRole.
+		protected.GET("/available-roles", handler.GetAvailableRoles)
+		protected.POST("/switch-role", handler.SwitchRole)
+	}
+
+	// Admin-only role grant/revoke management - who gets which extra
+	// role is an admin decision, enforced server-side.
+	roleAdmin := rg.Group("/auth/users")
+	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin"))
+	{
+		roleAdmin.POST("/:id/roles", handler.GrantRole)
+		roleAdmin.DELETE("/:id/roles/:role", handler.RevokeRole)
 	}
 }
 

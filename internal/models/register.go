@@ -33,6 +33,7 @@ func init() {
 	Register(&User{})
 	Register(&UserSession{})
 	Register(&OTP{})
+	Register(&UserRoleGrant{})
 
 	// ============================================
 	// ACADEMIC MODELS
