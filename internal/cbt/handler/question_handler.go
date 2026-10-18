@@ -1382,6 +1382,13 @@ func (h *QuestionHandler) handleError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question ID"})
 	case errors.Is(err, ErrPermissionDenied):
 		c.JSON(http.StatusForbidden, gin.H{"error": "permission denied"})
+	case strings.HasPrefix(err.Error(), "validation failed"):
+		// Many service methods in this package wrap request-validation
+		// failures as fmt.Errorf("validation failed: %w", err) rather than
+		// the ErrValidationFailed sentinel - this fell through to 500
+		// (confirmed live via a bulk-upload row-count-limit test) even
+		// though it's a client error, not a server fault.
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case strings.HasPrefix(err.Error(), "unauthorized"):
 		// authorizeQuestionWrite/authorizeRoleOnly (question_service.go) return
 		// plain errors.New("unauthorized: ...") rather than a sentinel, since

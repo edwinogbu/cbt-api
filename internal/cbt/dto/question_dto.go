@@ -1805,7 +1805,14 @@ type BulkUploadResponse struct {
 	TotalProcessed int      `json:"total_processed"`
 	SuccessCount   int      `json:"success_count"`
 	FailedCount    int      `json:"failed_count"`
+	// DuplicateCount counts rows skipped as exact duplicates of an earlier
+	// row in the SAME file - these are not saved. Warnings (below) flag
+	// rows that merely resemble an EXISTING question bank entry; those are
+	// still saved, since a human should decide whether it's really a
+	// duplicate or a legitimate variation.
+	DuplicateCount int      `json:"duplicate_count"`
 	Errors         []string `json:"errors,omitempty"`
+	Warnings       []string `json:"warnings,omitempty"`
 }
 
 // BulkImportStatusResponse represents bulk import status

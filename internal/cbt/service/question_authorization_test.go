@@ -184,3 +184,21 @@ func TestAuthorizeRoleOnly_ParentDenied(t *testing.T) {
 		t.Fatal("expected parent to be denied, got nil error")
 	}
 }
+
+func TestNormalizeQuestionText(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"What is the capital?", "what is the capital?", true},
+		{"What   is  the capital?", "What is the capital?", true},
+		{"  What is the capital?  ", "What is the capital?", true},
+		{"What is the capital?", "What is the capital of France?", false},
+	}
+	for _, c := range cases {
+		got := normalizeQuestionText(c.a) == normalizeQuestionText(c.b)
+		if got != c.want {
+			t.Errorf("normalizeQuestionText(%q) == normalizeQuestionText(%q): got %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}

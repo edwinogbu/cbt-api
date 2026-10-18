@@ -549,6 +549,10 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 	if len(importItems) == 0 {
 		return nil, errors.New("no valid questions found in file")
 	}
+	const maxImportRows = 1000
+	if len(importItems) > maxImportRows {
+		return nil, fmt.Errorf("validation failed: too many questions in file: found %d, maximum %d per upload", len(importItems), maxImportRows)
+	}
 
 	// Prepare response
 	resp := &dto.BulkUploadResponse{
@@ -556,7 +560,28 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 		SuccessCount:   0,
 		FailedCount:    0,
 		Errors:         []string{},
+		Warnings:       []string{},
 	}
+
+	// Pre-fetch existing question text in this exact subject+class scope,
+	// to warn (not block) on likely duplicates against the question bank
+	// already saved by any teacher - a cheap, scope-bounded query since a
+	// class+subject's question count is small relative to the whole bank.
+	existingNormalized := make(map[string]bool)
+	if req.SubjectID != "" && req.ClassID != "" {
+		var existingTexts []string
+		s.db.WithContext(ctx).Model(&models.QuestionBank{}).
+			Where("subject_id = ? AND class_id = ? AND deleted_at IS NULL", req.SubjectID, req.ClassID).
+			Pluck("question_text", &existingTexts)
+		for _, t := range existingTexts {
+			existingNormalized[normalizeQuestionText(t)] = true
+		}
+	}
+
+	// Detect exact duplicates WITHIN this file (same normalized text seen
+	// twice) - these are skipped rather than saved twice; everything else
+	// is reported but never silently discarded.
+	seenInFile := make(map[string]int) // normalized text -> first row number seen
 
 	// Process in batches for performance
 	batchSize := 100
@@ -576,6 +601,17 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 				resp.FailedCount++
 				resp.Errors = append(resp.Errors, fmt.Sprintf("Row %d: %v", rowNumber, err))
 				continue
+			}
+
+			normalized := normalizeQuestionText(item.QuestionText)
+			if firstRow, dup := seenInFile[normalized]; dup {
+				resp.DuplicateCount++
+				resp.Warnings = append(resp.Warnings, fmt.Sprintf("Row %d: skipped - duplicates row %d in this file", rowNumber, firstRow))
+				continue
+			}
+			seenInFile[normalized] = rowNumber
+			if existingNormalized[normalized] {
+				resp.Warnings = append(resp.Warnings, fmt.Sprintf("Row %d: saved, but an existing question in this class/subject looks identical or very similar - review for an unintended duplicate", rowNumber))
 			}
 
 			// Build question model from import item
@@ -611,6 +647,13 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 // ============================================
 // VALIDATION HELPERS FOR BULK UPLOAD
 // ============================================
+
+// normalizeQuestionText collapses whitespace and case so near-identical
+// formatting (extra spaces, line breaks, capitalization) doesn't defeat
+// duplicate detection, without doing a fuzzy/similarity match.
+func normalizeQuestionText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
 
 func (s *QuestionService) validateBulkUploadRequest(req *dto.BulkUploadRequest) error {
 	if req.SchoolID == "" {
