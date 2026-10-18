@@ -80,6 +80,35 @@ func (r *NodeSyncRepository) UpsertResult(ctx context.Context, res *models.Resul
 	return r.db.WithContext(ctx).Save(res).Error
 }
 
+// FindAttemptByID/FindAnswerByID/FindResultByID back the Push conflict
+// checks in the service layer: each incoming record is compared against
+// what's already stored before Upsert* above is allowed to overwrite it.
+// gorm.ErrRecordNotFound (not wrapped) lets callers distinguish "no
+// existing row - nothing to conflict with" from a real error.
+func (r *NodeSyncRepository) FindAttemptByID(ctx context.Context, id string) (*models.ExamAttempt, error) {
+	var a models.ExamAttempt
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&a).Error; err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *NodeSyncRepository) FindAnswerByID(ctx context.Context, id string) (*models.StudentAnswer, error) {
+	var a models.StudentAnswer
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&a).Error; err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *NodeSyncRepository) FindResultByID(ctx context.Context, id string) (*models.Result, error) {
+	var res models.Result
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&res).Error; err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 func (r *NodeSyncRepository) UpsertEvent(ctx context.Context, e *models.ExamEventLog) error {
 	return r.db.WithContext(ctx).Save(e).Error
 }

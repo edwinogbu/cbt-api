@@ -53,6 +53,13 @@ type ResultPush struct {
 	Grade       string     `json:"grade"`
 	Remarks     string     `json:"remarks"`
 	Passed      bool       `json:"passed"`
+	// FullyGraded mirrors models.Result.FullyGraded - must travel with
+	// the push (defaulting to false, the Go zero value, would silently
+	// reset an already-fully-graded cloud-side Result on every later
+	// push of the same record otherwise). A node pushes false while an
+	// essay question on its own local copy is still awaiting a manual
+	// mark, true once its own grading is complete.
+	FullyGraded bool       `json:"fully_graded"`
 	PublishedAt *time.Time `json:"published_at"`
 }
 

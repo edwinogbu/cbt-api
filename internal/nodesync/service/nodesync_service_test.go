@@ -51,6 +51,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			selected_answer TEXT, selected_option_keys TEXT, essay_response TEXT,
 			is_correct INTEGER DEFAULT 0, is_marked INTEGER DEFAULT 0, time_spent INTEGER,
 			synced_at DATETIME, synced_to_cloud_at DATETIME,
+			marks_awarded INTEGER, marked_by TEXT, marked_at DATETIME, marker_feedback TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE results (
@@ -218,5 +219,231 @@ func TestPush_UpsertIsIdempotent(t *testing.T) {
 	db.Table("exam_attempts").Where("id = ?", session.ID).Count(&count)
 	if count != 1 {
 		t.Errorf("expected exactly 1 row after retrying the same push, got %d (not idempotent)", count)
+	}
+}
+
+// ---- Conflict detection: an incoming push must never silently revert a
+// more final locally-stored record. ----
+
+// TestPush_RejectsSessionDowngrade_FinalSubmissionCannotBeReverted is the
+// regression test for the directive's explicit requirement: "a final
+// exam submission cannot be silently reverted by delayed synchronization."
+// A session already recorded as completed must survive a later, stale,
+// or out-of-order push that claims the same attempt is still in_progress.
+func TestPush_RejectsSessionDowngrade_FinalSubmissionCannotBeReverted(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	attemptID := uuid.NewString()
+
+	completed := dto.SessionPush{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "completed"}
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Sessions: []dto.SessionPush{completed}}); err != nil {
+		t.Fatalf("initial completed push failed: %v", err)
+	}
+
+	stale := dto.SessionPush{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "in_progress"}
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Sessions: []dto.SessionPush{stale}})
+	if err != nil {
+		t.Fatalf("stale push returned an error: %v", err)
+	}
+	if resp.SessionsAccepted != 0 {
+		t.Errorf("expected the stale downgrade to be rejected, not accepted, got SessionsAccepted=%d", resp.SessionsAccepted)
+	}
+	if len(resp.Rejected) != 1 {
+		t.Fatalf("expected exactly 1 rejection, got %d: %+v", len(resp.Rejected), resp.Rejected)
+	}
+
+	var stored models.ExamAttempt
+	if err := db.Table("exam_attempts").Where("id = ?", attemptID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored attempt: %v", err)
+	}
+	if stored.Status != "completed" {
+		t.Errorf("expected the stored attempt to remain completed, got %q - the final submission was reverted", stored.Status)
+	}
+}
+
+// TestPush_AcceptsSessionStatusAdvance confirms the conflict guard is
+// one-directional: a legitimate forward transition (in_progress ->
+// completed, the normal case of a node syncing a just-finished exam)
+// must still be accepted, not blocked by the new check.
+func TestPush_AcceptsSessionStatusAdvance(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	attemptID := uuid.NewString()
+
+	inProgress := dto.SessionPush{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "in_progress"}
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Sessions: []dto.SessionPush{inProgress}}); err != nil {
+		t.Fatalf("initial in_progress push failed: %v", err)
+	}
+
+	completed := dto.SessionPush{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "completed"}
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Sessions: []dto.SessionPush{completed}})
+	if err != nil {
+		t.Fatalf("advancing push failed: %v", err)
+	}
+	if resp.SessionsAccepted != 1 {
+		t.Fatalf("expected the forward transition to be accepted, got SessionsAccepted=%d, rejected=%+v", resp.SessionsAccepted, resp.Rejected)
+	}
+
+	var stored models.ExamAttempt
+	if err := db.Table("exam_attempts").Where("id = ?", attemptID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored attempt: %v", err)
+	}
+	if stored.Status != "completed" {
+		t.Errorf("expected stored status completed, got %q", stored.Status)
+	}
+}
+
+// TestPush_RejectsAnswerConflict_AttemptAlreadyFinalized confirms an
+// answer push with a DIFFERENT value than what's stored is rejected once
+// its attempt has moved past in_progress - "prevent an older answer or
+// submission from overwriting a newer authoritative record."
+func TestPush_RejectsAnswerConflict_AttemptAlreadyFinalized(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	attemptID := uuid.NewString()
+	answerID := uuid.NewString()
+	questionID := uuid.NewString()
+
+	// Attempt completed, with an answer already recorded as "A".
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{
+		Sessions: []dto.SessionPush{{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "completed"}},
+		Answers:  []dto.AnswerPush{{ID: answerID, AttemptID: attemptID, QuestionID: questionID, SelectedAnswer: "A", IsCorrect: true}},
+	}); err != nil {
+		t.Fatalf("initial push failed: %v", err)
+	}
+
+	// A delayed/out-of-order push now claims a different answer for the
+	// same ID - must be rejected, not silently applied.
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{
+		Answers: []dto.AnswerPush{{ID: answerID, AttemptID: attemptID, QuestionID: questionID, SelectedAnswer: "B", IsCorrect: false}},
+	})
+	if err != nil {
+		t.Fatalf("conflicting answer push returned an error: %v", err)
+	}
+	if resp.AnswersAccepted != 0 {
+		t.Errorf("expected the conflicting answer to be rejected, got AnswersAccepted=%d", resp.AnswersAccepted)
+	}
+
+	var stored models.StudentAnswer
+	if err := db.Table("student_answers").Where("id = ?", answerID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored answer: %v", err)
+	}
+	if stored.SelectedAnswer != "A" {
+		t.Errorf("expected the stored answer to remain %q, got %q - a finalized attempt's answer was silently overwritten", "A", stored.SelectedAnswer)
+	}
+}
+
+// TestPush_AcceptsIdenticalAnswerRetry_AttemptAlreadyFinalized confirms
+// the conflict guard doesn't break legitimate retries: re-pushing the
+// exact same answer value for an already-finalized attempt (a node
+// resending a batch whose response it never received) must still succeed.
+func TestPush_AcceptsIdenticalAnswerRetry_AttemptAlreadyFinalized(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	attemptID := uuid.NewString()
+	answerID := uuid.NewString()
+	questionID := uuid.NewString()
+
+	answer := dto.AnswerPush{ID: answerID, AttemptID: attemptID, QuestionID: questionID, SelectedAnswer: "A", IsCorrect: true}
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{
+		Sessions: []dto.SessionPush{{ID: attemptID, StudentID: studentID, ExamID: uuid.NewString(), StartTime: time.Now(), Status: "completed"}},
+		Answers:  []dto.AnswerPush{answer},
+	}); err != nil {
+		t.Fatalf("initial push failed: %v", err)
+	}
+
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Answers: []dto.AnswerPush{answer}})
+	if err != nil {
+		t.Fatalf("retried identical answer push returned an error: %v", err)
+	}
+	if resp.AnswersAccepted != 1 {
+		t.Errorf("expected the identical retry to be accepted as a no-op, got AnswersAccepted=%d, rejected=%+v", resp.AnswersAccepted, resp.Rejected)
+	}
+}
+
+// TestPush_RejectsResultOverwrite_FullyGradedWithDifferentValues confirms
+// an already-fully-graded Result (the authoritative outcome of either
+// pure objective grading or completed manual marking) resists being
+// silently overwritten by a push carrying different score data.
+func TestPush_RejectsResultOverwrite_FullyGradedWithDifferentValues(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	resultID := uuid.NewString()
+	attemptID := uuid.NewString()
+	examID := uuid.NewString()
+
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{
+		Results: []dto.ResultPush{{ID: resultID, StudentID: studentID, ExamID: examID, AttemptID: attemptID, TotalScore: 80, Grade: "A", Passed: true, FullyGraded: true}},
+	}); err != nil {
+		t.Fatalf("initial result push failed: %v", err)
+	}
+
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{
+		Results: []dto.ResultPush{{ID: resultID, StudentID: studentID, ExamID: examID, AttemptID: attemptID, TotalScore: 40, Grade: "C", Passed: false, FullyGraded: true}},
+	})
+	if err != nil {
+		t.Fatalf("conflicting result push returned an error: %v", err)
+	}
+	if resp.ResultsAccepted != 0 {
+		t.Errorf("expected the conflicting result to be rejected, got ResultsAccepted=%d", resp.ResultsAccepted)
+	}
+
+	var stored models.Result
+	if err := db.Table("results").Where("id = ?", resultID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored result: %v", err)
+	}
+	if stored.TotalScore != 80 {
+		t.Errorf("expected the stored score to remain 80, got %d - a fully-graded result was silently overwritten", stored.TotalScore)
+	}
+}
+
+// TestPush_AcceptsResultRetry_FullyGradedWithIdenticalValues is the
+// idempotency companion: re-pushing the exact same fully-graded result
+// must succeed, not be mistaken for a conflict.
+func TestPush_AcceptsResultRetry_FullyGradedWithIdenticalValues(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	studentID := uuid.NewString()
+	seedStudent(t, db, studentID, schoolA)
+	result := dto.ResultPush{ID: uuid.NewString(), StudentID: studentID, ExamID: uuid.NewString(), AttemptID: uuid.NewString(), TotalScore: 80, Grade: "A", Passed: true, FullyGraded: true}
+
+	if _, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Results: []dto.ResultPush{result}}); err != nil {
+		t.Fatalf("initial result push failed: %v", err)
+	}
+
+	resp, err := svc.Push(context.Background(), schoolA, &dto.PushRequest{Results: []dto.ResultPush{result}})
+	if err != nil {
+		t.Fatalf("retried identical result push returned an error: %v", err)
+	}
+	if resp.ResultsAccepted != 1 {
+		t.Errorf("expected the identical retry to be accepted as a no-op, got ResultsAccepted=%d, rejected=%+v", resp.ResultsAccepted, resp.Rejected)
 	}
 }

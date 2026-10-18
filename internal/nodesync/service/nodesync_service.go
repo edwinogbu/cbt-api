@@ -42,6 +42,53 @@ func (s *NodeSyncService) AuthenticateNode(ctx context.Context, plaintextKey str
 	return "", "", errors.New("invalid node credential")
 }
 
+// attemptStatusRank gives each ExamAttempt status a place in an explicit,
+// one-directional lifecycle: in_progress -> submitted -> pending_manual_
+// marking -> completed/graded. This - not a raw timestamp comparison - is
+// the authoritative signal Push uses to detect a conflicting session
+// write: wall-clock timestamps across a school node and the cloud server
+// can't be trusted to agree closely enough to tell "this push is newer"
+// from "this push is older" (clock skew, a node that's been offline for
+// days, a node whose clock is simply wrong), but the *lifecycle* a
+// genuine exam attempt moves through is a fixed, known shape no matter
+// which machine's clock produced the record. A push whose status would
+// move an attempt backwards in this order is rejected as a conflict
+// rather than applied, however recent its own timestamp claims to be.
+var attemptStatusRank = map[string]int{
+	string(models.AttemptStatusInProgress):          0,
+	string(models.AttemptStatusSubmitted):           1,
+	string(models.AttemptStatusPendingManualMarking): 2,
+	string(models.AttemptStatusCompleted):           3,
+	string(models.AttemptStatusGraded):              3,
+}
+
+func statusRank(status string) int {
+	if r, ok := attemptStatusRank[status]; ok {
+		return r
+	}
+	return 0
+}
+
+// resultMatches reports whether an incoming pushed Result's authoritative
+// fields are identical to what's already stored - the test that lets a
+// genuine retry of the exact same push succeed as a no-op even though the
+// attempt is already finalized, without that retry being confused for a
+// conflicting, different write.
+func resultMatches(existing *models.Result, incoming *dto.ResultPush) bool {
+	return existing.TotalScore == incoming.TotalScore &&
+		existing.Grade == incoming.Grade &&
+		existing.Passed == incoming.Passed &&
+		existing.FullyGraded == incoming.FullyGraded &&
+		(existing.Percentage-incoming.Percentage) < 0.01 &&
+		(existing.Percentage-incoming.Percentage) > -0.01
+}
+
+// answerMatches is the same idea for one StudentAnswer.
+func answerMatches(existing *models.StudentAnswer, incoming *dto.AnswerPush) bool {
+	return existing.SelectedAnswer == incoming.SelectedAnswer &&
+		existing.IsCorrect == incoming.IsCorrect
+}
+
 // Push validates and upserts a batch pushed from a School Node. Every
 // record's owning student must belong to the authenticated school - this
 // is what stops one compromised or misconfigured node from writing data
@@ -50,6 +97,18 @@ func (s *NodeSyncService) AuthenticateNode(ctx context.Context, plaintextKey str
 // school). A rejected record does not fail the whole batch; the node
 // retries only what was rejected as retryable per its own idempotency
 // queue.
+//
+// Beyond the school-ownership check, every session/answer/result write
+// is now also checked against whatever is already stored for that ID: an
+// incoming write that would move an attempt's status backwards (see
+// attemptStatusRank), or that would silently alter an already-fully-
+// graded Result or an answer belonging to an already-finalized attempt,
+// is rejected as a conflict and logged - not applied - unless it's byte-
+// for-byte the same write arriving again (a legitimate retry), which is
+// accepted as a no-op. This is what stops a node that's been offline for
+// days, or a genuinely out-of-order/duplicated push, from reverting a
+// final exam submission or a published grade once the cloud has already
+// recorded it.
 func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.PushRequest) (*dto.PushResponse, error) {
 	logger := zap.L().With(zap.String("school_id", schoolID))
 
@@ -83,6 +142,17 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "session", ID: r.ID, Reason: "student does not belong to authenticated school"})
 			continue
 		}
+
+		if existing, findErr := s.repo.FindAttemptByID(ctx, r.ID); findErr == nil && existing != nil {
+			if statusRank(r.Status) < statusRank(existing.Status) {
+				logger.Warn("rejected session push: would downgrade attempt status",
+					zap.String("id", r.ID), zap.String("incoming_status", r.Status), zap.String("stored_status", existing.Status))
+				resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "session", ID: r.ID,
+					Reason: "conflict: local attempt is already in a more final state (" + existing.Status + ")"})
+				continue
+			}
+		}
+
 		attempt := &models.ExamAttempt{
 			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID,
 			StartTime: r.StartTime, EndTime: r.EndTime, Score: r.Score,
@@ -103,6 +173,28 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 	// acceptable rejection path for a record whose parent was rejected
 	// or never pushed).
 	for _, r := range req.Answers {
+		// Only an edit to an ALREADY-STORED answer can conflict - the
+		// first-ever write of an answer must always be allowed, even if
+		// its parent attempt's own "completed" session arrived in the
+		// very same batch (the normal case: a node pushes a finished
+		// exam's session, answers, and result together). The real
+		// conflict is a delayed/out-of-order push trying to CHANGE an
+		// answer that's already recorded against an attempt that has
+		// since moved past in_progress - that must never be able to
+		// alter a student_answers row feeding into an already-submitted
+		// or already-graded attempt, and is rejected unless the
+		// incoming value is identical (a legitimate retry).
+		if existingAnswer, ansErr := s.repo.FindAnswerByID(ctx, r.ID); ansErr == nil && existingAnswer != nil && !answerMatches(existingAnswer, &r) {
+			if attempt, attErr := s.repo.FindAttemptByID(ctx, r.AttemptID); attErr == nil && attempt != nil &&
+				attempt.Status != string(models.AttemptStatusInProgress) {
+				logger.Warn("rejected answer push: attempt already finalized",
+					zap.String("id", r.ID), zap.String("attempt_id", r.AttemptID), zap.String("attempt_status", attempt.Status))
+				resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "answer", ID: r.ID,
+					Reason: "conflict: attempt is already " + attempt.Status + "; answer push rejected"})
+				continue
+			}
+		}
+
 		answer := &models.StudentAnswer{
 			ID: r.ID, AttemptID: r.AttemptID, QuestionID: r.QuestionID,
 			SelectedAnswer: r.SelectedAnswer, IsCorrect: r.IsCorrect,
@@ -121,10 +213,24 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "result", ID: r.ID, Reason: "student does not belong to authenticated school"})
 			continue
 		}
+
+		// A fully-graded Result is an authoritative record (the manual-
+		// marking workflow, or pure objective grading, already produced
+		// a final score) - an incoming push only overwrites it if the
+		// values genuinely match (the same result arriving again).
+		if existing, findErr := s.repo.FindResultByID(ctx, r.ID); findErr == nil && existing != nil &&
+			existing.FullyGraded && !resultMatches(existing, &r) {
+			logger.Warn("rejected result push: already fully graded with different values",
+				zap.String("id", r.ID), zap.Int("stored_score", existing.TotalScore), zap.Int("incoming_score", r.TotalScore))
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "result", ID: r.ID,
+				Reason: "conflict: result is already fully graded locally with different values"})
+			continue
+		}
+
 		result := &models.Result{
 			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID, AttemptID: r.AttemptID,
 			TotalScore: r.TotalScore, Percentage: r.Percentage, Grade: r.Grade,
-			Remarks: r.Remarks, Passed: r.Passed, PublishedAt: r.PublishedAt,
+			Remarks: r.Remarks, Passed: r.Passed, FullyGraded: r.FullyGraded, PublishedAt: r.PublishedAt,
 		}
 		if err := s.repo.UpsertResult(ctx, result); err != nil {
 			logger.Error("upsert result failed", zap.String("id", r.ID), zap.Error(err))
