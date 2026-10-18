@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/extrame/xls"
+	"github.com/ledongthuc/pdf"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -80,7 +82,12 @@ const (
 
 	// Excel sub-formats (for debugging)
 	UploadFormatXLSX = "xlsx"
-	UploadFormatXLS  = "xls"
+	// UploadFormatXLS is the legacy Excel 97-2004 binary format, parsed by
+	// XLSParser - distinct from UploadFormatExcel (modern .xlsx via
+	// excelize, which cannot read the legacy binary format at all).
+	UploadFormatXLS = "xls"
+	UploadFormatRTF = "rtf"
+	UploadFormatPDF = "pdf"
 
 	// ============================================================
 	// TEXT MODES FOR TXT PARSING
@@ -269,7 +276,7 @@ type BulkUploadRequest struct {
 	SubjectID          string                `form:"subject_id" binding:"required,uuid"`
 	ExamType           string                `form:"exam_type" binding:"required,oneof=weekly_test continuous_assessment mid_term end_of_term main_exam mock_exam revision practice assignment quiz entrance placement promotional final_exam custom"`
 	File               *multipart.FileHeader `form:"file" binding:"required"`
-	Format             string                `form:"format" binding:"omitempty,oneof=auto csv excel json docx txt"`
+	Format             string                `form:"format" binding:"omitempty,oneof=auto csv excel json docx txt rtf pdf xls"`
 	HasHeader          bool                  `form:"has_header"`
 	SheetName          string                `form:"sheet_name"`
 	TextMode           string                `form:"text_mode" binding:"omitempty,oneof=plain qa numbered"`
@@ -360,14 +367,22 @@ func DetectFormatFromExtension(filename string) string {
 	switch ext {
 	case ".csv":
 		return UploadFormatCSV
-	case ".xlsx", ".xls":
+	case ".xlsx":
 		return UploadFormatExcel
+	case ".xls":
+		// Legacy binary Excel - excelize (used for .xlsx) cannot read this
+		// format at all, so this must NOT be routed to UploadFormatExcel.
+		return UploadFormatXLS
 	case ".json":
 		return UploadFormatJSON
 	case ".docx":
 		return UploadFormatDOCX
 	case ".txt":
 		return UploadFormatTXT
+	case ".rtf":
+		return UploadFormatRTF
+	case ".pdf":
+		return UploadFormatPDF
 	default:
 		return ""
 	}
@@ -387,21 +402,28 @@ func IsValidFormat(format string) bool {
 		UploadFormatJSON:  true,
 		UploadFormatDOCX:  true,
 		UploadFormatTXT:   true,
+		UploadFormatRTF:   true,
+		UploadFormatPDF:   true,
+		UploadFormatXLS:   true,
 	}
 	return validFormats[format]
 }
+
+// supportedFormatsList is the human-readable list used in error messages,
+// kept in one place so it can't drift from IsValidFormat above.
+const supportedFormatsList = "csv, excel (.xlsx), xls (legacy .xls), json, docx, txt, rtf, pdf"
 
 // GetFormatFromRequest determines the actual format to use
 func GetFormatFromRequest(format string, filename string) (string, error) {
 	if ShouldAutoDetect(format) {
 		detected := DetectFormatFromExtension(filename)
 		if detected == "" {
-			return "", fmt.Errorf("unable to detect format from file '%s'. Please specify format explicitly (csv, excel, json, docx, txt)", filename)
+			return "", fmt.Errorf("unable to detect format from file '%s'. Please specify format explicitly (%s)", filename, supportedFormatsList)
 		}
 		return detected, nil
 	}
 	if !IsValidFormat(format) {
-		return "", fmt.Errorf("invalid format '%s'. Supported formats: csv, excel, json, docx, txt", format)
+		return "", fmt.Errorf("invalid format '%s'. Supported formats: %s", format, supportedFormatsList)
 	}
 	return format, nil
 }
@@ -667,15 +689,34 @@ func (p *ExcelParser) getColumn(row []string, colMap map[string]int, colName str
 	return ""
 }
 
+// xlsEpoch is the day-zero the extrame/xls library uses when it guesses a
+// plain numeric cell is actually a date (see parseInt below).
+var xlsEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+
 func (p *ExcelParser) parseInt(str string) int {
+	str = strings.TrimSpace(str)
 	if str == "" {
 		return 0
 	}
-	val, err := strconv.Atoi(strings.TrimSpace(str))
-	if err != nil {
-		return 0
+	if val, err := strconv.Atoi(str); err == nil {
+		return val
 	}
-	return val
+	// Legacy .xls cells (read via XLSParser, which reuses this method) can
+	// come back as a formatted float string (e.g. "1" stored as "1.0")
+	// rather than a clean integer.
+	if f, err := strconv.ParseFloat(str, 64); err == nil {
+		return int(f)
+	}
+	// Found live: extrame/xls sometimes misreads a plain small-integer
+	// numeric cell (e.g. marks=1) as a date, since XLS stores both as the
+	// same underlying number distinguished only by a format flag this
+	// library's simple Col() accessor doesn't expose. Recover the
+	// original integer from the day offset against its date epoch rather
+	// than silently losing the marks value to the "" -> 0 -> default path.
+	if t, err := time.Parse(time.RFC3339, str); err == nil {
+		return int(t.Sub(xlsEpoch).Hours() / 24)
+	}
+	return 0
 }
 
 func (p *ExcelParser) setDefaults(q *QuestionImportItem) {
@@ -1395,6 +1436,189 @@ func (p *TXTParser) setDefaults(q *QuestionImportItem) {
 }
 
 // ============================================================
+// RTF PARSER
+// ============================================================
+
+// RTFParser parses Rich Text Format files by stripping RTF control words
+// down to plain text, then reusing TXTParser's Q&A text parsing - the same
+// approach DOCXParser takes for extracting plain text from OOXML.
+type RTFParser struct{}
+
+func NewRTFParser() *RTFParser {
+	return &RTFParser{}
+}
+
+func (p *RTFParser) SupportedFormat() string {
+	return UploadFormatRTF
+}
+
+func (p *RTFParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RTF file: %w", err)
+	}
+	text := extractTextFromRTF(string(data))
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("no readable text found in RTF file")
+	}
+	return (&TXTParser{textMode: TextModeQA}).parseQuestionsFromText(text)
+}
+
+// rtfControlWord matches a backslash control word with an optional numeric
+// parameter, e.g. \par, \b0, \fs24 - these carry formatting, not content.
+var rtfControlWord = regexp.MustCompile(`\\[a-zA-Z]+-?\d*\s?`)
+
+// rtfHexEscape matches a literal byte escape, e.g. \'e9.
+var rtfHexEscape = regexp.MustCompile(`\\'[0-9a-fA-F]{2}`)
+
+// extractTextFromRTF does a best-effort plain-text extraction from RTF
+// source: drops control words, groups, and font/color tables, keeps the
+// visible document text. RTF has no page/text-stream layout ambiguity the
+// way legacy binary formats do, so a textual pass is a reasonable,
+// dependency-free approach - it will not perfectly handle every RTF
+// producer's output, but handles the common case of plain text with basic
+// formatting that Word/WordPad/LibreOffice produce.
+func extractTextFromRTF(rtf string) string {
+	// Drop the font table, color table, and other header groups that
+	// contain no body text but would otherwise leak raw names into output.
+	for _, group := range []string{"fonttbl", "colortbl", "stylesheet", "info", "pict", "object"} {
+		re := regexp.MustCompile(`\{\\` + group + `[^{}]*(\{[^{}]*\}[^{}]*)*\}`)
+		rtf = re.ReplaceAllString(rtf, "")
+	}
+
+	rtf = rtfHexEscape.ReplaceAllString(rtf, "")
+	rtf = rtfControlWord.ReplaceAllString(rtf, " ")
+	rtf = strings.ReplaceAll(rtf, "{", "")
+	rtf = strings.ReplaceAll(rtf, "}", "")
+	rtf = strings.ReplaceAll(rtf, "\\par", "\n")
+	rtf = strings.ReplaceAll(rtf, "\\line", "\n")
+
+	lines := strings.Split(rtf, "\n")
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// ============================================================
+// PDF PARSER (text-based PDFs only - no OCR)
+// ============================================================
+
+// PDFParser extracts plain text from text-based PDF documents using
+// github.com/ledongthuc/pdf, then reuses TXTParser's Q&A text parsing.
+// Scanned/image-only PDFs produce no extractable text and are reported as
+// an error rather than silently returning zero questions - see the error
+// message below.
+type PDFParser struct{}
+
+func NewPDFParser() *PDFParser {
+	return &PDFParser{}
+}
+
+func (p *PDFParser) SupportedFormat() string {
+	return UploadFormatPDF
+}
+
+func (p *PDFParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PDF file: %w", err)
+	}
+
+	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open PDF file (it may be encrypted or corrupted): %w", err)
+	}
+
+	textReader, err := reader.GetPlainText()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract text from PDF: %w", err)
+	}
+	textBytes, err := io.ReadAll(textReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read extracted PDF text: %w", err)
+	}
+
+	text := string(textBytes)
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("no extractable text found in PDF - this usually means it is a scanned/image-only document, which is not supported (OCR is not implemented)")
+	}
+	return (&TXTParser{textMode: TextModeQA}).parseQuestionsFromText(text)
+}
+
+// ============================================================
+// LEGACY XLS PARSER (Excel 97-2004 binary format)
+// ============================================================
+
+// XLSParser parses legacy binary .xls workbooks using github.com/extrame/xls
+// (excelize, used by ExcelParser above, only reads the modern OOXML .xlsx
+// format). Reuses ExcelParser's column-mapping/row-parsing logic since both
+// ultimately deal with the same [][]string row shape.
+type XLSParser struct{}
+
+func NewXLSParser() *XLSParser {
+	return &XLSParser{}
+}
+
+func (p *XLSParser) SupportedFormat() string {
+	return UploadFormatXLS
+}
+
+func (p *XLSParser) Parse(file io.Reader) ([]QuestionImportItem, error) {
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read XLS file: %w", err)
+	}
+
+	wb, err := xls.OpenReader(bytes.NewReader(data), "utf-8")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open legacy XLS file: %w", err)
+	}
+	if wb.NumSheets() == 0 {
+		return nil, fmt.Errorf("XLS file has no sheets")
+	}
+	sheet := wb.GetSheet(0)
+	if sheet == nil || sheet.MaxRow == 0 {
+		return nil, fmt.Errorf("XLS sheet has no data rows")
+	}
+
+	var rows [][]string
+	for i := 0; i <= int(sheet.MaxRow); i++ {
+		row := sheet.Row(i)
+		if row == nil {
+			rows = append(rows, []string{})
+			continue
+		}
+		var cells []string
+		for c := row.FirstCol(); c < row.LastCol(); c++ {
+			cells = append(cells, row.Col(c))
+		}
+		rows = append(rows, cells)
+	}
+
+	if len(rows) < 2 {
+		return nil, fmt.Errorf("XLS sheet must have header + at least one data row")
+	}
+
+	excel := &ExcelParser{}
+	colMap := excel.buildColumnMap(rows[0])
+
+	var questions []QuestionImportItem
+	for i := 1; i < len(rows); i++ {
+		q, err := excel.parseRow(rows[i], colMap)
+		if err != nil {
+			continue
+		}
+		questions = append(questions, q)
+	}
+	return questions, nil
+}
+
+// ============================================================
 // PARSER FACTORY
 // ============================================================
 
@@ -1419,6 +1643,12 @@ func (f *ParserFactory) GetParser(format string) (QuestionParser, error) {
 		return NewDOCXParser(), nil
 	case UploadFormatTXT:
 		return NewTXTParser(), nil
+	case UploadFormatRTF:
+		return NewRTFParser(), nil
+	case UploadFormatPDF:
+		return NewPDFParser(), nil
+	case UploadFormatXLS:
+		return NewXLSParser(), nil
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", format)
 	}
