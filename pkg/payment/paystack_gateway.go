@@ -241,8 +241,17 @@ func (g *PaystackGateway) ParseWebhook(ctx context.Context, payload []byte, sign
     if signature == "" {
         return nil, fmt.Errorf("missing signature")
     }
+    // An unset PAYSTACK_SECRET_KEY makes the HMAC below computable by
+    // anyone (HMAC with an empty key is just a deterministic function of
+    // the payload) - a misconfigured deployment would otherwise treat any
+    // self-forged "charge.success" webhook as authentic and activate
+    // someone else's pending onboarding subscription for free. Fail
+    // closed instead of silently verifying against a forgeable key.
+    if g.secretKey == "" {
+        return nil, fmt.Errorf("paystack webhook signature verification failed: PAYSTACK_SECRET_KEY is not configured")
+    }
     computed := computeHMAC512(payload, g.secretKey)
-    if computed != signature {
+    if !hmac.Equal([]byte(computed), []byte(signature)) {
         return nil, fmt.Errorf("invalid signature")
     }
 
