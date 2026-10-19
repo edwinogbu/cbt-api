@@ -1276,9 +1276,12 @@ func (s *QuestionService) GenerateGroundedQuestions(ctx context.Context, req *dt
 	return resp, nil
 }
 
-// authorizeRoleOnly checks that the caller is a teacher/admin/super_admin
-// without requiring a specific class (used at workflow stages before a
-// class has been selected yet).
+// authorizeRoleOnly checks that the caller is a teacher/admin/super_admin/
+// platform_owner without requiring a specific class (used at workflow
+// stages before a class has been selected yet). platform_owner is
+// included here for the same reason every other ownership check in this
+// file exempts it: it is the one role deliberately meant to act across
+// every tenant rather than being confined to one school's staff.
 func (s *QuestionService) authorizeRoleOnly(userID string) error {
 	if userID == "" {
 		return errors.New("unauthorized: user not authenticated")
@@ -1288,7 +1291,7 @@ func (s *QuestionService) authorizeRoleOnly(userID string) error {
 		return errors.New("unauthorized: user not found")
 	}
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin, models.RoleTeacher:
+	case models.RoleAdmin, models.RoleSuperAdmin, models.RoleTeacher, models.RolePlatformOwner:
 		return nil
 	default:
 		return errors.New("unauthorized: only teachers and admins may use the question-generation workflow")
@@ -1889,7 +1892,7 @@ func (s *QuestionService) authorizeQuestionWrite(userID, schoolID, classID strin
 	}
 
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin:
+	case models.RolePlatformOwner, models.RoleAdmin, models.RoleSuperAdmin:
 		return nil
 	case models.RoleTeacher:
 		// fall through to the class-ownership check below
