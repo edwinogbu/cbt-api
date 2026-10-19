@@ -484,3 +484,75 @@ func TestConfirmPaymentIntent_PlatformOwner_Bypasses(t *testing.T) {
 		t.Fatalf("expected platform_owner to pass the ownership gate (and fail at gateway verification instead), got: %v", err)
 	}
 }
+
+// ---- VerifyPayment: before this fix, this was a complete stub - the
+// handler returned a hardcoded "Payment verified successfully" message
+// unconditionally, with no DB lookup, no ownership check, and no real
+// gateway call. Mirrors the ConfirmPaymentIntent trio exactly, but keyed
+// by gateway reference instead of payment intent ID.
+
+func TestVerifyPayment_CrossTenant_Rejected(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionService(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.VerifyPayment("ref-pi-1", "school-B", false)
+	if err == nil {
+		t.Fatal("expected School B's caller to be rejected verifying School A's payment intent, got no error")
+	}
+	if err.Error() != "payment intent not found" {
+		t.Fatalf(`expected "payment intent not found", got: %v`, err)
+	}
+
+	var isFinalized bool
+	db.Table("payment_intents").Select("is_finalized").Where("id = ?", "pi-1").Scan(&isFinalized)
+	if isFinalized {
+		t.Fatal("payment intent was finalized by a cross-tenant request that should have been rejected")
+	}
+}
+
+func TestVerifyPayment_SameTenant_PassesOwnershipGate(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionServiceWithPayment(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.VerifyPayment("ref-pi-1", "school-A", false)
+	if err == nil {
+		t.Fatal("expected an error past the ownership gate (unsupported gateway), got nil")
+	}
+	if err.Error() == "payment intent not found" {
+		t.Fatal("same-tenant caller was incorrectly rejected by the ownership gate")
+	}
+	if err.Error() != "unsupported gateway: unregistered-test-gateway" {
+		t.Fatalf("expected the ownership gate to be passed and fail at gateway verification instead, got: %v", err)
+	}
+}
+
+func TestVerifyPayment_PlatformOwner_Bypasses(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionServiceWithPayment(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.VerifyPayment("ref-pi-1", "", true)
+	if err == nil || err.Error() == "payment intent not found" {
+		t.Fatalf("expected platform_owner to pass the ownership gate (and fail at gateway verification instead), got: %v", err)
+	}
+}
+
+func TestVerifyPayment_AlreadyFinalized_Rejected(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionServiceWithPayment(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+	if err := db.Exec("UPDATE payment_intents SET is_finalized = 1 WHERE id = ?", "pi-1").Error; err != nil {
+		t.Fatalf("failed to mark payment intent finalized: %v", err)
+	}
+
+	err := s.VerifyPayment("ref-pi-1", "school-A", false)
+	if err == nil || err.Error() != "payment intent already finalized" {
+		t.Fatalf(`expected "payment intent already finalized", got: %v`, err)
+	}
+}

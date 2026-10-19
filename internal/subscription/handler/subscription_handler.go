@@ -451,7 +451,11 @@ func (h *SubscriptionHandler) VerifyPayment(c *gin.Context) {
         return
     }
 
-    // TODO: implement service.VerifyPayment
+    if err := h.service.VerifyPayment(req.Reference, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{"message": "Payment verified successfully"})
 }
 

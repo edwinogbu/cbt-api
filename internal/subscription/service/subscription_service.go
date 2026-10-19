@@ -324,9 +324,20 @@ func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID, schoolID str
         return errors.New("payment intent already finalized")
     }
 
+    return s.verifyAndFinalizePaymentIntent(pi)
+}
+
+// verifyAndFinalizePaymentIntent re-checks a payment intent with its
+// gateway of record and, on success, finalizes it: marks its invoice
+// paid, activates a pending subscription, and records the payment
+// transaction. It assumes the caller has already performed the
+// ownership and already-finalized checks - shared by ConfirmPaymentIntent
+// (looked up by ID) and VerifyPayment (looked up by gateway reference) so
+// the mutation logic isn't duplicated between the two near-identical flows.
+func (s *SubscriptionService) verifyAndFinalizePaymentIntent(pi *models.PaymentIntent) error {
     verification, err := s.paymentService.VerifyPayment(context.Background(), pi.Gateway, pi.Reference)
     if err != nil {
-        log.Printf("[SERVICE] ConfirmPaymentIntent: verification failed: %v", err)
+        log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: verification failed: %v", err)
         return err
     }
 
@@ -346,7 +357,7 @@ func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID, schoolID str
             sub.LastPaymentDate = timePtr(time.Now())
             sub.NextPaymentDate = calculateNextPaymentDate(sub.EndDate, sub.PaymentInterval)
             s.repo.Update(sub)
-            log.Printf("[SERVICE] ConfirmPaymentIntent: subscription %s activated", sub.ID)
+            log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: subscription %s activated", sub.ID)
         }
 
         transaction := &models.PaymentTransaction{
@@ -369,8 +380,40 @@ func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID, schoolID str
     }
 
     s.repo.UpdatePaymentIntent(pi)
-    log.Printf("[SERVICE] ConfirmPaymentIntent: final status=%s", pi.Status)
+    log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: final status=%s", pi.Status)
     return nil
+}
+
+// VerifyPayment manually re-verifies a payment intent by its gateway
+// reference, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Before this fix it was a
+// complete stub: the handler returned a hardcoded "Payment verified
+// successfully" message regardless of what was submitted, with no DB
+// lookup, no ownership check, and no real gateway call at all - a
+// misleading success message that never actually verified or finalized
+// anything.
+//
+// The request's gateway field is intentionally ignored for the actual
+// verification call: the server-recorded pi.Gateway is used instead, so
+// a caller can't redirect verification to a different gateway than the
+// one the payment intent was actually created against.
+func (s *SubscriptionService) VerifyPayment(reference, schoolID string, isPlatformOwner bool) error {
+    log.Printf("[SERVICE] VerifyPayment: reference=%s", reference)
+    pi, err := s.repo.FindPaymentIntentByReference(reference)
+    if err != nil {
+        return errors.New("payment intent not found")
+    }
+    // Same not-found-on-mismatch convention as ConfirmPaymentIntent, so a
+    // cross-school caller can't distinguish "wrong owner" from "no such
+    // payment intent".
+    if !isPlatformOwner && (schoolID == "" || pi.SchoolID != schoolID) {
+        return errors.New("payment intent not found")
+    }
+    if pi.IsFinalized {
+        return errors.New("payment intent already finalized")
+    }
+
+    return s.verifyAndFinalizePaymentIntent(pi)
 }
 
 // ============================================
