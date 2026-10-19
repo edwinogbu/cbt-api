@@ -25,7 +25,7 @@ import (
 func TestGrantRole_RejectsPlatformOwner(t *testing.T) {
 	s := &AuthService{}
 
-	err := s.GrantRole("some-user-id", string(models.RolePlatformOwner), "some-admin-id")
+	err := s.GrantRole("some-user-id", string(models.RolePlatformOwner), "some-admin-id", "school-1", false)
 	if err == nil {
 		t.Fatal("GrantRole(platform_owner) succeeded - this must always be rejected, see models.RolePlatformOwner")
 	}

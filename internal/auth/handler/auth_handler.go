@@ -590,7 +590,7 @@ func (h *AuthHandler) GrantRole(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.GrantRole(targetUserID, req.Role, grantedBy); err != nil {
+	if err := h.service.GrantRole(targetUserID, req.Role, grantedBy, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -604,7 +604,7 @@ func (h *AuthHandler) RevokeRole(c *gin.Context) {
 	targetUserID := c.Param("id")
 	role := c.Param("role")
 
-	if err := h.service.RevokeRole(targetUserID, role); err != nil {
+	if err := h.service.RevokeRole(targetUserID, role, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

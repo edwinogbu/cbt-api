@@ -346,7 +346,17 @@ func (s *AuthService) SwitchRole(userID, targetRole, clientIP, userAgent string)
 }
 
 // GrantRole gives an additional role to a user. grantedBy is the admin
-// user ID performing the grant, recorded for audit purposes.
+// user ID performing the grant, recorded for audit purposes. schoolID is
+// the caller's own verified school (never a client-supplied value) and
+// isPlatformOwner marks the one role meant to act across every tenant;
+// every other caller may only grant a role to a user in their own
+// school - a role grant never changes which school the target user's
+// JWT claims (completeLoginWithRole always uses the target's own
+// user.SchoolID), so without this check a School A admin could elevate
+// a School B user's privileges within School B without ever being
+// School B staff themselves. Before this fix there was no school check
+// of any kind - FindUserByID looks up any user by raw ID regardless of
+// school.
 //
 // platform_owner is deliberately never grantable here, however trusted
 // the caller - this is the platform/school authority boundary from the
@@ -356,11 +366,18 @@ func (s *AuthService) SwitchRole(userID, targetRole, clientIP, userAgent string)
 // never be used to mint platform-wide authority, for that admin or
 // anyone else. The only path to platform_owner is the server-side
 // bootstrap in pkg/database/postgres.go's seedPlatformOwner().
-func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
+func (s *AuthService) GrantRole(targetUserID, role, grantedBy, schoolID string, isPlatformOwner bool) error {
 	if models.UserRole(role) == models.RolePlatformOwner {
 		return errors.New("platform_owner cannot be granted through this endpoint")
 	}
-	if _, err := s.repo.FindUserByID(targetUserID); err != nil {
+	if schoolID == "" && !isPlatformOwner {
+		return errors.New("no school scope for this account")
+	}
+	targetUser, err := s.repo.FindUserByID(targetUserID)
+	if err != nil {
+		return errors.New("user not found")
+	}
+	if !isPlatformOwner && schoolIDClaim(targetUser) != schoolID {
 		return errors.New("user not found")
 	}
 	grant := &models.UserRoleGrant{
@@ -373,8 +390,21 @@ func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
 }
 
 // RevokeRole removes a previously granted role. It never removes a
-// user's primary Role - only additional grants.
-func (s *AuthService) RevokeRole(targetUserID, role string) error {
+// user's primary Role - only additional grants. Scoped to schoolID for
+// the same reason as GrantRole: without a target-user ownership check
+// (absent before this fix, along with any user lookup at all), a School
+// A admin could revoke a School B user's additional role.
+func (s *AuthService) RevokeRole(targetUserID, role, schoolID string, isPlatformOwner bool) error {
+	if schoolID == "" && !isPlatformOwner {
+		return errors.New("no school scope for this account")
+	}
+	targetUser, err := s.repo.FindUserByID(targetUserID)
+	if err != nil {
+		return errors.New("user not found")
+	}
+	if !isPlatformOwner && schoolIDClaim(targetUser) != schoolID {
+		return errors.New("user not found")
+	}
 	return s.repo.DeleteRoleGrant(targetUserID, models.UserRole(role))
 }
 

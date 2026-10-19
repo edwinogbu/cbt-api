@@ -414,10 +414,15 @@ func setupAuthRoutes(rg *gin.RouterGroup, handler *authHandler.AuthHandler) {
 		protected.POST("/switch-role", handler.SwitchRole)
 	}
 
-	// Admin-only role grant/revoke management - who gets which extra
-	// role is an admin decision, enforced server-side.
+	// Role grant/revoke management - who gets which extra role is an
+	// admin decision, enforced server-side, plus platform_owner for
+	// cross-tenant support (same gate as academic/subscription/questions).
+	// AuthService.GrantRole/RevokeRole independently verify the target
+	// user belongs to the caller's own school (platform_owner exempt),
+	// so this role gate alone was never the only thing standing between
+	// a school admin and another school's user roster.
 	roleAdmin := rg.Group("/auth/users")
-	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin"))
+	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		roleAdmin.POST("/:id/roles", handler.GrantRole)
 		roleAdmin.DELETE("/:id/roles/:role", handler.RevokeRole)
