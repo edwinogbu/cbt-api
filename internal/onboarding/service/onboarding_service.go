@@ -956,6 +956,34 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
         s.logger.Printf("[WARN] GatewayData was nil, initialized empty map")
     }
 
+    now := time.Now()
+
+    // Atomically claim this payment intent for finalization. The
+    // earlier `pi.IsFinalized` check above is a read-then-write race:
+    // two near-simultaneous webhook deliveries (gateways retry on
+    // timeout, and a captured valid signature can be replayed) can
+    // both read IsFinalized=false before either commits, and both
+    // would then re-run every side effect below - activating the
+    // subscription/school/user twice, inserting a second
+    // PaymentTransaction row, and emailing the customer twice. The
+    // conditional UPDATE here (WHERE is_finalized = false) is resolved
+    // atomically by Postgres, so only one concurrent caller can ever
+    // win the claim; the loser treats it exactly like an
+    // already-finalized intent and returns without side effects.
+    claimed, err := s.subscriptionRepo.ClaimPaymentIntentFinalization(pi.ID, now, verification.GatewayData)
+    if err != nil {
+        s.logger.Printf("[ERROR] Failed to claim payment intent for finalization: %v", err)
+        return fmt.Errorf("failed to finalize payment intent: %w", err)
+    }
+    if !claimed {
+        s.logger.Printf("[INFO] Payment intent already finalized by a concurrent request: %s", pi.ID)
+        return nil
+    }
+    pi.Status = models.IntentSucceeded
+    pi.PaidAt = &now
+    pi.IsFinalized = true
+    pi.GatewayResponse = verification.GatewayData
+
     // Get subscription
     sub, err := s.subscriptionRepo.FindByID(pi.SubscriptionID)
     if err != nil {
@@ -966,8 +994,6 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
     // Get session
     sessionID, _ := sub.Metadata["session_id"].(string)
     session, _ := s.sessionStore.Get(ctx, sessionID)
-
-    now := time.Now()
 
     // Update subscription
     sub.Status = models.SubStatusActive
@@ -1020,16 +1046,8 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
         return fmt.Errorf("failed to mark invoice as paid: %w", err)
     }
 
-    // Update payment intent
-    pi.Status = models.IntentSucceeded
-    pi.PaidAt = &now
-    pi.IsFinalized = true
-    pi.GatewayResponse = verification.GatewayData
-    pi.UpdatedAt = now
-    if err := s.subscriptionRepo.UpdatePaymentIntent(pi); err != nil {
-        s.logger.Printf("[ERROR] Failed to update payment intent: %v", err)
-        return fmt.Errorf("failed to update payment intent: %w", err)
-    }
+    // Payment intent was already finalized atomically above, via
+    // ClaimPaymentIntentFinalization.
 
     // ✅ FIX: Create transaction with safe gateway transaction ID
     transactionID := getTransactionIDFromVerification(verification, gateway)

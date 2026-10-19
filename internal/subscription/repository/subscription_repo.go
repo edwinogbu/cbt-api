@@ -188,6 +188,32 @@ func (r *SubscriptionRepository) UpdatePaymentIntentStatus(id string, status mod
         }).Error
 }
 
+// ClaimPaymentIntentFinalization atomically marks a payment intent as
+// finalized, succeeding only if it is not already finalized. The
+// WHERE is_finalized = false condition and the SET are resolved by
+// Postgres as a single atomic statement, so of two concurrent callers
+// racing to finalize the same intent (e.g. a gateway retrying a
+// webhook delivery, or a captured valid signature replayed later),
+// only one can ever have RowsAffected > 0 - the other observes the
+// row already finalized and must treat that as a no-op rather than
+// re-running every side effect of activation. A read-then-write check
+// of IsFinalized in application code cannot give this guarantee.
+func (r *SubscriptionRepository) ClaimPaymentIntentFinalization(id string, paidAt time.Time, gatewayResponse models.JSONMap) (bool, error) {
+    result := r.db.Model(&models.PaymentIntent{}).
+        Where("id = ? AND is_finalized = ?", id, false).
+        Updates(map[string]interface{}{
+            "status":           models.IntentSucceeded,
+            "paid_at":          paidAt,
+            "is_finalized":     true,
+            "gateway_response": gatewayResponse,
+            "updated_at":       time.Now(),
+        })
+    if result.Error != nil {
+        return false, result.Error
+    }
+    return result.RowsAffected > 0, nil
+}
+
 // ============================================
 // PAYMENT TRANSACTION OPERATIONS
 // ============================================
