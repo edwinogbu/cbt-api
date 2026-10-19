@@ -436,8 +436,26 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 	classHandler *academicHandler.ClassHandler,
 	studentHandler *academicHandler.StudentHandler) {
 
+	// A student's own profile lookup (StudentHandler.GetStudentProfile
+	// reads the caller's own user_id from the verified JWT, never a
+	// client-supplied one - see its own doc comment) is the one
+	// legitimate non-staff read in this whole route group, so it gets
+	// its own unrestricted-by-role group, authenticated but otherwise
+	// open to every role.
+	academicSelfProfile := rg.Group("/")
+	academicSelfProfile.Use(middleware.AuthMiddleware())
+	{
+		academicSelfProfile.GET("/student/profile", studentHandler.GetStudentProfile)
+	}
+
+	// Every other academic-module route is school/class/term/student
+	// management - teachers and admins (school-scoped, enforced in the
+	// handler/service layer) and platform_owner (cross-tenant). Students
+	// and parents have no legitimate call into it: before this gate, any
+	// authenticated role - students included - could call these CRUD
+	// endpoints, matching the gate already applied to /questions.
 	academic := rg.Group("/")
-	academic.Use(middleware.AuthMiddleware())
+	academic.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "teacher", "platform_owner"))
 	{
 		academic.POST("/schools", schoolHandler.CreateSchool)
 		academic.GET("/schools", schoolHandler.GetAllSchools)
@@ -509,8 +527,6 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 		academic.PUT("/classes/:id", classHandler.UpdateClass)
 		academic.DELETE("/classes/:id", classHandler.DeleteClass)
 
-		academic.GET("/student/profile", studentHandler.GetStudentProfile)
-
 		academic.POST("/students", studentHandler.CreateStudent)
 		academic.GET("/school-students/:schoolId", studentHandler.GetStudentsBySchool)
 		academic.GET("/class-students/:classId", studentHandler.GetStudentsByClass)
@@ -527,7 +543,10 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 // ============================================
 func setupSubscriptionRoutes(rg *gin.RouterGroup, handler *subscriptionHandler.SubscriptionHandler) {
 	subscription := rg.Group("/subscriptions")
-	subscription.Use(middleware.AuthMiddleware())
+	// Billing/subscription management is an admin-only surface (plus
+	// platform_owner, cross-tenant) - before this gate, any authenticated
+	// role, students and parents included, could call these endpoints.
+	subscription.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		subscription.POST("", handler.CreateSubscription)
 		subscription.GET("", handler.GetSubscriptions)

@@ -38,12 +38,35 @@ func NewSubscriptionService(
 // CRUD METHODS (required by handler)
 // ============================================
 
-func (s *SubscriptionService) GetSubscription(id string) (*dto.SubscriptionResponse, error) {
+// subscriptionAuthorizeSchoolOwnership mirrors
+// internal/academic/service.authorizeSchoolOwnership (duplicated locally
+// since that helper is unexported in a different package): platform_owner
+// is exempt; every other caller must have recordSchoolID == ctxSchoolID,
+// and an empty ctxSchoolID is never treated as "unscoped".
+func subscriptionAuthorizeSchoolOwnership(recordSchoolID, ctxSchoolID string, isPlatformOwner bool) error {
+    if isPlatformOwner {
+        return nil
+    }
+    if ctxSchoolID == "" || recordSchoolID != ctxSchoolID {
+        return errors.New("subscription not found")
+    }
+    return nil
+}
+
+// GetSubscription retrieves a subscription by ID, scoped to the caller's
+// own school (see subscriptionAuthorizeSchoolOwnership). Previously took
+// no school parameter at all - any authenticated user could read any
+// school's subscription (billing tier, status, gateway IDs) just by
+// knowing or enumerating its ID.
+func (s *SubscriptionService) GetSubscription(id, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] GetSubscription: id=%s", id)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         log.Printf("[SERVICE] GetSubscription error: %v", err)
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
     return s.toSubscriptionResponse(sub), nil
 }
@@ -72,11 +95,18 @@ func (s *SubscriptionService) GetCurrentSubscription(schoolID string) (*dto.Subs
     return s.toSubscriptionResponse(sub), nil
 }
 
-func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubscriptionRequest, userID string) (*dto.SubscriptionResponse, error) {
+// UpdateSubscription modifies a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership). Previously any
+// authenticated user could change another school's tier, limits,
+// auto-renew, or status - a billing-sabotage vector, not just a read leak.
+func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubscriptionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] UpdateSubscription: id=%s, user=%s", id, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
 
     if req.Tier != nil {
@@ -110,11 +140,18 @@ func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubsc
     return s.toSubscriptionResponse(sub), nil
 }
 
-func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bool, reason string, userID string) error {
+// CancelSubscription cancels a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership). Previously any
+// authenticated user could cancel another school's active subscription
+// outright - a direct sabotage vector against a competitor school.
+func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bool, reason string, userID, schoolID string, isPlatformOwner bool) error {
     log.Printf("[SERVICE] CancelSubscription: id=%s, immediate=%v, reason=%s, user=%s", id, cancelImmediately, reason, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return err
     }
     if cancelImmediately {
         sub.Status = models.SubStatusCancelled
@@ -134,11 +171,16 @@ func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bo
     return nil
 }
 
-func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscriptionRequest, userID string) (*dto.SubscriptionResponse, error) {
+// RenewSubscription extends a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership).
+func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscriptionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] RenewSubscription: id=%s, interval=%s, user=%s", id, req.Interval, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
     newInterval := models.PaymentInterval(req.Interval)
     newAmount := models.Pricing[sub.Tier][newInterval]
@@ -165,11 +207,19 @@ func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscri
 // PAYMENT INTENT METHODS (one-time payments)
 // ============================================
 
-func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dto.CreatePaymentIntentRequest, userID string) (*dto.PaymentIntentResponse, error) {
+// CreatePaymentIntent generates a payment link for a subscription,
+// scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Previously any authenticated
+// user could generate a real payment link against another school's
+// subscription and gateway account.
+func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dto.CreatePaymentIntentRequest, userID, schoolID string, isPlatformOwner bool) (*dto.PaymentIntentResponse, error) {
     log.Printf("[SERVICE] CreatePaymentIntent: subscription=%s, user=%s", subscriptionID, userID)
     sub, err := s.repo.FindByID(subscriptionID)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
 
     invoice := &models.Invoice{

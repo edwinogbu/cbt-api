@@ -24,15 +24,7 @@ func NewClassHandler(service *service.ClassService) *ClassHandler {
 // another school's data merely by naming it in the URL. Returns false
 // (after already writing the 403 response) when the request should stop.
 func requireOwnSchool(c *gin.Context, pathSchoolID string) bool {
-    if middleware.IsPlatformOwner(c) {
-        return true
-    }
-    ctxSchoolID := middleware.GetSchoolID(c)
-    if ctxSchoolID == "" || pathSchoolID != ctxSchoolID {
-        c.JSON(http.StatusForbidden, gin.H{"error": "cannot access another school's data"})
-        return false
-    }
-    return true
+    return middleware.RequireOwnSchool(c, pathSchoolID)
 }
 
 // CreateClass godoc

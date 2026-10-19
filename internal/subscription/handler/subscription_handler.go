@@ -6,6 +6,7 @@ import (
     "github.com/gin-gonic/gin"
     "github.com/google/uuid"
 
+    "cbt-api/internal/middleware"
     "cbt-api/internal/models"
     "cbt-api/internal/subscription/dto"
     "cbt-api/internal/subscription/service"
@@ -45,7 +46,7 @@ func (h *SubscriptionHandler) CreateSubscription(c *gin.Context) {
         return
     }
 
-    result, err := h.service.CreateSubscription(c.Request.Context(), &req, userID.(string), req.SchoolID)
+    result, err := h.service.CreateSubscription(c.Request.Context(), &req, userID.(string), middleware.ResolveSchoolID(c, req.SchoolID))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -75,7 +76,7 @@ func (h *SubscriptionHandler) GetSubscription(c *gin.Context) {
         return
     }
 
-    sub, err := h.service.GetSubscription(id)
+    sub, err := h.service.GetSubscription(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -101,6 +102,9 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
     schoolID := c.Query("school_id")
     if schoolID == "" {
         c.JSON(http.StatusBadRequest, gin.H{"error": "school_id is required"})
+        return
+    }
+    if !middleware.RequireOwnSchool(c, schoolID) {
         return
     }
 
@@ -131,6 +135,9 @@ func (h *SubscriptionHandler) GetCurrentSubscription(c *gin.Context) {
     schoolID := c.Param("schoolId")
     if _, err := uuid.Parse(schoolID); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": "invalid school id"})
+        return
+    }
+    if !middleware.RequireOwnSchool(c, schoolID) {
         return
     }
 
@@ -178,7 +185,7 @@ func (h *SubscriptionHandler) UpdateSubscription(c *gin.Context) {
         return
     }
 
-    sub, err := h.service.UpdateSubscription(id, &req, userID.(string))
+    sub, err := h.service.UpdateSubscription(id, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -222,7 +229,7 @@ func (h *SubscriptionHandler) CancelSubscription(c *gin.Context) {
         return
     }
 
-    if err := h.service.CancelSubscription(id, req.CancelImmediately, req.Reason, userID.(string)); err != nil {
+    if err := h.service.CancelSubscription(id, req.CancelImmediately, req.Reason, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
@@ -262,7 +269,7 @@ func (h *SubscriptionHandler) RenewSubscription(c *gin.Context) {
         return
     }
 
-    sub, err := h.service.RenewSubscription(id, &req, userID.(string))
+    sub, err := h.service.RenewSubscription(id, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -307,7 +314,7 @@ func (h *SubscriptionHandler) CreatePaymentIntent(c *gin.Context) {
     }
     req.SubscriptionID = subscriptionID
 
-    pi, err := h.service.CreatePaymentIntent(subscriptionID, &req, userID.(string))
+    pi, err := h.service.CreatePaymentIntent(subscriptionID, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return

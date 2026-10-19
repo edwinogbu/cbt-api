@@ -179,6 +179,23 @@ func ResolveSchoolIDOrNoResults(c *gin.Context, clientSuppliedSchoolID string) (
     return resolved, true
 }
 
+// RequireOwnSchool rejects a path-param (or otherwise explicitly named)
+// school ID that doesn't match the caller's own verified school_id - a
+// non-platform-owner cannot act on another school's data merely by
+// naming it in the URL. On a mismatch it writes the 403 response itself
+// and returns false; callers must return immediately in that case.
+func RequireOwnSchool(c *gin.Context, namedSchoolID string) bool {
+    if IsPlatformOwner(c) {
+        return true
+    }
+    ctxSchoolID := GetSchoolID(c)
+    if ctxSchoolID == "" || namedSchoolID != ctxSchoolID {
+        c.JSON(http.StatusForbidden, gin.H{"error": "cannot access another school's data"})
+        return false
+    }
+    return true
+}
+
 // GetSessionID retrieves session ID from context
 func GetSessionID(c *gin.Context) string {
     sessionID, _ := c.Get("session_id")
