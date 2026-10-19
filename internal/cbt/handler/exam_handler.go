@@ -1252,7 +1252,7 @@ func (h *ExamHandler) GetPendingManualMarking(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.GetPendingManualMarking(c.Request.Context(), userID)
+	resp, err := h.examService.GetPendingManualMarking(c.Request.Context(), userID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.HasPrefix(err.Error(), "unauthorized") {
@@ -1293,7 +1293,7 @@ func (h *ExamHandler) MarkDescriptiveAnswer(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.examService.MarkDescriptiveAnswer(c.Request.Context(), &req, userID)
+	resp, err := h.examService.MarkDescriptiveAnswer(c.Request.Context(), &req, userID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {

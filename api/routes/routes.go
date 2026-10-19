@@ -320,12 +320,14 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		exams.GET("/:id/preview", handler.PreviewExam)
 		exams.POST("/:id/publish", handler.PublishExam)
 
-		// Manual/essay marking - teacher/admin/super_admin only (same
-		// role gate as the question-bank group below); authorization
-		// against the specific exam's class is enforced inside
-		// ExamService.authorizeMarking, not just this role check.
+		// Manual/essay marking - teacher/admin/super_admin, plus
+		// platform_owner for cross-tenant support (same role gate as the
+		// question-bank group below); the tenant boundary itself is
+		// enforced inside ExamService.MarkDescriptiveAnswer/
+		// GetPendingManualMarking (authorizeExamTenant / the school_id
+		// filter), not just this role check.
 		marking := exams.Group("/marking")
-		marking.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
+		marking.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
 		{
 			marking.GET("/pending", handler.GetPendingManualMarking)
 			marking.POST("/grade", handler.MarkDescriptiveAnswer)

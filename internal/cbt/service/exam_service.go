@@ -1509,12 +1509,18 @@ func (s *ExamService) gradeAnswer(q *models.QuestionBank, submittedText string) 
 // ============================================
 
 // authorizeMarking mirrors QuestionService.authorizeQuestionWrite's
-// class-ownership pattern (admin/super_admin bypass; a teacher must be
-// the assigned teacher of the class the exam belongs to) rather than
-// introducing a separate authorization scheme for marking. ExamService
-// has no injected userRepo/classRepo, so this queries s.db directly,
-// same as several existing methods in this file (e.g.
-// buildStartExamResponse's subject lookup).
+// class-ownership pattern (admin/super_admin/platform_owner bypass; a
+// teacher must be the assigned teacher of the class the exam belongs
+// to) rather than introducing a separate authorization scheme for
+// marking. ExamService has no injected userRepo/classRepo, so this
+// queries s.db directly, same as several existing methods in this file
+// (e.g. buildStartExamResponse's subject lookup).
+//
+// This function only decides role eligibility, never the school
+// boundary - MarkDescriptiveAnswer calls authorizeExamTenant first (the
+// same tenant check GetExam/UpdateExam/DeleteExam use) so admin/
+// super_admin's bypass here is only reached once the exam is already
+// confirmed to belong to the caller's own school.
 func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classID string) error {
 	if markerUserID == "" {
 		return errors.New("unauthorized: user not authenticated")
@@ -1524,7 +1530,7 @@ func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classI
 		return errors.New("unauthorized: user not found")
 	}
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin:
+	case models.RolePlatformOwner, models.RoleAdmin, models.RoleSuperAdmin:
 		return nil
 	case models.RoleTeacher:
 		// fall through to the class-ownership check below
@@ -1545,14 +1551,25 @@ func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classI
 }
 
 // GetPendingManualMarking lists essay/descriptive answers awaiting a
-// score, scoped to exams the marker is authorized for: every exam for
-// an admin/super_admin, only exams whose class this teacher owns for a
+// score, scoped to exams the marker is authorized for: every exam in the
+// caller's own school for an admin/super_admin, every school's for an
+// authenticated platform_owner (the one role deliberately not confined
+// to one tenant), only exams whose class this teacher owns for a
 // teacher. A student or any other role gets an authorization error, not
 // an empty list - an empty list would look like "nothing pending"
 // rather than "you can't do this."
-func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID string) (*dto.ListPendingMarkingResponse, error) {
+//
+// Before this fix, admin/super_admin had NO school filter at all here -
+// any school's admin could see every other school's pending essay
+// answers, student names included. schoolID comes only from
+// middleware.GetSchoolID(c); isPlatformOwner only from
+// middleware.IsPlatformOwner(c).
+func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID, schoolID string, isPlatformOwner bool) (*dto.ListPendingMarkingResponse, error) {
 	if markerUserID == "" {
 		return nil, errors.New("unauthorized: user not authenticated")
+	}
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errors.New("unauthorized: no school scope for this account")
 	}
 	var user models.User
 	if err := s.db.WithContext(ctx).Where("id = ?", markerUserID).First(&user).Error; err != nil {
@@ -1582,6 +1599,7 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 			question_bank.marks AS max_marks, exam_attempts.end_time AS submitted_at`).
 		Joins("JOIN exam_attempts ON exam_attempts.id = student_answers.attempt_id").
 		Joins("JOIN exams ON exams.id = exam_attempts.exam_id").
+		Joins("JOIN classes ON classes.id = exams.class_id").
 		Joins("JOIN question_bank ON question_bank.id = student_answers.question_id").
 		Joins("JOIN students ON students.id = exam_attempts.student_id").
 		Joins("JOIN users ON users.id = students.user_id").
@@ -1591,11 +1609,12 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 		Where("exam_attempts.status = ?", string(models.AttemptStatusPendingManualMarking))
 
 	switch user.Role {
+	case models.RolePlatformOwner:
+		// no further scoping - platform_owner sees every school
 	case models.RoleAdmin, models.RoleSuperAdmin:
-		// no further scoping - every school's pending marking is visible
+		q = q.Where("classes.school_id = ?", schoolID)
 	case models.RoleTeacher:
-		q = q.Joins("JOIN classes ON classes.id = exams.class_id").
-			Where("classes.teacher_id = ?", markerUserID)
+		q = q.Where("classes.teacher_id = ?", markerUserID)
 	default:
 		return nil, errors.New("unauthorized: only teachers and admins may view pending marking")
 	}
@@ -1631,7 +1650,7 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 // after the fact): it always overwrites in place and always recomputes
 // from the authoritative StudentAnswer rows, so there is no
 // incremental/delta math that could double-count or drift.
-func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAnswerRequest, markerUserID string) (*dto.MarkAnswerResponse, error) {
+func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAnswerRequest, markerUserID, schoolID string, isPlatformOwner bool) (*dto.MarkAnswerResponse, error) {
 	answer, err := s.examRepo.FindAnswer(req.AttemptID, req.QuestionID)
 	if err != nil || answer == nil {
 		return nil, errors.New("answer not found")
@@ -1645,6 +1664,17 @@ func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAn
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
 	if err != nil {
 		return nil, errors.New("exam not found")
+	}
+
+	// Before authorizeMarking's role check, confirm the exam itself
+	// belongs to the caller's own school (platform_owner exempt) - the
+	// same tenant boundary GetExam/UpdateExam/DeleteExam use. Before
+	// this fix there was no school check anywhere in this call chain, so
+	// any admin/super_admin could mark - and so alter the recorded score
+	// of - another school's exam attempts just by naming their
+	// attempt_id/question_id.
+	if err := s.authorizeExamTenant(ctx, exam.ID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
 	}
 
 	// Unauthorized users cannot mark another school's exams or alter

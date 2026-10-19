@@ -545,6 +545,7 @@ func TestAutoSave_SetsIsCorrect(t *testing.T) {
 const testMarkerTeacherID = "teacher-1"
 const testOtherTeacherID = "teacher-2"
 const testAdminID = "admin-1"
+const testMarkingSchoolID = "school-A"
 
 func seedMarkingUser(t *testing.T, db *gorm.DB, id, role string) {
 	t.Helper()
@@ -553,10 +554,10 @@ func seedMarkingUser(t *testing.T, db *gorm.DB, id, role string) {
 	}
 }
 
-func seedMarkingClass(t *testing.T, db *gorm.DB, teacherID string) (classID string) {
+func seedMarkingClass(t *testing.T, db *gorm.DB, teacherID, schoolID string) (classID string) {
 	t.Helper()
 	classID = uuid.NewString()
-	if err := db.Exec("INSERT INTO classes (id, teacher_id) VALUES (?, ?)", classID, teacherID).Error; err != nil {
+	if err := db.Exec("INSERT INTO classes (id, teacher_id, school_id) VALUES (?, ?, ?)", classID, teacherID, schoolID).Error; err != nil {
 		t.Fatalf("failed to seed class: %v", err)
 	}
 	return classID
@@ -591,11 +592,15 @@ func setupMarkingFixture(t *testing.T) (svc *ExamService, attemptID, essayQID st
 	svc = newTestExamService(db)
 	seedExam(t, db, 30)
 	db.Exec("UPDATE exams SET total_marks = 10, pass_mark = 5 WHERE id = ?", testExamID)
-	classID := seedMarkingClass(t, db, testMarkerTeacherID)
+	classID := seedMarkingClass(t, db, testMarkerTeacherID, testMarkingSchoolID)
 	setExamClass(t, db, classID)
 	seedMarkingUser(t, db, testMarkerTeacherID, "teacher")
 	seedMarkingUser(t, db, testOtherTeacherID, "teacher")
 	seedMarkingUser(t, db, testAdminID, "admin")
+	seedMarkingUser(t, db, testStudentID, "student")
+	if err := db.Exec("INSERT INTO students (id, user_id) VALUES (?, ?)", testStudentID, testStudentID).Error; err != nil {
+		t.Fatalf("failed to seed student: %v", err)
+	}
 
 	attemptID = seedAttempt(t, db, 5)
 	essayQID = seedEssayQuestion(t, db, 10)
@@ -627,7 +632,7 @@ func TestMarkDescriptiveAnswer_ValidScore_TransitionsToCompleted(t *testing.T) {
 
 	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8, Feedback: "Good answer.",
-	}, testMarkerTeacherID)
+	}, testMarkerTeacherID, testMarkingSchoolID, false)
 	if err != nil {
 		t.Fatalf("expected marking to succeed, got: %v", err)
 	}
@@ -655,7 +660,7 @@ func TestMarkDescriptiveAnswer_OutOfRangeScore_Rejected(t *testing.T) {
 
 	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 15, // > the question's 10 marks
-	}, testMarkerTeacherID)
+	}, testMarkerTeacherID, testMarkingSchoolID, false)
 	if err == nil {
 		t.Fatal("expected an out-of-range score to be rejected, got no error")
 	}
@@ -669,7 +674,7 @@ func TestMarkDescriptiveAnswer_WrongTeacher_Rejected(t *testing.T) {
 
 	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
-	}, testOtherTeacherID)
+	}, testOtherTeacherID, testMarkingSchoolID, false)
 	if err == nil || !strings.HasPrefix(err.Error(), "unauthorized") {
 		t.Fatalf("expected an unauthorized error for a teacher who doesn't own this class, got: %v", err)
 	}
@@ -682,7 +687,7 @@ func TestMarkDescriptiveAnswer_StudentRejected(t *testing.T) {
 
 	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
-	}, testStudentID)
+	}, testStudentID, testMarkingSchoolID, false)
 	if err == nil || !strings.HasPrefix(err.Error(), "unauthorized") {
 		t.Fatalf("expected an unauthorized error for a student marker, got: %v", err)
 	}
@@ -696,7 +701,7 @@ func TestMarkDescriptiveAnswer_AdminBypassesClassOwnership(t *testing.T) {
 
 	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6,
-	}, testAdminID)
+	}, testAdminID, testMarkingSchoolID, false)
 	if err != nil {
 		t.Fatalf("expected an admin to be able to mark any class's exam, got error: %v", err)
 	}
@@ -713,12 +718,12 @@ func TestMarkDescriptiveAnswer_RepeatedMarking_Idempotent(t *testing.T) {
 
 	if _, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
-	}, testMarkerTeacherID); err != nil {
+	}, testMarkerTeacherID, testMarkingSchoolID, false); err != nil {
 		t.Fatalf("first mark failed: %v", err)
 	}
 	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6, Feedback: "Corrected after review.",
-	}, testMarkerTeacherID)
+	}, testMarkerTeacherID, testMarkingSchoolID, false)
 	if err != nil {
 		t.Fatalf("second (correcting) mark failed: %v", err)
 	}
@@ -732,12 +737,135 @@ func TestMarkDescriptiveAnswer_RepeatedMarking_Idempotent(t *testing.T) {
 	// response shape instead: a third identical call stays stable.
 	resp2, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 6,
-	}, testMarkerTeacherID)
+	}, testMarkerTeacherID, testMarkingSchoolID, false)
 	if err != nil {
 		t.Fatalf("third (repeated) mark failed: %v", err)
 	}
 	if resp2.TotalScore != 6 || resp2.Percentage != resp.Percentage {
 		t.Fatalf("expected a repeated identical mark to be a stable no-op, got score=%d percentage=%v", resp2.TotalScore, resp2.Percentage)
+	}
+}
+
+// ---- exam marking tenant isolation ----
+//
+// Before this fix, authorizeMarking's admin/super_admin bypass had NO
+// school check at all - any school's admin could mark (and so alter the
+// recorded score of) any OTHER school's exam attempts just by naming
+// their attempt_id/question_id, and GetPendingManualMarking's
+// admin/super_admin branch had no school filter either, returning every
+// school's pending essay answers (student names, essay text, all of it).
+
+// TestMarkDescriptiveAnswer_CrossTenant_Rejected confirms an admin from
+// a different school cannot mark School A's exam attempt.
+func TestMarkDescriptiveAnswer_CrossTenant_Rejected(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	_, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
+	}, testAdminID, "school-B", false)
+	if err == nil {
+		t.Fatal("expected an admin from a different school to be rejected marking School A's exam, got no error")
+	}
+}
+
+// TestMarkDescriptiveAnswer_PlatformOwner_Bypasses confirms an
+// authenticated platform_owner can mark any school's exam.
+func TestMarkDescriptiveAnswer_PlatformOwner_Bypasses(t *testing.T) {
+	svc, attemptID, essayQID := setupMarkingFixture(t)
+
+	resp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 8,
+	}, testAdminID, "", true)
+	if err != nil {
+		t.Fatalf("expected platform_owner to mark any school's exam, got error: %v", err)
+	}
+	if resp.TotalScore != 8 {
+		t.Fatalf("expected total score 8, got %d", resp.TotalScore)
+	}
+}
+
+// TestGetPendingManualMarking_Admin_ScopedToOwnSchool confirms an admin
+// sees their own school's pending marking.
+func TestGetPendingManualMarking_Admin_ScopedToOwnSchool(t *testing.T) {
+	svc, _, _ := setupMarkingFixture(t)
+
+	resp, err := svc.GetPendingManualMarking(context.Background(), testAdminID, testMarkingSchoolID, false)
+	if err != nil {
+		t.Fatalf("expected School A's admin to read its own pending marking, got error: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Fatalf("expected 1 pending item for School A's own admin, got %d", resp.Total)
+	}
+}
+
+// TestGetPendingManualMarking_Admin_CrossTenant_Empty confirms an admin
+// from a different school sees none of School A's pending marking.
+func TestGetPendingManualMarking_Admin_CrossTenant_Empty(t *testing.T) {
+	svc, _, _ := setupMarkingFixture(t)
+
+	resp, err := svc.GetPendingManualMarking(context.Background(), testAdminID, "school-B", false)
+	if err != nil {
+		t.Fatalf("expected a different school's admin to get its own (empty) results, not an error: %v", err)
+	}
+	if resp.Total != 0 {
+		t.Fatalf("expected 0 pending items for a different school's admin, got %d - cross-tenant leak", resp.Total)
+	}
+}
+
+// TestGetPendingManualMarking_PlatformOwner_SeesAllSchools confirms
+// platform_owner's unscoped bypass still works. Unlike
+// authorizeMarking's admin/super_admin bypass (which relies on
+// authorizeExamTenant being called first), this method looks up its own
+// caller's role directly, so the test needs a caller whose actual role
+// is platform_owner, not merely an isPlatformOwner=true flag on an
+// admin account - builds its own fixture (rather than going through
+// setupMarkingFixture, which doesn't expose its db) so it can seed that
+// extra user.
+func TestGetPendingManualMarking_PlatformOwner_SeesAllSchools(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	db.Exec("UPDATE exams SET total_marks = 10, pass_mark = 5 WHERE id = ?", testExamID)
+	classID := seedMarkingClass(t, db, testMarkerTeacherID, testMarkingSchoolID)
+	setExamClass(t, db, classID)
+	seedMarkingUser(t, db, testMarkerTeacherID, "teacher")
+	seedMarkingUser(t, db, testStudentID, "student")
+	const testPlatformOwnerID = "owner-1"
+	seedMarkingUser(t, db, testPlatformOwnerID, "platform_owner")
+	if err := db.Exec("INSERT INTO students (id, user_id) VALUES (?, ?)", testStudentID, testStudentID).Error; err != nil {
+		t.Fatalf("failed to seed student: %v", err)
+	}
+
+	attemptID := seedAttempt(t, db, 5)
+	essayQID := seedEssayQuestion(t, db, 10)
+	seedExamQuestions(t, db, testExamID, []string{essayQID})
+	if _, err := svc.SaveAnswer(context.Background(), &dto.SaveAnswerRequest{
+		AttemptID: attemptID, QuestionID: essayQID, SelectedAnswer: "My essay response text.",
+	}, testStudentID); err != nil {
+		t.Fatalf("failed to save essay answer: %v", err)
+	}
+	if _, err := svc.SubmitExam(context.Background(), &dto.SubmitExamRequest{AttemptID: attemptID}, testStudentID); err != nil {
+		t.Fatalf("SubmitExam failed: %v", err)
+	}
+
+	resp, err := svc.GetPendingManualMarking(context.Background(), testPlatformOwnerID, "", true)
+	if err != nil {
+		t.Fatalf("expected platform_owner to read every school's pending marking, got error: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Fatalf("expected platform_owner to see School A's 1 pending item, got %d", resp.Total)
+	}
+}
+
+// TestGetPendingManualMarking_EmptySchoolID_NonPlatformOwner_Rejected
+// confirms a non-platform-owner caller with no school_id of their own
+// (e.g. a legacy account seeded with none) is rejected, not silently
+// treated as unscoped.
+func TestGetPendingManualMarking_EmptySchoolID_NonPlatformOwner_Rejected(t *testing.T) {
+	svc, _, _ := setupMarkingFixture(t)
+
+	if _, err := svc.GetPendingManualMarking(context.Background(), testAdminID, "", false); err == nil {
+		t.Fatal("expected a non-platform-owner caller with no school_id of their own to be rejected, got no error")
 	}
 }
 
@@ -751,7 +879,7 @@ func TestSubmitExam_MixedObjectiveAndEssay_ScoresBothCorrectly(t *testing.T) {
 	svc := newTestExamService(db)
 	seedExam(t, db, 30)
 	db.Exec("UPDATE exams SET total_marks = 15, pass_mark = 8 WHERE id = ?", testExamID)
-	classID := seedMarkingClass(t, db, testMarkerTeacherID)
+	classID := seedMarkingClass(t, db, testMarkerTeacherID, testMarkingSchoolID)
 	setExamClass(t, db, classID)
 	seedMarkingUser(t, db, testMarkerTeacherID, "teacher")
 
@@ -784,7 +912,7 @@ func TestSubmitExam_MixedObjectiveAndEssay_ScoresBothCorrectly(t *testing.T) {
 
 	markResp, err := svc.MarkDescriptiveAnswer(context.Background(), &dto.MarkAnswerRequest{
 		AttemptID: attemptID, QuestionID: essayQID, MarksAwarded: 7,
-	}, testMarkerTeacherID)
+	}, testMarkerTeacherID, testMarkingSchoolID, false)
 	if err != nil {
 		t.Fatalf("MarkDescriptiveAnswer failed: %v", err)
 	}
