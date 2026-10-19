@@ -347,7 +347,19 @@ func (s *AuthService) SwitchRole(userID, targetRole, clientIP, userAgent string)
 
 // GrantRole gives an additional role to a user. grantedBy is the admin
 // user ID performing the grant, recorded for audit purposes.
+//
+// platform_owner is deliberately never grantable here, however trusted
+// the caller - this is the platform/school authority boundary from the
+// multi-tenancy plan's Phase 1.3 ("do not trust... a user-controlled
+// role value as proof of [platform] ownership"). An admin or super_admin
+// calling this endpoint is always acting within their own school; it can
+// never be used to mint platform-wide authority, for that admin or
+// anyone else. The only path to platform_owner is the server-side
+// bootstrap in pkg/database/postgres.go's seedPlatformOwner().
 func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
+	if models.UserRole(role) == models.RolePlatformOwner {
+		return errors.New("platform_owner cannot be granted through this endpoint")
+	}
 	if _, err := s.repo.FindUserByID(targetUserID); err != nil {
 		return errors.New("user not found")
 	}

@@ -15,7 +15,24 @@ const (
     RoleStudent   UserRole = "student"
     RoleParent    UserRole = "parent"
     RoleSuperAdmin UserRole = "super_admin"
-    
+
+    // RolePlatformOwner is a distinct tier above every school-scoped role,
+    // including super_admin (which today is - and remains - a school-level
+    // elevated admin, not a platform-wide authority). A platform owner is
+    // not tied to any school (User.SchoolID is nil for this role) and is
+    // the only role authorized for cross-tenant operations: the tenant
+    // registry, platform-controlled branding, and the LAN Setup Dashboard.
+    //
+    // This role can ONLY become a user's primary Role via the server-side
+    // bootstrap in pkg/database/postgres.go's seedPlatformOwner() (gated
+    // on PLATFORM_OWNER_EMAIL/PLATFORM_OWNER_PASSWORD env vars, never a
+    // request parameter). It is explicitly rejected by AuthService.GrantRole
+    // so no admin/super_admin can grant it to themselves or anyone else via
+    // POST /auth/users/:id/roles, and it is not in RegisterRequest.Role's
+    // allowlist (oneof=student teacher admin parent) so public self-
+    // registration can never set it either. Do not add it to either path.
+    RolePlatformOwner UserRole = "platform_owner"
+
     StatusActive    UserStatus = "active"
     StatusInactive  UserStatus = "inactive"
     StatusSuspended UserStatus = "suspended"

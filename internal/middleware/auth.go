@@ -70,6 +70,19 @@ func AdminOnly() gin.HandlerFunc {
     return RoleMiddleware("admin")
 }
 
+// PlatformOwnerOnly gates platform-wide endpoints (tenant registry,
+// platform-controlled branding, LAN Setup Dashboard) to the exact
+// "platform_owner" role claim from a verified JWT - deliberately NOT
+// "admin" or "super_admin", which are school-scoped. RoleMiddleware does
+// an exact string match against allowedRoles with no inheritance, so an
+// admin or super_admin token is rejected here the same as any other role;
+// there is no bypass by school membership, a supplied school/tenant ID,
+// or any other client-controlled value - only the server-verified JWT
+// role claim set at login/bootstrap time (see models.RolePlatformOwner).
+func PlatformOwnerOnly() gin.HandlerFunc {
+    return RoleMiddleware("platform_owner")
+}
+
 func TeacherOnly() gin.HandlerFunc {
     return RoleMiddleware("teacher")
 }
