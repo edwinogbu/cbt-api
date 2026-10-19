@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"io"
+	"log"
 	"testing"
+	"time"
 
 	"cbt-api/internal/onboarding/repository"
 
@@ -98,5 +101,93 @@ func TestGetOnboardingStats_EmptyTable_AllZero(t *testing.T) {
 		if got != 0 {
 			t.Fatalf("expected %s=0 on an empty table, got %d", key, got)
 		}
+	}
+}
+
+// ---- CompleteOnboarding: caller must own the session ----
+//
+// Before this fix, CompleteOnboarding took no caller identity at all:
+// any authenticated admin/super_admin could name ANY pending session -
+// belonging to a completely unrelated prospective customer - and force
+// it through payment verification/account activation. It now requires
+// the caller be the session's own user or platform_owner, rejecting a
+// mismatch as "session not found" (not a distinct "forbidden") so a
+// caller can't use this to probe which session IDs exist.
+//
+// These tests only exercise the ownership gate itself (it runs before
+// any subscriptionRepo/paymentService access), so a session status of
+// "payment_pending" would push same-owner/platform_owner calls deeper
+// into the real payment flow and panic on the service's nil
+// subscriptionRepo/paymentService fields. Using a different in-flight
+// status ("school_created") lets a call that clears the ownership gate
+// proceed to the next check ("payment not initiated") without touching
+// those dependencies, which is enough to prove the gate let it through.
+
+func newTestOnboardingServiceWithSessions() *OnboardingService {
+	return &OnboardingService{
+		sessionStore: NewInMemorySessionStore(),
+		config:       &OnboardingConfig{AppURL: "http://test"},
+		logger:       log.New(io.Discard, "", 0),
+	}
+}
+
+func seedInMemorySession(t *testing.T, s *OnboardingService, id, userID, status string) {
+	t.Helper()
+	err := s.sessionStore.Create(context.Background(), &OnboardingSession{
+		ID:        id,
+		Email:     id + "@example.com",
+		UserID:    userID,
+		Status:    status,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("failed to seed in-memory session: %v", err)
+	}
+}
+
+func TestCompleteOnboarding_RejectsNonOwningCaller(t *testing.T) {
+	s := newTestOnboardingServiceWithSessions()
+	seedInMemorySession(t, s, "sess-1", "owner-user", "school_created")
+
+	_, err := s.CompleteOnboarding(context.Background(), "sess-1", "attacker-user", false)
+	if err == nil {
+		t.Fatal("expected an error for a non-owning caller, got nil")
+	}
+	if err.Error() != "session not found" {
+		t.Fatalf(`expected "session not found" (not a distinct forbidden error), got: %v`, err)
+	}
+}
+
+func TestCompleteOnboarding_AllowsOwningCallerPastOwnershipGate(t *testing.T) {
+	s := newTestOnboardingServiceWithSessions()
+	seedInMemorySession(t, s, "sess-2", "owner-user", "school_created")
+
+	_, err := s.CompleteOnboarding(context.Background(), "sess-2", "owner-user", false)
+	if err == nil {
+		t.Fatal("expected an error past the ownership gate (payment not initiated), got nil")
+	}
+	if err.Error() == "session not found" {
+		t.Fatal("owning caller was incorrectly rejected by the ownership gate")
+	}
+	if err.Error() != "payment not initiated" {
+		t.Fatalf(`expected "payment not initiated" past the ownership gate, got: %v`, err)
+	}
+}
+
+func TestCompleteOnboarding_PlatformOwnerBypassesOwnershipGate(t *testing.T) {
+	s := newTestOnboardingServiceWithSessions()
+	seedInMemorySession(t, s, "sess-3", "owner-user", "school_created")
+
+	_, err := s.CompleteOnboarding(context.Background(), "sess-3", "some-platform-owner-id", true)
+	if err == nil {
+		t.Fatal("expected an error past the ownership gate (payment not initiated), got nil")
+	}
+	if err.Error() == "session not found" {
+		t.Fatal("platform_owner was incorrectly rejected by the ownership gate")
+	}
+	if err.Error() != "payment not initiated" {
+		t.Fatalf(`expected "payment not initiated" past the ownership gate, got: %v`, err)
 	}
 }

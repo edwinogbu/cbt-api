@@ -1306,13 +1306,32 @@ func (s *OnboardingService) ResendPaymentLink(ctx context.Context, sessionID str
 // 		RedirectURL:    fmt.Sprintf("%s/dashboard", s.config.AppURL),
 // 	}, nil
 // }
-func (s *OnboardingService) CompleteOnboarding(ctx context.Context, sessionID string) (*dto.ActivationResponse, error) {
+// CompleteOnboarding manually finalizes a pending onboarding session -
+// verifying payment and activating the new school/admin account on the
+// caller's behalf. callerUserID/isPlatformOwner come only from the
+// verified JWT (middleware.GetUserID/IsPlatformOwner), never a
+// client-supplied value.
+//
+// Before this fix there was no check of any kind: any authenticated
+// admin/super_admin could name ANY pending session - belonging to a
+// completely unrelated prospective customer - and force it through
+// payment verification and account activation, or learn its status via
+// the "already completed" response. The caller must now be the
+// session's own user (session.UserID) or platform_owner; a mismatch is
+// reported as "session not found" (not a distinct "forbidden") so a
+// caller can't use this to probe which session IDs exist.
+func (s *OnboardingService) CompleteOnboarding(ctx context.Context, sessionID, callerUserID string, isPlatformOwner bool) (*dto.ActivationResponse, error) {
     s.logger.Printf("[INFO] Admin completing onboarding - session=%s", sessionID)
 
     session, err := s.getValidSession(ctx, sessionID)
     if err != nil {
         s.logger.Printf("[ERROR] Invalid session: %v", err)
         return nil, err
+    }
+
+    if !isPlatformOwner && session.UserID != callerUserID {
+        s.logger.Printf("[ERROR] Caller does not own session=%s", sessionID)
+        return nil, errors.New("session not found")
     }
 
     // Check if already completed

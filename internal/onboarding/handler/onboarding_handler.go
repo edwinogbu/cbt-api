@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"cbt-api/internal/middleware"
 	"cbt-api/internal/models"
 	"cbt-api/internal/onboarding/dto"
 	"cbt-api/internal/onboarding/service"
@@ -452,7 +453,7 @@ func (h *OnboardingHandler) CompleteOnboarding(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.service.CompleteOnboarding(c.Request.Context(), sessionID)
+	resp, err := h.service.CompleteOnboarding(c.Request.Context(), sessionID, middleware.GetUserID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		badRequest(c, err.Error())
 		return
