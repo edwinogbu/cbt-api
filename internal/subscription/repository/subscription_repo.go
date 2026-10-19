@@ -237,6 +237,44 @@ func (r *SubscriptionRepository) FindPaymentTransactionsBySubscription(subscript
 }
 
 // ============================================
+// SUBSCRIPTION USAGE OPERATIONS
+//
+// These count against the academic and cbt modules' own tables rather
+// than going through those modules' repositories, the same way
+// ExamRepository.ExamBelongsToSchool already joins directly into
+// classes - everything lives in one database, so a direct scoped COUNT
+// is simpler and no less correct than adding cross-module repository
+// dependencies just to re-wrap it.
+// ============================================
+
+func (r *SubscriptionRepository) CountStudentsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.Student{}).Where("school_id = ?", schoolID).Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountTeachersBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.User{}).Where("school_id = ? AND role = ?", schoolID, models.RoleTeacher).Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountExamsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Table("exams").
+        Joins("JOIN classes ON classes.id = exams.class_id").
+        Where("classes.school_id = ? AND exams.deleted_at IS NULL", schoolID).
+        Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountQuestionsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.QuestionBank{}).Where("school_id = ?", schoolID).Count(&count).Error
+    return count, err
+}
+
+// ============================================
 // WEBHOOK EVENT OPERATIONS
 // ============================================
 

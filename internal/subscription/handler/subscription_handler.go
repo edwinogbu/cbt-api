@@ -415,9 +415,21 @@ func (h *SubscriptionHandler) GetTransactions(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}  "message + data (SubscriptionUsageResponse)"
 // @Router       /subscriptions/{id}/usage [get]
 func (h *SubscriptionHandler) GetSubscriptionUsage(c *gin.Context) {
+    id := c.Param("id")
+    if _, err := uuid.Parse(id); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+        return
+    }
+
+    usage, err := h.service.GetSubscriptionUsage(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{
         "message": "Usage retrieved successfully",
-        "data":    nil,
+        "data":    usage,
     })
 }
 

@@ -877,6 +877,74 @@ func (s *SubscriptionService) GetTransactions(subscriptionID, schoolID string, i
     return responses, nil
 }
 
+// GetSubscriptionUsage reports a school's real current usage against
+// its subscription's limits, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Previously a handler-level
+// stub returning nil for every subscription - like GetInvoices/
+// GetTransactions before this same fix, that was never a cross-tenant
+// leak (nobody got real data), but also never a school's own real
+// usage, which an admin needs to know before hitting a plan limit.
+//
+// StorageUsedMB/StoragePercent are reported as 0: unlike student,
+// teacher, exam and question counts, this codebase has no
+// comprehensive per-school storage accounting (only a partial source -
+// QuestionBankAttachment.FileSize - that would undercount anything
+// else ever uploaded). Reporting a number assembled from a known-
+// incomplete source would be more misleading than reporting none, so
+// it stays at 0 until real storage accounting exists.
+func (s *SubscriptionService) GetSubscriptionUsage(subscriptionID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionUsageResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+
+    students, err := s.repo.CountStudentsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    teachers, err := s.repo.CountTeachersBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    exams, err := s.repo.CountExamsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    questions, err := s.repo.CountQuestionsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+
+    return &dto.SubscriptionUsageResponse{
+        CurrentStudents:  int(students),
+        CurrentTeachers:  int(teachers),
+        CurrentExams:     int(exams),
+        CurrentQuestions: int(questions),
+        StorageUsedMB:    0,
+        MaxStudents:      sub.MaxStudents,
+        MaxTeachers:      sub.MaxTeachers,
+        MaxExams:         sub.MaxExams,
+        MaxQuestions:     sub.MaxQuestions,
+        MaxStorageMB:     sub.MaxStorageMB,
+        StudentPercent:   usagePercent(students, sub.MaxStudents),
+        TeacherPercent:   usagePercent(teachers, sub.MaxTeachers),
+        ExamPercent:      usagePercent(exams, sub.MaxExams),
+        StoragePercent:   0,
+    }, nil
+}
+
+// usagePercent guards against a zero/unset limit, which would
+// otherwise divide by zero.
+func usagePercent(current int64, max int) float64 {
+    if max <= 0 {
+        return 0
+    }
+    return float64(current) / float64(max) * 100
+}
+
 // ============================================
 // EMAIL STUBS (replace with real email sending)
 // ============================================

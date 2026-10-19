@@ -58,6 +58,11 @@ func setupSubscriptionTenantTestDB(t *testing.T) *gorm.DB {
 			paid_at DATETIME, is_locked INTEGER DEFAULT 0, metadata TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
+		`CREATE TABLE students (id TEXT PRIMARY KEY, user_id TEXT, school_id TEXT, class_id TEXT, admission_no TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE users (id TEXT PRIMARY KEY, school_id TEXT, role TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE classes (id TEXT PRIMARY KEY, school_id TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE exams (id TEXT PRIMARY KEY, class_id TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE question_bank (id TEXT PRIMARY KEY, school_id TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -283,5 +288,117 @@ func TestSubscriptionGetTransactions_PlatformOwner_Bypasses(t *testing.T) {
 
 	if _, err := s.GetTransactions("sub-1", "", true); err != nil {
 		t.Fatalf("expected platform_owner to read any school's transactions, got error: %v", err)
+	}
+}
+
+// ---- GetSubscriptionUsage: was a handler-level stub always returning
+// nil, so - same as GetInvoices/GetTransactions before their fix -
+// there was never a cross-tenant leak, just never any real data
+// either. Now wired to real COUNT queries across the academic (students,
+// via users for teachers) and cbt (exams, question_bank) tables, it
+// needs the same ownership check as every other subscription-scoped
+// endpoint.
+
+func seedStudentForSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO students (id, school_id, admission_no) VALUES (?, ?, ?)", id, schoolID, "ADM-"+id).Error; err != nil {
+		t.Fatalf("failed to seed student: %v", err)
+	}
+}
+
+func seedTeacherForSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO users (id, school_id, role) VALUES (?, ?, 'teacher')", id, schoolID).Error; err != nil {
+		t.Fatalf("failed to seed teacher: %v", err)
+	}
+}
+
+func seedClassForSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO classes (id, school_id) VALUES (?, ?)", id, schoolID).Error; err != nil {
+		t.Fatalf("failed to seed class: %v", err)
+	}
+}
+
+func seedExamForClass(t *testing.T, db *gorm.DB, id, classID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO exams (id, class_id) VALUES (?, ?)", id, classID).Error; err != nil {
+		t.Fatalf("failed to seed exam: %v", err)
+	}
+}
+
+func seedQuestionForSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO question_bank (id, school_id) VALUES (?, ?)", id, schoolID).Error; err != nil {
+		t.Fatalf("failed to seed question: %v", err)
+	}
+}
+
+func TestSubscriptionGetUsage_CrossTenant_Rejected(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionService(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+
+	if _, err := s.GetSubscriptionUsage("sub-1", "school-B", false); err == nil {
+		t.Fatal("expected School B's caller to be rejected reading School A's usage, got no error")
+	}
+}
+
+func TestSubscriptionGetUsage_SameTenant_ReportsRealCounts(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionService(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+
+	seedStudentForSchool(t, db, "stu-1", "school-A")
+	seedStudentForSchool(t, db, "stu-2", "school-A")
+	seedStudentForSchool(t, db, "stu-3", "school-B") // a different school's student must not be counted
+
+	seedTeacherForSchool(t, db, "tea-1", "school-A")
+	seedTeacherForSchool(t, db, "tea-2", "school-B") // must not be counted
+
+	seedClassForSchool(t, db, "cls-1", "school-A")
+	seedClassForSchool(t, db, "cls-2", "school-B")
+	seedExamForClass(t, db, "exm-1", "cls-1")
+	seedExamForClass(t, db, "exm-2", "cls-1")
+	seedExamForClass(t, db, "exm-3", "cls-2") // a different school's exam (via its class) must not be counted
+
+	seedQuestionForSchool(t, db, "q-1", "school-A")
+	seedQuestionForSchool(t, db, "q-2", "school-B") // must not be counted
+
+	usage, err := s.GetSubscriptionUsage("sub-1", "school-A", false)
+	if err != nil {
+		t.Fatalf("expected School A to read its own usage, got error: %v", err)
+	}
+	if usage.CurrentStudents != 2 {
+		t.Fatalf("expected 2 students for school-A, got %d", usage.CurrentStudents)
+	}
+	if usage.CurrentTeachers != 1 {
+		t.Fatalf("expected 1 teacher for school-A, got %d", usage.CurrentTeachers)
+	}
+	if usage.CurrentExams != 2 {
+		t.Fatalf("expected 2 exams for school-A, got %d", usage.CurrentExams)
+	}
+	if usage.CurrentQuestions != 1 {
+		t.Fatalf("expected 1 question for school-A, got %d", usage.CurrentQuestions)
+	}
+	// seedSubscriptionForSchool relies on the schema's DEFAULT max_students=100
+	if usage.MaxStudents != 100 {
+		t.Fatalf("expected default max_students=100, got %d", usage.MaxStudents)
+	}
+	if usage.StudentPercent != 2 {
+		t.Fatalf("expected student_percent=2 (2/100), got %v", usage.StudentPercent)
+	}
+	if usage.StorageUsedMB != 0 || usage.StoragePercent != 0 {
+		t.Fatalf("expected storage to stay 0 (not tracked), got used=%d percent=%v", usage.StorageUsedMB, usage.StoragePercent)
+	}
+}
+
+func TestSubscriptionGetUsage_PlatformOwner_Bypasses(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionService(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+
+	if _, err := s.GetSubscriptionUsage("sub-1", "", true); err != nil {
+		t.Fatalf("expected platform_owner to read any school's usage, got error: %v", err)
 	}
 }
