@@ -342,8 +342,8 @@ func (s *QuestionService) FilterQuestions(ctx context.Context, req *dto.FilterQu
 	return resp, total, nil
 }
 
-func (s *QuestionService) GetStatistics(ctx context.Context, subjectID string) (map[string]interface{}, error) {
-	stats, err := s.qRepo.GetStatistics(ctx, subjectID)
+func (s *QuestionService) GetStatistics(ctx context.Context, subjectID, schoolID string) (map[string]interface{}, error) {
+	stats, err := s.qRepo.GetStatistics(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statistics: %w", err)
 	}
@@ -2172,7 +2172,19 @@ func (s *QuestionService) attachTagsByNamesInTx(ctx context.Context, tx *gorm.DB
 // ============================================================
 
 // GetQuestionsGrouped returns questions organized by exam_type -> question_type
-func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.FilterQuestionsGroupedRequest) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsGrouped is scoped to schoolID - req.SchoolID previously came
+// straight from the client with no override, so any authenticated user
+// could read another school's entire question bank by passing its
+// school_id. The caller's own resolved schoolID (questionEffectiveSchoolID)
+// always replaces whatever req.SchoolID held before it reaches the filter
+// or the response context.
+func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.FilterQuestionsGroupedRequest, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
+
 	// 1. Fetch questions with full context
 	params := map[string]interface{}{
 		"subject_id": req.SubjectID,
@@ -2475,15 +2487,30 @@ func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.Filt
 
 // GetAllQuestionsGrouped returns ALL questions organized by exam_type -> question_type
 // This method does NOT require any parameters - it fetches ALL questions from the database
-func (s *QuestionService) GetAllQuestionsGrouped(ctx context.Context) (*dto.QuestionGroupsResponse, error) {
+// GetAllQuestionsGrouped is scoped to schoolID - it previously ran
+// s.db.Find(&questions) with no filter of any kind, so GET
+// /questions/all-grouped returned literally every school's entire
+// question bank (draft, published, and archived alike) to any
+// authenticated caller. An empty schoolID is only honored for an
+// authenticated platform_owner explicitly requesting every school;
+// everyone else is forced to their own school and rejected outright if
+// they have none.
+func (s *QuestionService) GetAllQuestionsGrouped(ctx context.Context, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	// 1. Fetch ALL questions - NO status filter, NO deleted filter
 	var questions []models.QuestionBank
-	
+
+	query := s.db.WithContext(ctx).Order("created_at DESC")
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+
 	// Get ALL questions directly from database (including draft, published, archived)
-	err := s.db.WithContext(ctx).
-		Order("created_at DESC").
-		Find(&questions).Error
-	
+	err := query.Find(&questions).Error
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch questions: %w", err)
 	}
@@ -2687,10 +2714,29 @@ func (s *QuestionService) getSubject(ctx context.Context, id string) (*models.Su
 }
 
 // GetQuestionsByTermWithGrouping returns questions for a term grouped by exam type
-func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, subjectID, termID string) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsByTermWithGrouping is scoped to schoolID - it previously
+// called FindByTerm with no school check at all, then derived req.SchoolID
+// from the first matching question's OWN school (never verified against
+// the caller), so a valid termID belonging to a different school leaked
+// straight through. The term's own school (via its academic session) must
+// match the caller's school before any question for it is returned.
+func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, subjectID, termID, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	var term models.Term
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", termID).First(&term).Error; err != nil {
+		return nil, errors.New("term not found")
+	}
+	var session models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", term.SessionID).First(&session).Error; err != nil {
+		return nil, errors.New("term not found")
+	}
+	if err := questionAuthorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	req := &dto.FilterQuestionsGroupedRequest{
 		SubjectID: subjectID,
 		TermID:    termID,
+		SchoolID:  session.SchoolID,
 	}
 
 	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID)
@@ -2707,18 +2753,29 @@ func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, su
 	}
 
 	firstQ := questions[0]
-	req.SchoolID = firstQ.SchoolID
 	req.ClassID = firstQ.ClassID
 	req.SessionID = firstQ.SessionID
 
-	return s.GetQuestionsGrouped(ctx, req)
+	return s.GetQuestionsGrouped(ctx, req, schoolID, isPlatformOwner)
 }
 
-// GetQuestionsBySessionWithGrouping returns questions for a session grouped by exam type
-func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context, subjectID, sessionID string) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsBySessionWithGrouping is scoped to schoolID - same fix as
+// GetQuestionsByTermWithGrouping: the session's own school must match the
+// caller's before any question for it is returned, instead of trusting
+// the first matching question's own (unverified) school.
+func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context, subjectID, sessionID, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	var session models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", sessionID).First(&session).Error; err != nil {
+		return nil, errors.New("session not found")
+	}
+	if err := questionAuthorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	req := &dto.FilterQuestionsGroupedRequest{
 		SubjectID: subjectID,
 		SessionID: sessionID,
+		SchoolID:  session.SchoolID,
 	}
 
 	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID)
@@ -2735,11 +2792,10 @@ func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context,
 	}
 
 	firstQ := questions[0]
-	req.SchoolID = firstQ.SchoolID
 	req.ClassID = firstQ.ClassID
 	req.TermID = firstQ.TermID
 
-	return s.GetQuestionsGrouped(ctx, req)
+	return s.GetQuestionsGrouped(ctx, req, schoolID, isPlatformOwner)
 }
 
 

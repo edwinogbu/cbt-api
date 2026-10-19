@@ -505,7 +505,12 @@ func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subj
 	return results, err
 }
 
-func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjectID string) (map[string]int64, error) {
+// GetStatisticsByExamType is scoped to schoolID - a "" schoolID means
+// unscoped (platform_owner only; every other caller must pass its own
+// school_id, see middleware.ResolveSchoolIDOrNoResults). Subject is a
+// global table shared by every school, so subjectID alone never scopes
+// this to one school.
+func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjectID, schoolID string) (map[string]int64, error) {
 	var results []struct {
 		ExamType string
 		Count    int64
@@ -517,6 +522,9 @@ func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjec
 
 	if subjectID != "" {
 		query = query.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
 	}
 
 	err := query.Group("exam_type").Scan(&results).Error
@@ -872,13 +880,20 @@ func (r *QuestionRepository) DetachTags(ctx context.Context, questionID string, 
 // STATISTICS OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID string) (map[string]interface{}, error) {
+// GetStatistics is scoped to schoolID - previously had no school filter
+// at all, so GET /questions/statistics returned every school's question
+// counts and average marks platform-wide. A "" schoolID means unscoped
+// (platform_owner only).
+func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID, schoolID string) (map[string]interface{}, error) {
 	var total int64
 	var published, draft, archived int64
 
 	query := r.db.WithContext(ctx).Model(&models.QuestionBank{}).Where("deleted_at IS NULL")
 	if subjectID != "" {
 		query = query.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
 	}
 
 	if err := query.Count(&total).Error; err != nil {
@@ -895,15 +910,21 @@ func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID string
 		return nil, fmt.Errorf("failed to count archived questions: %w", err)
 	}
 
+	avgQuery := r.db.WithContext(ctx).Model(&models.QuestionBank{}).Where("deleted_at IS NULL")
+	if subjectID != "" {
+		avgQuery = avgQuery.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		avgQuery = avgQuery.Where("school_id = ?", schoolID)
+	}
 	var avgMarks float64
-	if err := r.db.WithContext(ctx).Model(&models.QuestionBank{}).
+	if err := avgQuery.
 		Select("COALESCE(AVG(marks), 0)").
-		Where("deleted_at IS NULL").
 		Row().Scan(&avgMarks); err != nil {
 		return nil, fmt.Errorf("failed to calculate average marks: %w", err)
 	}
 
-	examTypeStats, err := r.GetStatisticsByExamType(ctx, subjectID)
+	examTypeStats, err := r.GetStatisticsByExamType(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get exam type statistics: %w", err)
 	}

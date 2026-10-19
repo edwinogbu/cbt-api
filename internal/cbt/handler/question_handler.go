@@ -354,8 +354,17 @@ func (h *QuestionHandler) GetStatistics(c *gin.Context) {
 		}
 	}
 
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": map[string]interface{}{
+			"total_questions": int64(0), "published_count": int64(0), "draft_count": int64(0),
+			"archived_count": int64(0), "average_marks": float64(0), "by_exam_type": map[string]int64{},
+		}})
+		return
+	}
+
 	ctx := c.Request.Context()
-	stats, err := h.questionService.GetStatistics(ctx, subjectID)
+	stats, err := h.questionService.GetStatistics(ctx, subjectID, schoolID)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1639,10 +1648,12 @@ func (h *QuestionHandler) GetQuestionsGrouped(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	
+	isPlatformOwner := middleware.IsPlatformOwner(c)
+	callerSchoolID := middleware.GetSchoolID(c)
+
 	// If no filters provided, use GetAllQuestionsGrouped
 	if req.SchoolID == "" && req.SubjectID == "" {
-		resp, err := h.questionService.GetAllQuestionsGrouped(ctx)
+		resp, err := h.questionService.GetAllQuestionsGrouped(ctx, callerSchoolID, isPlatformOwner)
 		if err != nil {
 			h.handleError(c, err)
 			return
@@ -1651,7 +1662,7 @@ func (h *QuestionHandler) GetQuestionsGrouped(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.questionService.GetQuestionsGrouped(ctx, &req)
+	resp, err := h.questionService.GetQuestionsGrouped(ctx, &req, callerSchoolID, isPlatformOwner)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1693,7 +1704,7 @@ func (h *QuestionHandler) GetQuestionsGrouped(c *gin.Context) {
 // @Router       /questions/all-grouped [get]
 func (h *QuestionHandler) GetAllQuestionsGrouped(c *gin.Context) {
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetAllQuestionsGrouped(ctx)
+	resp, err := h.questionService.GetAllQuestionsGrouped(ctx, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1759,6 +1770,13 @@ func (h *QuestionHandler) GetQuestionsByExamType(c *gin.Context) {
 		return
 	}
 
+	// school_id is a required query param here, but it must never
+	// independently establish access: it is only honored if it matches
+	// the caller's own school (or the caller is platform_owner).
+	if !middleware.RequireOwnSchool(c, schoolID) {
+		return
+	}
+
 	sessionID := c.Query("session_id")
 	termID := c.Query("term_id")
 	classID := c.Query("class_id")
@@ -1773,7 +1791,7 @@ func (h *QuestionHandler) GetQuestionsByExamType(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetQuestionsGrouped(ctx, &req)
+	resp, err := h.questionService.GetQuestionsGrouped(ctx, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1818,7 +1836,7 @@ func (h *QuestionHandler) GetQuestionsByTermGrouped(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetQuestionsByTermWithGrouping(ctx, subjectID, termID)
+	resp, err := h.questionService.GetQuestionsByTermWithGrouping(ctx, subjectID, termID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1863,7 +1881,7 @@ func (h *QuestionHandler) GetQuestionsBySessionGrouped(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetQuestionsBySessionWithGrouping(ctx, subjectID, sessionID)
+	resp, err := h.questionService.GetQuestionsBySessionWithGrouping(ctx, subjectID, sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
