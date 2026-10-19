@@ -194,9 +194,14 @@ func setupOnboardingRoutes(rg *gin.RouterGroup, handler *onboardingHandler.Onboa
 		// Health check
 		onboarding.GET("/health", handler.HealthCheck)
 
-		// Admin endpoints (protected)
+		// Admin endpoints (protected) - admin/super_admin, plus
+		// platform_owner for cross-tenant oversight (same gate as every
+		// other admin surface in this codebase). GetOnboardingStats in
+		// particular reports platform-wide onboarding-funnel counts
+		// (see OnboardingService.GetOnboardingStats), not any one
+		// school's own data, so platform_owner reaching it is the point.
 		admin := onboarding.Group("/admin")
-		admin.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+		admin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 		{
 			admin.POST("/complete/:session_id", handler.CompleteOnboarding)
 			admin.DELETE("/cleanup", handler.CleanupExpiredSessions)

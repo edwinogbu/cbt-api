@@ -160,6 +160,29 @@ func (r *OnboardingRepository) CountActiveSessions() (int64, error) {
 	return count, err
 }
 
+// CountSessionsByStatus returns the number of (non-deleted) onboarding
+// sessions grouped by their current status, keyed by the raw
+// models.OnboardingStatus string values (e.g. "PLAN_SELECTED",
+// "PAYMENT_PENDING", "COMPLETE", "EXPIRED").
+func (r *OnboardingRepository) CountSessionsByStatus() (map[string]int64, error) {
+	var rows []struct {
+		Status string
+		Count  int64
+	}
+	if err := r.db.Model(&models.OnboardingSession{}).
+		Select("status, COUNT(*) as count").
+		Where("deleted_at IS NULL").
+		Group("status").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Status] = row.Count
+	}
+	return counts, nil
+}
+
 // ============================================
 // TRANSACTION OPERATIONS
 // ============================================

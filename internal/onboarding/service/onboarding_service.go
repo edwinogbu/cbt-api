@@ -1401,13 +1401,41 @@ func (s *OnboardingService) CleanupExpiredSessions(ctx context.Context) error {
 // GET ONBOARDING STATISTICS
 // ============================================
 
+// GetOnboardingStats reports real, platform-wide onboarding-funnel
+// counts from the DB-backed onboardingRepo (not s.sessionStore, the
+// separate, unrelated in-memory session cache CompleteOnboarding/
+// CleanupExpiredSessions use - this call previously returned a
+// hardcoded map of zeros regardless of the real data, which is exactly
+// the kind of misleading "looks like live data" response the
+// multi-tenant plan's honesty rules rule out).
 func (s *OnboardingService) GetOnboardingStats(ctx context.Context) (map[string]int64, error) {
+	counts, err := s.onboardingRepo.CountSessionsByStatus()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load onboarding stats: %w", err)
+	}
+
+	var total, pending, paymentPending, completed, expired int64
+	for status, count := range counts {
+		total += count
+		switch models.OnboardingStatus(status) {
+		case models.OnboardingStatusPaymentPending:
+			paymentPending += count
+		case models.OnboardingStatusComplete:
+			completed += count
+		case models.OnboardingStatusExpired:
+			expired += count
+		case models.OnboardingStatusPlanSelected, models.OnboardingStatusAccountCreated,
+			models.OnboardingStatusEmailVerified, models.OnboardingStatusSchoolCreated:
+			pending += count
+		}
+	}
+
 	return map[string]int64{
-		"total_sessions":     0,
-		"pending":            0,
-		"payment_pending":    0,
-		"completed":          0,
-		"expired":            0,
+		"total_sessions":  total,
+		"pending":         pending,
+		"payment_pending": paymentPending,
+		"completed":       completed,
+		"expired":         expired,
 	}, nil
 }
 
