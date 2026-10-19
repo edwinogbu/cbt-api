@@ -5,6 +5,7 @@ import (
     "errors"
     "fmt"
     "log"
+    "strings"
     "time"
 
     "github.com/google/uuid"
@@ -512,6 +513,19 @@ func (s *SubscriptionService) CreateSubscription(ctx context.Context, req *dto.C
 // WEBHOOK PROCESSING (only payment_success)
 // ============================================
 
+// isDuplicateWebhookEventError reports whether err is a unique-constraint
+// violation on webhook_events.idempotency_key, checked by message rather
+// than a driver-specific error type so it works the same way against
+// Postgres ("duplicate key value violates unique constraint") in
+// production and SQLite ("UNIQUE constraint failed") in tests.
+func isDuplicateWebhookEventError(err error) bool {
+    if err == nil {
+        return false
+    }
+    msg := strings.ToLower(err.Error())
+    return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint")
+}
+
 func (s *SubscriptionService) ProcessWebhook(ctx context.Context, gateway models.PaymentGateway, payload []byte, signature string) error {
     log.Printf("[WEBHOOK] Received for gateway %s", gateway)
     gw, err := s.paymentService.GetGateway(gateway)
@@ -525,16 +539,44 @@ func (s *SubscriptionService) ProcessWebhook(ctx context.Context, gateway models
         return err
     }
 
+    // Dedup key: only correlate on event.Reference when the gateway
+    // actually gave us one. An event whose reference came back empty
+    // (e.g. a parse path that doesn't always attach one) must not
+    // collide with every *other* no-reference event under the same
+    // unique index - that would make the second such event look like
+    // a duplicate of the first and get silently dropped below.
+    idempotencyKey := fmt.Sprintf("%s:%s:%s", gateway, event.Type, event.Reference)
+    if event.Reference == "" {
+        idempotencyKey = uuid.New().String()
+    }
+
     webhookEvent := &models.WebhookEvent{
         ID:             uuid.New().String(),
         Gateway:        gateway,
         EventType:      event.Type,
+        Reference:      event.Reference,
         Payload:        event.RawData,
-        IdempotencyKey: event.Reference,
+        IdempotencyKey: idempotencyKey,
         Status:         "pending",
         CreatedAt:      time.Now(),
     }
-    s.repo.CreateWebhookEvent(webhookEvent)
+    // CreateWebhookEvent's uniqueIndex on idempotency_key is what
+    // actually makes this atomic: two concurrent/replayed deliveries
+    // of the same event (gateways retry on timeout, and a captured
+    // valid signature can be replayed later) both attempt this same
+    // insert, and the database resolves which one succeeds. Before
+    // this fix the insert's error was discarded unchecked, so a
+    // duplicate silently fell through into the activation logic below
+    // and relied only on `sub.Status == Pending` to avoid reprocessing
+    // - a different, weaker guard than the one this constraint gives.
+    if err := s.repo.CreateWebhookEvent(webhookEvent); err != nil {
+        if isDuplicateWebhookEventError(err) {
+            log.Printf("[WEBHOOK] Duplicate delivery (idempotency_key=%s) - already recorded, skipping", idempotencyKey)
+            return nil
+        }
+        log.Printf("[WEBHOOK] Failed to record webhook event: %v", err)
+        return fmt.Errorf("failed to record webhook event: %w", err)
+    }
 
     if event.Type == "payment_success" {
         log.Printf("[WEBHOOK] Payment success for reference %s", event.Reference)
