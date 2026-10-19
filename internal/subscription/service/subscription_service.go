@@ -807,6 +807,76 @@ func (s *SubscriptionService) toInvoiceResponse(inv *models.Invoice) *dto.Invoic
     }
 }
 
+func (s *SubscriptionService) toPaymentTransactionResponse(pt *models.PaymentTransaction) *dto.PaymentTransactionResponse {
+    return &dto.PaymentTransactionResponse{
+        ID:             pt.ID,
+        SubscriptionID: pt.SubscriptionID,
+        InvoiceID:      pt.InvoiceID,
+        Amount:         pt.Amount,
+        Fee:            pt.Fee,
+        Tax:            pt.Tax,
+        Currency:       string(pt.Currency),
+        PaymentMethod:  string(pt.PaymentMethod),
+        Status:         string(pt.PaymentStatus),
+        Gateway:        string(pt.Gateway),
+        Reference:      pt.Reference,
+        Description:    pt.Description,
+        PaidAt:         pt.PaidAt,
+        CreatedAt:      pt.CreatedAt,
+    }
+}
+
+// GetInvoices retrieves every invoice for a subscription, scoped to the
+// caller's own school (see subscriptionAuthorizeSchoolOwnership).
+// Previously a handler-level stub that always returned an empty list
+// for any subscription ID - that's not a cross-tenant leak (nobody got
+// real data), but it also meant a school could never see its own real
+// billing history and the "retrieved successfully" response was
+// misleading about what had actually happened. FindInvoicesBySubscription
+// already existed, unused, doing the real query.
+func (s *SubscriptionService) GetInvoices(subscriptionID, schoolID string, isPlatformOwner bool) ([]dto.InvoiceResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+    invoices, err := s.repo.FindInvoicesBySubscription(subscriptionID)
+    if err != nil {
+        return nil, err
+    }
+    responses := make([]dto.InvoiceResponse, len(invoices))
+    for i := range invoices {
+        responses[i] = *s.toInvoiceResponse(&invoices[i])
+    }
+    return responses, nil
+}
+
+// GetTransactions retrieves every payment transaction for a
+// subscription, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Same prior state and fix
+// rationale as GetInvoices - FindPaymentTransactionsBySubscription
+// already existed, unused, doing the real query.
+func (s *SubscriptionService) GetTransactions(subscriptionID, schoolID string, isPlatformOwner bool) ([]dto.PaymentTransactionResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+    transactions, err := s.repo.FindPaymentTransactionsBySubscription(subscriptionID)
+    if err != nil {
+        return nil, err
+    }
+    responses := make([]dto.PaymentTransactionResponse, len(transactions))
+    for i := range transactions {
+        responses[i] = *s.toPaymentTransactionResponse(&transactions[i])
+    }
+    return responses, nil
+}
+
 // ============================================
 // EMAIL STUBS (replace with real email sending)
 // ============================================

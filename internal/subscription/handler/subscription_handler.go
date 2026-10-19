@@ -360,9 +360,21 @@ func (h *SubscriptionHandler) ConfirmPaymentIntent(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}  "message + data (array of InvoiceResponse)"
 // @Router       /subscriptions/{id}/invoices [get]
 func (h *SubscriptionHandler) GetInvoices(c *gin.Context) {
+    id := c.Param("id")
+    if _, err := uuid.Parse(id); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+        return
+    }
+
+    invoices, err := h.service.GetInvoices(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{
         "message": "Invoices retrieved successfully",
-        "data":    []interface{}{},
+        "data":    invoices,
     })
 }
 
@@ -375,9 +387,21 @@ func (h *SubscriptionHandler) GetInvoices(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}  "message + data (array of PaymentTransactionResponse)"
 // @Router       /subscriptions/{id}/transactions [get]
 func (h *SubscriptionHandler) GetTransactions(c *gin.Context) {
+    id := c.Param("id")
+    if _, err := uuid.Parse(id); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+        return
+    }
+
+    transactions, err := h.service.GetTransactions(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{
         "message": "Transactions retrieved successfully",
-        "data":    []interface{}{},
+        "data":    transactions,
     })
 }
 
