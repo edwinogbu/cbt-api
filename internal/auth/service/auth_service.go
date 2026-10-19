@@ -705,7 +705,17 @@ func (s *AuthService) sendOTPEmail(emailAddr, code, otpType string) {
 // SUBSCRIPTION CHECK METHOD
 // ============================================
 
-// CheckSubscription checks the subscription status for a user's school
+// CheckSubscription checks the subscription status for a user's school.
+// schoolID is always derived server-side from the caller's own record
+// (never a client-supplied value, and there is no such parameter on
+// this endpoint to begin with) - a student's own student record, a
+// teacher/admin/super_admin's own user.SchoolID, or a parent's own
+// children's school. super_admin was missing from that resolution
+// (grouped with teacher/admin, both of which set user.SchoolID the
+// same way) even though it is - like them - a school-level role, not
+// platform_owner's cross-tenant tier; that gap failed closed
+// ("unsupported user role") rather than leaking anything, but meant a
+// super_admin couldn't check their own school's subscription at all.
 func (s *AuthService) CheckSubscription(userID string) (*dto.SubscriptionCheckResponse, error) {
 	// Get user
 	user, err := s.repo.FindUserByID(userID)
@@ -724,7 +734,7 @@ func (s *AuthService) CheckSubscription(userID string) (*dto.SubscriptionCheckRe
 		}
 		schoolID = student.SchoolID
 
-	case models.RoleTeacher, models.RoleAdmin:
+	case models.RoleTeacher, models.RoleAdmin, models.RoleSuperAdmin:
 		if user.SchoolID == nil {
 			return nil, errors.New("user not associated with any school")
 		}
