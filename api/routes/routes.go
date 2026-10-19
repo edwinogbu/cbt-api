@@ -701,7 +701,8 @@ func initClassArmHandler() *academicHandler.ClassArmHandler {
 
 func initTermHandler() *academicHandler.TermHandler {
 	repo := academicRepo.NewTermRepository(database.DB)
-	service := academicService.NewTermService(repo)
+	sessionRepo := academicRepo.NewSessionRepository(database.DB)
+	service := academicService.NewTermService(repo, sessionRepo)
 	return academicHandler.NewTermHandler(service)
 }
 

@@ -6,6 +6,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -16,6 +17,22 @@ type ClassHandler struct {
 
 func NewClassHandler(service *service.ClassService) *ClassHandler {
     return &ClassHandler{service: service}
+}
+
+// requireOwnSchool rejects a path-param school ID that doesn't match the
+// caller's own verified school_id - a non-platform-owner cannot read
+// another school's data merely by naming it in the URL. Returns false
+// (after already writing the 403 response) when the request should stop.
+func requireOwnSchool(c *gin.Context, pathSchoolID string) bool {
+    if middleware.IsPlatformOwner(c) {
+        return true
+    }
+    ctxSchoolID := middleware.GetSchoolID(c)
+    if ctxSchoolID == "" || pathSchoolID != ctxSchoolID {
+        c.JSON(http.StatusForbidden, gin.H{"error": "cannot access another school's data"})
+        return false
+    }
+    return true
 }
 
 // CreateClass godoc
@@ -35,8 +52,8 @@ func (h *ClassHandler) CreateClass(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
-    class, err := h.service.Create(&req)
+
+    class, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -60,13 +77,13 @@ func (h *ClassHandler) CreateClass(c *gin.Context) {
 // @Router       /classes/{id} [get]
 func (h *ClassHandler) GetClass(c *gin.Context) {
     id := c.Param("id")
-    
-    class, err := h.service.GetByID(id)
+
+    class, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusOK, gin.H{"data": class})
 }
 
@@ -82,7 +99,10 @@ func (h *ClassHandler) GetClass(c *gin.Context) {
 // @Router       /school-classes/{schoolId} [get]
 func (h *ClassHandler) GetClassesBySchool(c *gin.Context) {
     schoolID := c.Param("schoolId")
-    
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
+
     classes, err := h.service.GetBySchool(schoolID)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -104,13 +124,13 @@ func (h *ClassHandler) GetClassesBySchool(c *gin.Context) {
 // @Router       /session-classes/{sessionId} [get]
 func (h *ClassHandler) GetClassesBySession(c *gin.Context) {
     sessionID := c.Param("sessionId")
-    
-    classes, err := h.service.GetBySession(sessionID)
+
+    classes, err := h.service.GetBySession(sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusOK, gin.H{"data": classes})
 }
 
@@ -128,7 +148,10 @@ func (h *ClassHandler) GetClassesBySession(c *gin.Context) {
 func (h *ClassHandler) GetClassesBySchoolAndSession(c *gin.Context) {
     schoolID := c.Param("schoolId")
     sessionID := c.Param("sessionId")
-    
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
+
     classes, err := h.service.GetBySchoolAndSession(schoolID, sessionID)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -158,13 +181,13 @@ func (h *ClassHandler) UpdateClass(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
-    class, err := h.service.Update(id, &req)
+
+    class, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusOK, gin.H{
         "message": "Class updated successfully",
         "data":    class,
@@ -183,12 +206,12 @@ func (h *ClassHandler) UpdateClass(c *gin.Context) {
 // @Router       /classes/{id} [delete]
 func (h *ClassHandler) DeleteClass(c *gin.Context) {
     id := c.Param("id")
-    
-    if err := h.service.Delete(id); err != nil {
+
+    if err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusOK, gin.H{"message": "Class deleted successfully"})
 }
 
@@ -228,11 +251,17 @@ func (h *ClassHandler) ListClasses(c *gin.Context) {
         limit = 20
     }
 
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ClassListResponse{Items: []dto.ClassResponse{}, Page: page, Limit: limit, TotalPages: 1}})
+        return
+    }
+
     req := &dto.ListClassesRequest{
         Page:         page,
         Limit:        limit,
         Search:       c.Query("search"),
-        SchoolID:     c.Query("school_id"),
+        SchoolID:     schoolID,
         SessionID:    c.Query("session_id"),
         ClassLevelID: c.Query("class_level_id"),
         ClassArmID:   c.Query("class_arm_id"),
@@ -277,7 +306,7 @@ func (h *ClassHandler) GetClassesByTeacher(c *gin.Context) {
     teacherID := c.Param("teacherId")
     ctx := c.Request.Context()
 
-    classes, err := h.service.GetByTeacher(ctx, teacherID)
+    classes, err := h.service.GetByTeacher(ctx, teacherID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "error":   "failed to fetch classes",
@@ -307,7 +336,7 @@ func (h *ClassHandler) GetClassesByArm(c *gin.Context) {
     classArmID := c.Param("classArmId")
     ctx := c.Request.Context()
 
-    classes, err := h.service.GetByArm(ctx, classArmID)
+    classes, err := h.service.GetByArm(ctx, classArmID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "error":   "failed to fetch classes",
@@ -337,7 +366,7 @@ func (h *ClassHandler) GetClassesByLevel(c *gin.Context) {
     classLevelID := c.Param("classLevelId")
     ctx := c.Request.Context()
 
-    classes, err := h.service.GetByLevel(ctx, classLevelID)
+    classes, err := h.service.GetByLevel(ctx, classLevelID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "error":   "failed to fetch classes",
@@ -382,7 +411,7 @@ func (h *ClassHandler) BulkDeleteClasses(c *gin.Context) {
     }
 
     ctx := c.Request.Context()
-    deletedCount, err := h.service.BulkDeleteClasses(ctx, req.IDs)
+    deletedCount, err := h.service.BulkDeleteClasses(ctx, req.IDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to delete classes",
@@ -410,7 +439,11 @@ func (h *ClassHandler) BulkDeleteClasses(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /classes/stats [get]
 func (h *ClassHandler) GetClassStats(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Statistics retrieved successfully", "data": &dto.ClassStatsResponse{BySchool: map[string]int64{}, ByLevel: map[string]int64{}, ByArm: map[string]int64{}}})
+        return
+    }
     ctx := c.Request.Context()
 
     stats, err := h.service.GetClassStats(ctx, schoolID)
@@ -461,7 +494,11 @@ func (h *ClassHandler) SearchClasses(c *gin.Context) {
         limit = 20
     }
 
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Search completed successfully", "data": &dto.ClassListResponse{Items: []dto.ClassResponse{}, Page: page, Limit: limit, TotalPages: 1}})
+        return
+    }
     ctx := c.Request.Context()
 
     resp, err := h.service.SearchClasses(ctx, query, schoolID, page, limit)

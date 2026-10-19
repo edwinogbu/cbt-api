@@ -5,6 +5,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -35,12 +36,12 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
         return
     }
     
-    session, err := h.service.Create(&req)
+    session, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusCreated, gin.H{
         "message": "Session created successfully",
         "data":    session,
@@ -59,8 +60,8 @@ func (h *SessionHandler) CreateSession(c *gin.Context) {
 // @Router       /sessions/{id} [get]
 func (h *SessionHandler) GetSession(c *gin.Context) {
     id := c.Param("id")
-    
-    session, err := h.service.GetByID(id)
+
+    session, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -81,7 +82,10 @@ func (h *SessionHandler) GetSession(c *gin.Context) {
 // @Router       /school-sessions/{schoolId} [get]
 func (h *SessionHandler) GetSessions(c *gin.Context) {
     schoolID := c.Param("schoolId")
-    
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
+
     sessions, err := h.service.GetBySchool(schoolID)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -103,7 +107,10 @@ func (h *SessionHandler) GetSessions(c *gin.Context) {
 // @Router       /school-sessions/{schoolId}/current [get]
 func (h *SessionHandler) GetCurrentSession(c *gin.Context) {
     schoolID := c.Param("schoolId")
-    
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
+
     session, err := h.service.GetCurrent(schoolID)
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -134,12 +141,12 @@ func (h *SessionHandler) UpdateSession(c *gin.Context) {
         return
     }
     
-    session, err := h.service.Update(id, &req)
+    session, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusOK, gin.H{
         "message": "Session updated successfully",
         "data":    session,
@@ -158,8 +165,8 @@ func (h *SessionHandler) UpdateSession(c *gin.Context) {
 // @Router       /sessions/{id} [delete]
 func (h *SessionHandler) DeleteSession(c *gin.Context) {
     id := c.Param("id")
-    
-    if err := h.service.Delete(id); err != nil {
+
+    if err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
@@ -197,6 +204,12 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, req.SchoolID)
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.SessionListResponse{Items: []dto.SessionResponse{}}})
+        return
+    }
+    req.SchoolID = schoolID
 
     response, err := h.service.ListSessions(&req)
     if err != nil {
@@ -221,7 +234,11 @@ func (h *SessionHandler) ListSessions(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /sessions/stats [get]
 func (h *SessionHandler) GetSessionStats(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.SessionStatsResponse{}})
+        return
+    }
 
     stats, err := h.service.GetSessionStats(schoolID)
     if err != nil {
@@ -259,7 +276,7 @@ func (h *SessionHandler) BulkDeleteSessions(c *gin.Context) {
         return
     }
 
-    count, err := h.service.BulkDeleteSessions(req.IDs)
+    count, err := h.service.BulkDeleteSessions(req.IDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
@@ -285,7 +302,11 @@ func (h *SessionHandler) BulkDeleteSessions(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /sessions/timeline [get]
 func (h *SessionHandler) GetSessionTimeline(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": []dto.SessionResponse{}})
+        return
+    }
 
     timeline, err := h.service.GetSessionTimeline(schoolID)
     if err != nil {
@@ -310,7 +331,11 @@ func (h *SessionHandler) GetSessionTimeline(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /sessions/summary [get]
 func (h *SessionHandler) GetSessionSummary(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.SessionSummaryResponse{}})
+        return
+    }
 
     summary, err := h.service.GetSessionSummary(schoolID)
     if err != nil {
@@ -349,8 +374,13 @@ func (h *SessionHandler) SearchSessions(c *gin.Context) {
         Page:     1,
         Limit:    20,
         Search:   query,
-        SchoolID: c.Query("school_id"),
     }
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.SessionListResponse{Items: []dto.SessionResponse{}}})
+        return
+    }
+    req.SchoolID = schoolID
 
     if page := c.Query("page"); page != "" {
         // Parse page

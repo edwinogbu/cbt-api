@@ -8,6 +8,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -93,7 +94,7 @@ func (h *ClassArmHandler) CreateClassArm(c *gin.Context) {
     req.ArmCode = strings.TrimSpace(req.ArmCode)
     req.RoomNumber = strings.TrimSpace(req.RoomNumber)
 
-    arm, err := h.service.Create(&req)
+    arm, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         errMsg := err.Error()
         if strings.Contains(errMsg, "already exists") {
@@ -146,7 +147,7 @@ func (h *ClassArmHandler) GetClassArm(c *gin.Context) {
         return
     }
 
-    arm, err := h.service.GetByID(id)
+    arm, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         if strings.Contains(err.Error(), "not found") {
             c.JSON(http.StatusNotFound, gin.H{
@@ -194,6 +195,9 @@ func (h *ClassArmHandler) GetClassArms(c *gin.Context) {
             "message": "Validation failed",
             "errors":  "school ID is required",
         })
+        return
+    }
+    if !requireOwnSchool(c, schoolID) {
         return
     }
 
@@ -292,7 +296,7 @@ func (h *ClassArmHandler) UpdateClassArm(c *gin.Context) {
         return
     }
 
-    arm, err := h.service.Update(id, &req)
+    arm, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         errMsg := err.Error()
         if strings.Contains(errMsg, "not found") {
@@ -353,7 +357,7 @@ func (h *ClassArmHandler) DeleteClassArm(c *gin.Context) {
         return
     }
 
-    err := h.service.Delete(id)
+    err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         if strings.Contains(err.Error(), "not found") {
             c.JSON(http.StatusNotFound, gin.H{
@@ -464,6 +468,13 @@ func (h *ClassArmHandler) ListClassArms(c *gin.Context) {
         return
     }
 
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, req.SchoolID)
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ClassArmListResponse{Items: []dto.ClassArmResponse{}}})
+        return
+    }
+    req.SchoolID = schoolID
+
     ctx := c.Request.Context()
     response, err := h.service.ListClassArms(ctx, &req)
     if err != nil {
@@ -497,14 +508,20 @@ func (h *ClassArmHandler) ListClassArms(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /class-arms/stats [get]
 func (h *ClassArmHandler) GetClassArmStats(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    rawSchoolID := c.Query("school_id")
 
-    if schoolID != "" && len(schoolID) != 36 {
+    if rawSchoolID != "" && len(rawSchoolID) != 36 {
         c.JSON(http.StatusBadRequest, gin.H{
             "status":  "error",
             "message": "Validation failed",
             "errors":  "invalid school_id format",
         })
+        return
+    }
+
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, rawSchoolID)
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ClassArmStatsResponse{}})
         return
     }
 
@@ -573,7 +590,7 @@ func (h *ClassArmHandler) BulkDeleteClassArms(c *gin.Context) {
     }
 
     ctx := c.Request.Context()
-    count, err := h.service.BulkDeleteClassArms(ctx, req.IDs)
+    count, err := h.service.BulkDeleteClassArms(ctx, req.IDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         errMsg := err.Error()
         if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "no matching") {
@@ -650,8 +667,14 @@ func (h *ClassArmHandler) SearchClassArms(c *gin.Context) {
         limit = 20
     }
 
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": []dto.ClassArmResponse{}})
+        return
+    }
+
     ctx := c.Request.Context()
-    arms, err := h.service.SearchClassArms(ctx, query, limit)
+    arms, err := h.service.SearchClassArms(ctx, query, schoolID, limit)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "status":  "error",

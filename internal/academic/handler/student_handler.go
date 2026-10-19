@@ -6,6 +6,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -41,7 +42,7 @@ func (h *StudentHandler) GetStudentProfile(c *gin.Context) {
     }
     
     // Get student by user ID
-    student, err := h.service.GetByUserID(userIDStr)
+    student, err := h.service.GetByUserID(userIDStr, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -69,12 +70,12 @@ func (h *StudentHandler) CreateStudent(c *gin.Context) {
         return
     }
     
-    student, err := h.service.Create(&req)
+    student, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
-    
+
     c.JSON(http.StatusCreated, gin.H{
         "message": "Student created successfully",
         "data":    student,
@@ -94,7 +95,7 @@ func (h *StudentHandler) CreateStudent(c *gin.Context) {
 func (h *StudentHandler) GetStudent(c *gin.Context) {
     id := c.Param("id")
     
-    student, err := h.service.GetByID(id)
+    student, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -116,7 +117,7 @@ func (h *StudentHandler) GetStudent(c *gin.Context) {
 func (h *StudentHandler) GetStudentByUser(c *gin.Context) {
     userID := c.Param("userId")
     
-    student, err := h.service.GetByUserID(userID)
+    student, err := h.service.GetByUserID(userID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -142,6 +143,9 @@ func (h *StudentHandler) GetStudentsBySchool(c *gin.Context) {
     page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
     limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
     
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
     students, total, err := h.service.GetBySchool(schoolID, page, limit)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -175,7 +179,7 @@ func (h *StudentHandler) GetStudentsByClass(c *gin.Context) {
     page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
     limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
     
-    students, total, err := h.service.GetByClass(classID, page, limit)
+    students, total, err := h.service.GetByClass(classID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c), page, limit)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
@@ -212,7 +216,7 @@ func (h *StudentHandler) UpdateStudent(c *gin.Context) {
         return
     }
     
-    student, err := h.service.Update(id, &req)
+    student, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -237,7 +241,7 @@ func (h *StudentHandler) UpdateStudent(c *gin.Context) {
 func (h *StudentHandler) DeleteStudent(c *gin.Context) {
     id := c.Param("id")
     
-    if err := h.service.Delete(id); err != nil {
+    if err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
@@ -269,7 +273,7 @@ func (h *StudentHandler) TransferClass(c *gin.Context) {
         return
     }
     
-    if err := h.service.TransferClass(studentID, req.NewClassID); err != nil {
+    if err := h.service.TransferClass(studentID, req.NewClassID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }

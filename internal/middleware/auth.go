@@ -144,6 +144,41 @@ func IsPlatformOwner(c *gin.Context) bool {
     return GetRole(c) == "platform_owner"
 }
 
+// ResolveSchoolID is the shared rule for every list/search/stats/create
+// handler that currently reads a school_id from a client-supplied query
+// param or request body field: for an authenticated platform_owner, that
+// client-supplied value is honored as-is (possibly "" meaning "every
+// school" for a list/filter, since platform_owner is deliberately not
+// confined to one tenant); for every other role, it is discarded
+// entirely and replaced with GetSchoolID(c) - a client-supplied
+// school_id must never be able to independently establish access. Use
+// this wherever a handler would otherwise do `c.Query("school_id")` or
+// bind a SchoolID request field directly into a DB filter/write.
+func ResolveSchoolID(c *gin.Context, clientSuppliedSchoolID string) string {
+    if IsPlatformOwner(c) {
+        return clientSuppliedSchoolID
+    }
+    return GetSchoolID(c)
+}
+
+// ResolveSchoolIDOrNoResults wraps ResolveSchoolID with the guard several
+// repository queries in this codebase need: more than one list/stats/
+// search query treats an EMPTY school_id filter as "no filter at all"
+// (i.e. every school), not "no results" - so an empty string reaching
+// those queries is unscoped, not merely unfiltered. An empty result from
+// ResolveSchoolID is only ever legitimate for an authenticated
+// platform_owner (who may deliberately want every school); for anyone
+// else it means "no school to scope to" and the caller must return an
+// empty/zero result directly, never pass "" into such a query. ok is
+// false in exactly that case.
+func ResolveSchoolIDOrNoResults(c *gin.Context, clientSuppliedSchoolID string) (schoolID string, ok bool) {
+    resolved := ResolveSchoolID(c, clientSuppliedSchoolID)
+    if resolved == "" && !IsPlatformOwner(c) {
+        return "", false
+    }
+    return resolved, true
+}
+
 // GetSessionID retrieves session ID from context
 func GetSessionID(c *gin.Context) string {
     sessionID, _ := c.Get("session_id")

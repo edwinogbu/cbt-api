@@ -3,6 +3,7 @@ package handler
 import (
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/service"
+	"cbt-api/internal/middleware"
 	"errors"
 	"fmt"
 	"net/http"
@@ -68,7 +69,7 @@ func (h *QuestionHandler) CreateQuestion(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.CreateQuestion(ctx, &req, userID.(string))
+	resp, err := h.questionService.CreateQuestion(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -105,7 +106,7 @@ func (h *QuestionHandler) GetQuestion(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetQuestion(ctx, id)
+	resp, err := h.questionService.GetQuestion(ctx, id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -160,7 +161,7 @@ func (h *QuestionHandler) UpdateQuestion(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.UpdateQuestion(ctx, id, &req, userID.(string))
+	resp, err := h.questionService.UpdateQuestion(ctx, id, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -206,7 +207,7 @@ func (h *QuestionHandler) DeleteQuestion(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if err := h.questionService.DeleteQuestion(ctx, id, userID.(string)); err != nil {
+	if err := h.questionService.DeleteQuestion(ctx, id, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		h.handleError(c, err)
 		return
 	}
@@ -258,8 +259,14 @@ func (h *QuestionHandler) ListQuestions(c *gin.Context) {
 		return
 	}
 
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []dto.QuestionBankResponse{}, "total": 0, "page": page, "limit": limit})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, total, err := h.questionService.ListQuestions(ctx, subjectID, page, limit)
+	resp, total, err := h.questionService.ListQuestions(ctx, subjectID, schoolID, page, limit)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -302,6 +309,13 @@ func (h *QuestionHandler) FilterQuestions(c *gin.Context) {
 	if req.Limit < 1 || req.Limit > 100 {
 		req.Limit = 20
 	}
+
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, req.SchoolID)
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": []dto.QuestionBankResponse{}, "total": 0, "page": req.Page, "limit": req.Limit})
+		return
+	}
+	req.SchoolID = schoolID
 
 	ctx := c.Request.Context()
 	resp, total, err := h.questionService.FilterQuestions(ctx, &req)
@@ -399,7 +413,7 @@ func (h *QuestionHandler) BulkCreateQuestions(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.BulkCreateQuestionsFromJSON(ctx, &req, userID.(string))
+	resp, err := h.questionService.BulkCreateQuestionsFromJSON(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -699,7 +713,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	if preview {
-		resp, err := h.questionService.PreviewBulkUpload(ctx, src, format, req, userID.(string))
+		resp, err := h.questionService.PreviewBulkUpload(ctx, src, format, req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 		if err != nil {
 			h.handleError(c, err)
 			return
@@ -712,7 +726,7 @@ func (h *QuestionHandler) BulkUploadFile(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.questionService.BulkUploadFromFile(ctx, src, format, req, userID.(string))
+	resp, err := h.questionService.BulkUploadFromFile(ctx, src, format, req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -929,7 +943,7 @@ func (h *QuestionHandler) GenerateQuestionsWithAI(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req, userID.(string))
+	resp, err := h.questionService.GenerateQuestionsWithAI(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -998,7 +1012,7 @@ func (h *QuestionHandler) ExtractQuestionsFromText(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req, userID.(string))
+	resp, err := h.questionService.ExtractQuestionsFromText(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1115,7 +1129,7 @@ func (h *QuestionHandler) GenerateGroundedQuestions(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GenerateGroundedQuestions(ctx, &req, userID.(string))
+	resp, err := h.questionService.GenerateGroundedQuestions(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return

@@ -18,10 +18,14 @@ func NewSessionService(repo *repository.SessionRepository) *SessionService {
     return &SessionService{repo: repo}
 }
 
-func (s *SessionService) Create(req *dto.CreateSessionRequest) (*dto.SessionResponse, error) {
+func (s *SessionService) Create(req *dto.CreateSessionRequest, schoolID string, isPlatformOwner bool) (*dto.SessionResponse, error) {
+    effectiveID := effectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+    if effectiveID == "" {
+        return nil, ErrSchoolScopeRequired
+    }
     session := &models.AcademicSession{
         ID:        uuid.New().String(),
-        SchoolID:  req.SchoolID,
+        SchoolID:  effectiveID,
         Name:      req.Name,
         StartDate: req.StartDate,
         EndDate:   req.EndDate,
@@ -37,15 +41,18 @@ func (s *SessionService) Create(req *dto.CreateSessionRequest) (*dto.SessionResp
     
     // If this session is set as current, update others
     if req.IsCurrent {
-        s.repo.SetCurrent(req.SchoolID, session.ID)
+        s.repo.SetCurrent(effectiveID, session.ID)
     }
-    
+
     return s.toResponse(session), nil
 }
 
-func (s *SessionService) GetByID(id string) (*dto.SessionResponse, error) {
+func (s *SessionService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.SessionResponse, error) {
     session, err := s.repo.FindByID(id)
     if err != nil {
+        return nil, errors.New("session not found")
+    }
+    if err := authorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("session not found")
     }
     return s.toResponse(session), nil
@@ -72,12 +79,15 @@ func (s *SessionService) GetCurrent(schoolID string) (*dto.SessionResponse, erro
     return s.toResponse(session), nil
 }
 
-func (s *SessionService) Update(id string, req *dto.UpdateSessionRequest) (*dto.SessionResponse, error) {
+func (s *SessionService) Update(id string, req *dto.UpdateSessionRequest, schoolID string, isPlatformOwner bool) (*dto.SessionResponse, error) {
     session, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("session not found")
     }
-    
+    if err := authorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("session not found")
+    }
+
     if req.Name != "" {
         session.Name = req.Name
     }
@@ -107,7 +117,14 @@ func (s *SessionService) Update(id string, req *dto.UpdateSessionRequest) (*dto.
     return s.toResponse(session), nil
 }
 
-func (s *SessionService) Delete(id string) error {
+func (s *SessionService) Delete(id, schoolID string, isPlatformOwner bool) error {
+    session, err := s.repo.FindByID(id)
+    if err != nil {
+        return errors.New("session not found")
+    }
+    if err := authorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("session not found")
+    }
     return s.repo.Delete(id)
 }
 
@@ -213,7 +230,29 @@ func (s *SessionService) GetSessionStats(schoolID string) (*dto.SessionStatsResp
 }
 
 // BulkDeleteSessions deletes multiple sessions
-func (s *SessionService) BulkDeleteSessions(ids []string) (int64, error) {
+// BulkDeleteSessions deletes only the IDs that belong to schoolID -
+// any other ID in the request is silently dropped, matching Delete above.
+func (s *SessionService) BulkDeleteSessions(ids []string, schoolID string, isPlatformOwner bool) (int64, error) {
+    if isPlatformOwner {
+        return s.bulkDeleteSessionsUnscoped(ids)
+    }
+    allowed := make([]string, 0, len(ids))
+    for _, id := range ids {
+        session, err := s.repo.FindByID(id)
+        if err != nil {
+            continue
+        }
+        if session.SchoolID == schoolID {
+            allowed = append(allowed, id)
+        }
+    }
+    if len(allowed) == 0 {
+        return 0, nil
+    }
+    return s.bulkDeleteSessionsUnscoped(allowed)
+}
+
+func (s *SessionService) bulkDeleteSessionsUnscoped(ids []string) (int64, error) {
     return s.repo.BulkDeleteSessions(ids)
 }
 

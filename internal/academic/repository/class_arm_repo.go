@@ -260,7 +260,11 @@ func (r *ClassArmRepository) BulkDeleteClassArms(ctx context.Context, ids []stri
 // ============================================
 
 // SearchClassArms searches class arms by name or code
-func (r *ClassArmRepository) SearchClassArms(ctx context.Context, query string, limit int) ([]models.ClassArm, error) {
+// SearchClassArms searches by name or code, scoped to schoolID when
+// given - a "" schoolID means unscoped (platform_owner only; callers
+// must never pass "" for any other role, see
+// middleware.ResolveSchoolIDOrNoResults).
+func (r *ClassArmRepository) SearchClassArms(ctx context.Context, query string, schoolID string, limit int) ([]models.ClassArm, error) {
     var arms []models.ClassArm
 
     // ✅ Validate search query
@@ -278,9 +282,13 @@ func (r *ClassArmRepository) SearchClassArms(ctx context.Context, query string, 
 
     // ✅ Build search query with pagination
     searchTerm := "%" + query + "%"
-    err := r.db.WithContext(ctx).
+    dbQuery := r.db.WithContext(ctx).
         Where("deleted_at IS NULL").
-        Where("name ILIKE ? OR arm_code ILIKE ?", searchTerm, searchTerm).
+        Where("name ILIKE ? OR arm_code ILIKE ?", searchTerm, searchTerm)
+    if schoolID != "" {
+        dbQuery = dbQuery.Where("school_id = ?", schoolID)
+    }
+    err := dbQuery.
         Limit(limit).
         Order("name ASC").
         Find(&arms).Error

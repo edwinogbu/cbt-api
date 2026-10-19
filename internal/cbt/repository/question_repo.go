@@ -174,7 +174,13 @@ func (r *QuestionRepository) Delete(ctx context.Context, id string) error {
 // QUERY / FILTER OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID string, page, limit int) ([]models.QuestionBank, int64, error) {
+// ListBySubject lists questions for subjectID, scoped to schoolID -
+// Subject is a global reference table shared by every school (see
+// models.Subject: no school_id column), so without the school_id filter
+// this returned every school's questions for that subject. A ""
+// schoolID means unscoped (platform_owner only; every other caller must
+// pass its own school_id, see middleware.ResolveSchoolIDOrNoResults).
+func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID, schoolID string, page, limit int) ([]models.QuestionBank, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -188,6 +194,9 @@ func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID string
 
 	query := r.db.WithContext(ctx).Model(&models.QuestionBank{}).
 		Where("subject_id = ? AND deleted_at IS NULL", subjectID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("failed to count questions: %w", err)

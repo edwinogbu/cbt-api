@@ -3,9 +3,10 @@ package handler
 import (
     "net/http"
     "strconv"  // ✅ ADD THIS - fixes undefined: strconv
-    
+
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -36,7 +37,7 @@ func (h *TermHandler) CreateTerm(c *gin.Context) {
         return
     }
     
-    term, err := h.service.Create(&req)  // ✅ Use 'service'
+    term, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -61,7 +62,7 @@ func (h *TermHandler) CreateTerm(c *gin.Context) {
 func (h *TermHandler) GetTerm(c *gin.Context) {
     id := c.Param("id")
     
-    term, err := h.service.GetByID(id)  // ✅ Use 'service'
+    term, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -83,7 +84,7 @@ func (h *TermHandler) GetTerm(c *gin.Context) {
 func (h *TermHandler) GetTerms(c *gin.Context) {
     sessionID := c.Param("sessionId")
     
-    terms, err := h.service.GetBySession(sessionID)  // ✅ Use 'service'
+    terms, err := h.service.GetBySession(sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
@@ -105,7 +106,7 @@ func (h *TermHandler) GetTerms(c *gin.Context) {
 func (h *TermHandler) GetCurrentTerm(c *gin.Context) {
     sessionID := c.Param("sessionId")
     
-    term, err := h.service.GetCurrent(sessionID)  // ✅ Use 'service'
+    term, err := h.service.GetCurrent(sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -135,7 +136,7 @@ func (h *TermHandler) UpdateTerm(c *gin.Context) {
         return
     }
     
-    term, err := h.service.Update(id, &req)  // ✅ Use 'service'
+    term, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
@@ -160,7 +161,7 @@ func (h *TermHandler) UpdateTerm(c *gin.Context) {
 func (h *TermHandler) DeleteTerm(c *gin.Context) {
     id := c.Param("id")
     
-    if err := h.service.Delete(id); err != nil {  // ✅ Use 'service'
+    if err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {  // ✅ Use 'service'
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }
@@ -195,7 +196,7 @@ func (h *TermHandler) ListAllTerms(c *gin.Context) {
     }
 
     ctx := c.Request.Context()
-    resp, err := h.service.ListAllTerms(ctx, page, limit)  // ✅ Use 'service'
+    resp, err := h.service.ListAllTerms(ctx, page, limit, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "error":   "failed to list terms",
@@ -227,6 +228,9 @@ func (h *TermHandler) ListAllTermsBySchool(c *gin.Context) {
     schoolID := c.Query("school_id")
     if schoolID == "" {
         c.JSON(http.StatusBadRequest, gin.H{"error": "school_id is required"})
+        return
+    }
+    if !requireOwnSchool(c, schoolID) {
         return
     }
 
@@ -267,7 +271,7 @@ func (h *TermHandler) ListAllTermsBySchool(c *gin.Context) {
 // @Router       /terms/all [get]
 func (h *TermHandler) GetAllTerms(c *gin.Context) {
     ctx := c.Request.Context()
-    terms, err := h.service.GetAllTerms(ctx)  // ✅ Use 'service'
+    terms, err := h.service.GetAllTerms(ctx, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))  // ✅ Use 'service'
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
             "error":   "failed to get all terms",
@@ -317,12 +321,18 @@ func (h *TermHandler) ListTerms(c *gin.Context) {
         limit = 20
     }
 
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.TermListResponse{Terms: []dto.TermResponse{}, Page: page, Limit: limit, TotalPages: 1}})
+        return
+    }
+
     req := &dto.ListTermsRequest{
         Page:      page,
         Limit:     limit,
         Search:    c.Query("search"),
         SessionID: c.Query("session_id"),
-        SchoolID:  c.Query("school_id"),
+        SchoolID:  schoolID,
         SortBy:    c.DefaultQuery("sort_by", "terms.created_at"),
         SortOrder: c.DefaultQuery("sort_order", "DESC"),
         IsActive:  nil,
@@ -383,7 +393,7 @@ func (h *TermHandler) BulkDeleteTerms(c *gin.Context) {
     }
 
     ctx := c.Request.Context()
-    deletedCount, err := h.service.BulkDeleteTerms(ctx, req.IDs)
+    deletedCount, err := h.service.BulkDeleteTerms(ctx, req.IDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to delete terms",
@@ -411,7 +421,11 @@ func (h *TermHandler) BulkDeleteTerms(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /terms/stats [get]
 func (h *TermHandler) GetTermStats(c *gin.Context) {
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Statistics retrieved successfully", "data": &dto.TermStatsResponse{}})
+        return
+    }
     ctx := c.Request.Context()
 
     stats, err := h.service.GetTermStats(ctx, schoolID)
@@ -462,7 +476,11 @@ func (h *TermHandler) SearchTerms(c *gin.Context) {
         limit = 20
     }
 
-    schoolID := c.Query("school_id")
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Search completed successfully", "data": &dto.TermListResponse{Terms: []dto.TermResponse{}, Page: page, Limit: limit, TotalPages: 1}})
+        return
+    }
     ctx := c.Request.Context()
 
     resp, err := h.service.SearchTerms(ctx, query, schoolID, page, limit)

@@ -6,6 +6,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -39,7 +40,7 @@ func (h *ClassLevelHandler) CreateClassLevel(c *gin.Context) {
         return
     }
     
-    level, err := h.service.Create(&req)
+    level, err := h.service.Create(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to create class level",
@@ -73,7 +74,7 @@ func (h *ClassLevelHandler) GetClassLevel(c *gin.Context) {
         return
     }
     
-    level, err := h.service.GetByID(id)
+    level, err := h.service.GetByID(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{
             "error":   "Class level not found",
@@ -106,6 +107,9 @@ func (h *ClassLevelHandler) GetClassLevelsBySchool(c *gin.Context) {
         return
     }
     
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
     levels, err := h.service.GetBySchool(schoolID)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
@@ -158,6 +162,9 @@ func (h *ClassLevelHandler) GetClassLevelsByCategory(c *gin.Context) {
         return
     }
     
+    if !requireOwnSchool(c, schoolID) {
+        return
+    }
     levels, err := h.service.GetByCategory(schoolID, category)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
@@ -204,7 +211,7 @@ func (h *ClassLevelHandler) UpdateClassLevel(c *gin.Context) {
         return
     }
     
-    level, err := h.service.Update(id, &req)
+    level, err := h.service.Update(id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to update class level",
@@ -270,7 +277,7 @@ func (h *ClassLevelHandler) DeleteClassLevel(c *gin.Context) {
         return
     }
     
-    if err := h.service.Delete(id); err != nil {
+    if err := h.service.Delete(id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to delete class level",
             "details": err.Error(),
@@ -312,7 +319,7 @@ func (h *ClassLevelHandler) BulkDeleteClassLevels(c *gin.Context) {
         return
     }
     
-    deletedCount, err := h.service.BulkDeleteClassLevels(req.IDs)
+    deletedCount, err := h.service.BulkDeleteClassLevels(req.IDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{
             "error":   "Failed to delete class levels",
@@ -364,23 +371,29 @@ func (h *ClassLevelHandler) ListClassLevels(c *gin.Context) {
         limit = 100
     }
     
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"message": "Class levels retrieved successfully", "data": []dto.ClassLevelResponse{}, "pagination": gin.H{"page": page, "limit": limit, "total": 0, "total_pages": 1}})
+        return
+    }
+
     req := &dto.ListClassLevelsRequest{
         Page:     page,
         Limit:    limit,
         Search:   c.Query("search"),
-        SchoolID: c.Query("school_id"),
+        SchoolID: schoolID,
         Category: c.Query("category"),
         SortBy:   c.DefaultQuery("sort_by", "level_number"),
         SortDir:  c.DefaultQuery("sort_order", "asc"),
         IsActive: nil,
     }
-    
+
     // Parse is_active if provided
     if isActive := c.Query("is_active"); isActive != "" {
         val := isActive == "true"
         req.IsActive = &val
     }
-    
+
     result, err := h.service.List(req)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
@@ -458,8 +471,12 @@ func (h *ClassLevelHandler) ListClassLevels(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /class-levels/stats [get]
 func (h *ClassLevelHandler) GetClassLevelStats(c *gin.Context) {
-    schoolID := c.Query("school_id")
-    
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"message": "Statistics retrieved successfully", "data": &dto.ClassLevelStatsResponse{ByCategory: map[string]int64{}}})
+        return
+    }
+
     stats, err := h.service.GetStats(schoolID)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
@@ -510,8 +527,12 @@ func (h *ClassLevelHandler) SearchClassLevels(c *gin.Context) {
         limit = 100
     }
     
-    schoolID := c.Query("school_id")
-    
+    schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+    if !ok {
+        c.JSON(http.StatusOK, gin.H{"message": "Search completed successfully", "data": []dto.ClassLevelResponse{}})
+        return
+    }
+
     result, err := h.service.Search(schoolID, query, page, limit)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{
