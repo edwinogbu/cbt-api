@@ -343,7 +343,7 @@ func (h *SubscriptionHandler) ConfirmPaymentIntent(c *gin.Context) {
         return
     }
 
-    if err := h.service.ConfirmPaymentIntent(paymentIntentID); err != nil {
+    if err := h.service.ConfirmPaymentIntent(paymentIntentID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
         return
     }

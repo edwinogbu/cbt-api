@@ -300,10 +300,24 @@ func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dt
     return s.toPaymentIntentResponse(dbPI), nil
 }
 
-func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID string) error {
+// ConfirmPaymentIntent manually re-verifies a payment intent with its
+// gateway and, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Before this fix it took no
+// school parameter at all - any authenticated admin/super_admin could
+// force this re-verification/activation flow against ANY other
+// school's payment intent just by knowing or guessing its UUID,
+// mutating its status/gateway_response and potentially activating
+// that school's subscription, all with zero ownership check.
+func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID, schoolID string, isPlatformOwner bool) error {
     log.Printf("[SERVICE] ConfirmPaymentIntent: id=%s", paymentIntentID)
     pi, err := s.repo.FindPaymentIntentByID(paymentIntentID)
     if err != nil {
+        return errors.New("payment intent not found")
+    }
+    // Same not-found-on-mismatch convention as subscriptionAuthorizeSchoolOwnership,
+    // worded for this resource so a cross-school caller can't distinguish
+    // "wrong owner" from "no such payment intent".
+    if !isPlatformOwner && (schoolID == "" || pi.SchoolID != schoolID) {
         return errors.New("payment intent not found")
     }
     if pi.IsFinalized {

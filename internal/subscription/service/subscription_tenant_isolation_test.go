@@ -9,6 +9,7 @@ import (
 
 	"cbt-api/internal/subscription/dto"
 	"cbt-api/internal/subscription/repository"
+	"cbt-api/pkg/payment"
 )
 
 // ---- Phase 2: subscription-module tenant isolation ----
@@ -48,7 +49,13 @@ func setupSubscriptionTenantTestDB(t *testing.T) *gorm.DB {
 			due_date DATETIME, paid_at DATETIME, pdf_url TEXT, items TEXT, metadata TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
-		`CREATE TABLE payment_intents (id TEXT PRIMARY KEY, subscription_id TEXT, school_id TEXT, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME)`,
+		`CREATE TABLE payment_intents (
+			id TEXT PRIMARY KEY, subscription_id TEXT, invoice_id TEXT, school_id TEXT, user_id TEXT,
+			idempotency_key TEXT, gateway TEXT, amount TEXT, reference TEXT,
+			status TEXT DEFAULT 'pending', is_finalized INTEGER DEFAULT 0,
+			gateway_response TEXT, paid_at DATETIME,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
 		`CREATE TABLE payment_transactions (
 			id TEXT PRIMARY KEY, subscription_id TEXT, payment_intent_id TEXT, invoice_id TEXT,
 			school_id TEXT, user_id TEXT,
@@ -74,6 +81,15 @@ func setupSubscriptionTenantTestDB(t *testing.T) *gorm.DB {
 
 func newTenantTestSubscriptionService(db *gorm.DB) *SubscriptionService {
 	return NewSubscriptionService(repository.NewSubscriptionRepository(db), nil, nil)
+}
+
+// newTenantTestSubscriptionServiceWithPayment is for tests that need to
+// get past ConfirmPaymentIntent's ownership gate into the gateway
+// verification call it makes next - a nil paymentService would panic
+// there, unlike every other method in this file, which returns before
+// ever touching it on the cross-tenant-rejected path.
+func newTenantTestSubscriptionServiceWithPayment(db *gorm.DB) *SubscriptionService {
+	return NewSubscriptionService(repository.NewSubscriptionRepository(db), payment.NewPaymentService(), nil)
 }
 
 func seedSubscriptionForSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
@@ -400,5 +416,71 @@ func TestSubscriptionGetUsage_PlatformOwner_Bypasses(t *testing.T) {
 
 	if _, err := s.GetSubscriptionUsage("sub-1", "", true); err != nil {
 		t.Fatalf("expected platform_owner to read any school's usage, got error: %v", err)
+	}
+}
+
+// ---- ConfirmPaymentIntent: before this fix, took no school parameter
+// at all - any authenticated admin/super_admin could force this
+// manual gateway re-verification/activation flow against ANY other
+// school's payment intent just by knowing or guessing its UUID.
+
+func seedPaymentIntentForSchool(t *testing.T, db *gorm.DB, id, subID, schoolID string) {
+	t.Helper()
+	if err := db.Exec(
+		"INSERT INTO payment_intents (id, subscription_id, school_id, idempotency_key, gateway, amount, reference, status, is_finalized) VALUES (?, ?, ?, ?, 'unregistered-test-gateway', '50000', ?, 'pending', 0)",
+		id, subID, schoolID, id+"-idem", "ref-"+id,
+	).Error; err != nil {
+		t.Fatalf("failed to seed payment intent: %v", err)
+	}
+}
+
+func TestConfirmPaymentIntent_CrossTenant_Rejected(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionService(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.ConfirmPaymentIntent("pi-1", "school-B", false)
+	if err == nil {
+		t.Fatal("expected School B's caller to be rejected confirming School A's payment intent, got no error")
+	}
+	if err.Error() != "payment intent not found" {
+		t.Fatalf(`expected "payment intent not found", got: %v`, err)
+	}
+
+	var isFinalized bool
+	db.Table("payment_intents").Select("is_finalized").Where("id = ?", "pi-1").Scan(&isFinalized)
+	if isFinalized {
+		t.Fatal("payment intent was finalized by a cross-tenant request that should have been rejected")
+	}
+}
+
+func TestConfirmPaymentIntent_SameTenant_PassesOwnershipGate(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionServiceWithPayment(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.ConfirmPaymentIntent("pi-1", "school-A", false)
+	if err == nil {
+		t.Fatal("expected an error past the ownership gate (unsupported gateway), got nil")
+	}
+	if err.Error() == "payment intent not found" {
+		t.Fatal("same-tenant caller was incorrectly rejected by the ownership gate")
+	}
+	if err.Error() != "unsupported gateway: unregistered-test-gateway" {
+		t.Fatalf("expected the ownership gate to be passed and fail at gateway verification instead, got: %v", err)
+	}
+}
+
+func TestConfirmPaymentIntent_PlatformOwner_Bypasses(t *testing.T) {
+	db := setupSubscriptionTenantTestDB(t)
+	s := newTenantTestSubscriptionServiceWithPayment(db)
+	seedSubscriptionForSchool(t, db, "sub-1", "school-A")
+	seedPaymentIntentForSchool(t, db, "pi-1", "sub-1", "school-A")
+
+	err := s.ConfirmPaymentIntent("pi-1", "", true)
+	if err == nil || err.Error() == "payment intent not found" {
+		t.Fatalf("expected platform_owner to pass the ownership gate (and fail at gateway verification instead), got: %v", err)
 	}
 }
