@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,5 +191,66 @@ func TestCompleteOnboarding_PlatformOwnerBypassesOwnershipGate(t *testing.T) {
 	}
 	if err.Error() != "payment not initiated" {
 		t.Fatalf(`expected "payment not initiated" past the ownership gate, got: %v`, err)
+	}
+}
+
+// ---- GetSessionByEmail: must not leak the session's bearer credential ----
+//
+// GetSessionByEmail is the one onboarding-flow endpoint keyed on
+// something other than session_id - just an email address, which this
+// unauthenticated pre-signup flow neither verifies nor proves the
+// caller controls. Every other endpoint in the flow (ResendVerificationOTP,
+// ResendPaymentLink, CompleteOnboarding, RegisterSchool, CreateSubscription,
+// GetStatus, ...) accepts session_id alone as proof of "ownership" of
+// that in-progress signup. Before this fix, GetSessionByEmail handed
+// that session_id back to anyone who merely knew (or guessed) a
+// prospect's email, letting them recover it and then act on that
+// person's onboarding session - including pre-empting their admin
+// account creation with attacker-chosen credentials - via every one of
+// those other endpoints. It now reports only non-actionable status
+// info (no session_id).
+
+func TestGetSessionByEmail_DoesNotLeakSessionID(t *testing.T) {
+	s := newTestOnboardingServiceWithSessions()
+	err := s.sessionStore.Create(context.Background(), &OnboardingSession{
+		ID:        "sess-leak-check",
+		Email:     "prospect@example.com",
+		UserID:    "owner-user",
+		Status:    "payment_pending",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("failed to seed session by email: %v", err)
+	}
+
+	resp, err := s.GetSessionByEmail(context.Background(), "prospect@example.com")
+	if err != nil {
+		t.Fatalf("expected a successful lookup, got error: %v", err)
+	}
+	if resp.Email != "prospect@example.com" || resp.Status != "payment_pending" {
+		t.Fatalf("expected the session's own status info back, got: %+v", resp)
+	}
+
+	body, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("failed to marshal response: %v", err)
+	}
+	if strings.Contains(string(body), "session_id") {
+		t.Fatalf("response leaks a session_id field to an unverified caller: %s", body)
+	}
+	if strings.Contains(string(body), "sess-leak-check") {
+		t.Fatalf("response leaks the actual session_id value: %s", body)
+	}
+}
+
+func TestGetSessionByEmail_UnknownEmailReportsNotFound(t *testing.T) {
+	s := newTestOnboardingServiceWithSessions()
+
+	_, err := s.GetSessionByEmail(context.Background(), "nobody@example.com")
+	if err == nil {
+		t.Fatal("expected an error for an email with no session, got nil")
+	}
+	if err.Error() != "session not found" {
+		t.Fatalf(`expected "session not found", got: %v`, err)
 	}
 }

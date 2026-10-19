@@ -1155,7 +1155,6 @@ func (s *OnboardingService) GetSessionByEmail(ctx context.Context, email string)
 	}
 
 	return &dto.GetSessionByEmailResponse{
-		SessionID: session.ID,
 		Email:     session.Email,
 		Status:    session.Status,
 		ExpiresAt: session.ExpiresAt,

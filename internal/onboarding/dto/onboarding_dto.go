@@ -167,8 +167,21 @@ type OnboardingStatusResponse struct {
 // GET SESSION BY EMAIL
 // ============================================
 
+// GetSessionByEmailResponse deliberately omits the session's SessionID.
+// SessionID is the bearer credential every other onboarding-flow
+// endpoint (ResendVerificationOTP, ResendPaymentLink, CompleteOnboarding,
+// RegisterSchool, CreateSubscription, GetStatus, ...) accepts as its only
+// proof of "ownership" of that in-progress signup. GetSessionByEmail is
+// the one endpoint in this flow keyed on something other than that
+// secret - just an email address, which this flow neither authenticates
+// nor proves the caller controls - so returning SessionID here would let
+// anyone who merely knows (or guesses) a prospect's email recover their
+// session_id and then act on their onboarding session via every one of
+// those other endpoints, including pre-empting their admin-account
+// creation with attacker-chosen credentials. Status/ExpiresAt carry no
+// such capability and match the existing "email already registered"
+// style disclosure the flow already makes elsewhere.
 type GetSessionByEmailResponse struct {
-	SessionID string    `json:"session_id"`
 	Email     string    `json:"email"`
 	Status    string    `json:"status"`
 	ExpiresAt time.Time `json:"expires_at"`
