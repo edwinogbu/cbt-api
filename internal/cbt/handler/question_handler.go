@@ -1053,8 +1053,14 @@ func (h *QuestionHandler) GetJobStatus(c *gin.Context) {
 		return
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetJobStatus(ctx, id)
+	resp, err := h.questionService.GetJobStatus(ctx, id, userID.(string), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1164,7 +1170,10 @@ func (h *QuestionHandler) GenerateGroundedQuestions(c *gin.Context) {
 // @Security     BearerAuth
 // @Router       /academic/current [get]
 func (h *QuestionHandler) GetCurrentAcademicContext(c *gin.Context) {
-	schoolID := c.Query("school_id")
+	// school_id must never independently establish access: it is only
+	// honored as given for platform_owner; every other caller is forced
+	// to their own school_id regardless of what the query param says.
+	schoolID := middleware.ResolveSchoolID(c, c.Query("school_id"))
 	if schoolID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "school_id is required"})
 		return
@@ -1224,7 +1233,7 @@ func (h *QuestionHandler) GetQuestionsByTerm(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	questions, err := h.questionService.GetQuestionsByTerm(ctx, subjectID, termID)
+	questions, err := h.questionService.GetQuestionsByTerm(ctx, subjectID, termID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1273,7 +1282,7 @@ func (h *QuestionHandler) GetQuestionsBySession(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	questions, err := h.questionService.GetQuestionsBySession(ctx, subjectID, sessionID)
+	questions, err := h.questionService.GetQuestionsBySession(ctx, subjectID, sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1311,7 +1320,7 @@ func (h *QuestionHandler) GetQuestionsByClass(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	questions, err := h.questionService.GetQuestionsByClass(ctx, classID)
+	questions, err := h.questionService.GetQuestionsByClass(ctx, classID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1349,7 +1358,7 @@ func (h *QuestionHandler) GetQuestionContextSummary(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	summary, err := h.questionService.GetQuestionContextSummary(ctx, subjectID)
+	summary, err := h.questionService.GetQuestionContextSummary(ctx, subjectID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1388,13 +1397,18 @@ func (h *QuestionHandler) GetQuestionsWithContext(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subject_id"})
 		return
 	}
-	if err := h.validateUUID(req.SchoolID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid school_id"})
-		return
+	// school_id is resolved server-side below and may legitimately be
+	// absent for a non-platform-owner (it's forced to their own school
+	// regardless), so only validate its format when the client sent one.
+	if req.SchoolID != "" {
+		if err := h.validateUUID(req.SchoolID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid school_id"})
+			return
+		}
 	}
 
 	ctx := c.Request.Context()
-	resp, err := h.questionService.GetQuestionsWithContext(ctx, &req)
+	resp, err := h.questionService.GetQuestionsWithContext(ctx, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -1453,7 +1467,7 @@ func (h *QuestionHandler) GetQuestionsForExam(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	questions, err := h.questionService.GetQuestionsForExam(ctx, subjectID, termID, sessionID)
+	questions, err := h.questionService.GetQuestionsForExam(ctx, subjectID, termID, sessionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		h.handleError(c, err)
 		return

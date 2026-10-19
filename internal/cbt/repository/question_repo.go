@@ -372,30 +372,43 @@ func (r *QuestionRepository) FindByExternalID(ctx context.Context, schoolID, ses
 // CONTEXT-AWARE QUERY METHODS
 // ============================================
 
-func (r *QuestionRepository) FindByTerm(ctx context.Context, subjectID, termID string) ([]models.QuestionBank, error) {
+// FindByTerm is scoped to schoolID - a "" schoolID means unscoped
+// (platform_owner only; every other caller must pass its own school_id).
+// term_id/subject_id alone never scope this to one school: subject is a
+// global table shared by every school, and a valid term_id for one school
+// does not confirm the caller belongs to it.
+func (r *QuestionRepository) FindByTerm(ctx context.Context, subjectID, termID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("subject_id = ? AND term_id = ? AND deleted_at IS NULL", subjectID, termID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("subject_id = ? AND term_id = ? AND deleted_at IS NULL", subjectID, termID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
-func (r *QuestionRepository) FindBySession(ctx context.Context, subjectID, sessionID string) ([]models.QuestionBank, error) {
+// FindBySession is scoped to schoolID - see FindByTerm's doc comment.
+func (r *QuestionRepository) FindBySession(ctx context.Context, subjectID, sessionID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("subject_id = ? AND session_id = ? AND deleted_at IS NULL", subjectID, sessionID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("subject_id = ? AND session_id = ? AND deleted_at IS NULL", subjectID, sessionID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
-func (r *QuestionRepository) FindByClass(ctx context.Context, classID string) ([]models.QuestionBank, error) {
+// FindByClass is scoped to schoolID - see FindByTerm's doc comment.
+func (r *QuestionRepository) FindByClass(ctx context.Context, classID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("class_id = ? AND deleted_at IS NULL", classID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("class_id = ? AND deleted_at IS NULL", classID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
@@ -478,11 +491,15 @@ func (r *QuestionRepository) CountQuestionsByExamType(ctx context.Context, examT
 // SUMMARY & STATISTICS OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subjectID string) ([]QuestionTermSummary, error) {
+// GetQuestionContextSummary is scoped to schoolID - a "" schoolID means
+// unscoped (platform_owner only). Subject is a global table shared by
+// every school, so subjectID alone previously let any authenticated
+// caller see every school's term-by-term question counts for it.
+func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subjectID, schoolID string) ([]QuestionTermSummary, error) {
 	var results []QuestionTermSummary
 
 	query := `
-		SELECT 
+		SELECT
 			t.id as term_id,
 			t.name as term_name,
 			t.term_number,
@@ -495,13 +512,20 @@ func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subj
 		FROM question_bank q
 		JOIN terms t ON t.id = q.term_id
 		JOIN academic_sessions s ON s.id = q.session_id
-		WHERE q.subject_id = ? 
+		WHERE q.subject_id = ?
 			AND q.deleted_at IS NULL
+	`
+	args := []interface{}{subjectID}
+	if schoolID != "" {
+		query += " AND q.school_id = ?"
+		args = append(args, schoolID)
+	}
+	query += `
 		GROUP BY t.id, t.name, t.term_number, s.name
 		ORDER BY t.term_number ASC
 	`
 
-	err := r.db.WithContext(ctx).Raw(query, subjectID).Scan(&results).Error
+	err := r.db.WithContext(ctx).Raw(query, args...).Scan(&results).Error
 	return results, err
 }
 

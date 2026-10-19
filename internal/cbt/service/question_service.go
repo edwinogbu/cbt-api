@@ -1078,13 +1078,25 @@ func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto
 	}, nil
 }
 
-func (s *QuestionService) GetJobStatus(ctx context.Context, jobID string) (*dto.AIJobStatusResponse, error) {
+// GetJobStatus is scoped to the job's own creator - AIQuestionGenerationJob
+// has no school_id column at all (it predates the multi-tenant isolation
+// work), so the caller's own user_id is the only ownership check
+// available here. Before this fix, any authenticated caller could poll
+// ANY job's status/error message by guessing its UUID, with no check of
+// any kind - a cross-tenant IDOR, same shape as the question-bank ones
+// fixed earlier, just keyed on user rather than school. platform_owner
+// still bypasses it, matching every other ownership check in this file.
+func (s *QuestionService) GetJobStatus(ctx context.Context, jobID, userID string, isPlatformOwner bool) (*dto.AIJobStatusResponse, error) {
 	var job models.AIQuestionGenerationJob
 	if err := s.db.WithContext(ctx).First(&job, "id = ?", jobID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("job not found")
 		}
 		return nil, fmt.Errorf("failed to get job: %w", err)
+	}
+
+	if !isPlatformOwner && job.UserID != userID {
+		return nil, errors.New("job not found")
 	}
 
 	return &dto.AIJobStatusResponse{
@@ -1358,8 +1370,14 @@ func (s *QuestionService) GetCurrentAcademicContext(ctx context.Context, schoolI
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, termID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID)
+// GetQuestionsByTerm is scoped to schoolID - it previously called
+// FindByTerm with no school check at all, so any authenticated caller
+// could read any other school's questions for a term_id it doesn't own.
+func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, termID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1376,8 +1394,13 @@ func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, ter
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, sessionID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID)
+// GetQuestionsBySession is scoped to schoolID - same fix as
+// GetQuestionsByTerm.
+func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, sessionID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1394,8 +1417,13 @@ func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, 
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindByClass(ctx, classID)
+// GetQuestionsByClass is scoped to schoolID - same fix as
+// GetQuestionsByTerm.
+func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindByClass(ctx, classID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,13 +1440,22 @@ func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID strin
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subjectID string) (*dto.QuestionContextSummaryResponse, error) {
+// GetQuestionContextSummary is scoped to schoolID - subject is a global
+// table shared by every school, so subjectID alone previously let any
+// authenticated caller see every school's term-by-term question counts
+// (and the questions themselves, via the unscoped FindByTerm below) for
+// it.
+func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subjectID, schoolID string, isPlatformOwner bool) (*dto.QuestionContextSummaryResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	subject, err := s.subRepo.FindByID(subjectID)
 	if err != nil {
 		return nil, fmt.Errorf("subject not found: %w", err)
 	}
 
-	summaries, err := s.qRepo.GetQuestionContextSummary(ctx, subjectID)
+	summaries, err := s.qRepo.GetQuestionContextSummary(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1431,7 +1468,7 @@ func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subject
 	practiceCount := 0
 
 	for _, summary := range summaries {
-		questions, err := s.qRepo.FindByTerm(ctx, subjectID, summary.TermID)
+		questions, err := s.qRepo.FindByTerm(ctx, subjectID, summary.TermID, schoolID)
 		if err != nil {
 			continue
 		}
@@ -1480,7 +1517,17 @@ func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subject
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.FilterQuestionsWithContextRequest) (*dto.QuestionListWithContextResponse, error) {
+// GetQuestionsWithContext is scoped to schoolID - req.SchoolID previously
+// came straight from the client with no override, so any authenticated
+// caller could read another school's question bank just by naming its
+// school_id in the request body.
+func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.FilterQuestionsWithContextRequest, schoolID string, isPlatformOwner bool) (*dto.QuestionListWithContextResponse, error) {
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
+
 	params := map[string]interface{}{
 		"subject_id": req.SubjectID,
 		"school_id":  req.SchoolID,
@@ -1574,13 +1621,23 @@ func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsForExam(ctx context.Context, subjectID, termID, sessionID string) ([]dto.QuestionBankResponse, error) {
+// GetQuestionsForExam is scoped to schoolID - it previously queried with
+// no school filter at all, so any authenticated caller could pull another
+// school's questions for exam creation just by naming its term_id/
+// session_id.
+func (s *QuestionService) GetQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, schoolID string, isPlatformOwner bool) ([]dto.QuestionBankResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	var questions []models.QuestionBank
-	err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx).
 		Where("subject_id = ? AND term_id = ? AND session_id = ? AND deleted_at IS NULL",
-			subjectID, termID, sessionID).
-		Order("created_at DESC").
-		Find(&questions).Error
+			subjectID, termID, sessionID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	if err != nil {
 		return nil, err
 	}
@@ -2739,7 +2796,7 @@ func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, su
 		SchoolID:  session.SchoolID,
 	}
 
-	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID)
+	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID, session.SchoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -2778,7 +2835,7 @@ func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context,
 		SchoolID:  session.SchoolID,
 	}
 
-	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID)
+	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID, session.SchoolID)
 	if err != nil {
 		return nil, err
 	}
