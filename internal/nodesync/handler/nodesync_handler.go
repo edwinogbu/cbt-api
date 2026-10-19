@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	coreMiddleware "cbt-api/internal/middleware"
 	"cbt-api/internal/nodesync/dto"
 	"cbt-api/internal/nodesync/middleware"
 	"cbt-api/internal/nodesync/service"
@@ -95,6 +96,18 @@ func (h *NodeSyncHandler) CreateCredential(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// req.SchoolID must never independently establish which school this
+	// credential is minted for: before this check, any authenticated
+	// admin (any school) could name ANY OTHER school's ID here and walk
+	// away with a valid, indefinitely-lived node credential for it - full
+	// Push/Pull access (read every student/exam, write graded results)
+	// as that school via NodeAuthMiddleware, which trusts the credential
+	// alone. platform_owner is exempt, same as every other cross-tenant
+	// write in this codebase.
+	if !coreMiddleware.RequireOwnSchool(c, req.SchoolID) {
 		return
 	}
 

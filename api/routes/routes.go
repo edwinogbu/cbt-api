@@ -672,8 +672,16 @@ func setupNodeSyncRoutes(rg *gin.RouterGroup, handler *nodeSyncHandler.NodeSyncH
 		nodesync.GET("/pull", handler.Pull)
 	}
 
+	// LAN Setup Dashboard: issuing a School CBT Node credential - admin/
+	// super_admin for their own school, plus platform_owner for
+	// cross-tenant support (same gate as every other admin surface in
+	// this codebase). The tenant boundary itself is enforced inside
+	// NodeSyncHandler.CreateCredential (RequireOwnSchool against the
+	// named school_id), not just this role check - a credential names
+	// its own target school in the request body, so the role check alone
+	// was never enough.
 	adminNodes := rg.Group("/admin/school-nodes")
-	adminNodes.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	adminNodes.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		adminNodes.POST("/credentials", handler.CreateCredential)
 	}
