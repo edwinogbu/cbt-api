@@ -11,7 +11,7 @@ import (
 // TestGenerateAndValidateJWT_RoundTrip confirms the basic happy path: a
 // token this package issues validates and returns the same claims.
 func TestGenerateAndValidateJWT_RoundTrip(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestGenerateAndValidateJWT_RoundTrip(t *testing.T) {
 // TestValidateJWT_RejectsExpiredToken confirms expiry is actually
 // enforced, not just stored as a claim.
 func TestValidateJWT_RejectsExpiredToken(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", -time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", -time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestValidateJWT_RejectsNoneAlgorithm(t *testing.T) {
 // who can only read a token but not the server secret would have to try)
 // invalidates the signature.
 func TestValidateJWT_RejectsTamperedPayload(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestValidateJWT_RejectsTamperedPayload(t *testing.T) {
 	// Swap in the payload segment from a token that claims admin, built
 	// with a throwaway key - simulates an attacker splicing a
 	// higher-privilege payload onto a validly-signed token's header/sig.
-	adminPayloadToken, err := GenerateJWT("user-123", "user@example.com", "super_admin", time.Hour)
+	adminPayloadToken, err := GenerateJWT("user-123", "user@example.com", "super_admin", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}

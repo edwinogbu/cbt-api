@@ -37,6 +37,7 @@ func AuthMiddleware() gin.HandlerFunc {
         c.Set("user_id", claims["user_id"])
         c.Set("email", claims["email"])
         c.Set("role", claims["role"])
+        c.Set("school_id", claims["school_id"])
         c.Set("session_id", claims["session_id"])
         c.Next()
     }
@@ -120,6 +121,27 @@ func GetRole(c *gin.Context) string {
         return ""
     }
     return role.(string)
+}
+
+// GetSchoolID retrieves the authenticated user's school_id from the
+// verified JWT claim set by AuthMiddleware - never from a client-supplied
+// query param, header, or request body field. Returns "" for a user with
+// no school (e.g. a models.RolePlatformOwner token, or an unauthenticated
+// request where AuthMiddleware never ran).
+func GetSchoolID(c *gin.Context) string {
+    schoolID, _ := c.Get("school_id")
+    if schoolID == nil {
+        return ""
+    }
+    s, _ := schoolID.(string)
+    return s
+}
+
+// IsPlatformOwner reports whether the authenticated request's verified
+// role claim is platform_owner - the only role meant to act across every
+// tenant rather than being confined to GetSchoolID's value.
+func IsPlatformOwner(c *gin.Context) bool {
+    return GetRole(c) == "platform_owner"
 }
 
 // GetSessionID retrieves session ID from context

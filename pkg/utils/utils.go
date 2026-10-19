@@ -54,11 +54,17 @@ func GenerateUUID() string {
     return hex.EncodeToString(bytes)
 }
 
-func GenerateJWT(userID, email, role string, expiry time.Duration) (string, error) {
+// GenerateJWT embeds schoolID as a signed claim so every downstream
+// tenant check (middleware.GetSchoolID) reads a value the server itself
+// set at login/token-issuance time from the database - never a value a
+// client could supply via a request body, query param, or header. Pass
+// "" for a user with no school (e.g. models.RolePlatformOwner).
+func GenerateJWT(userID, email, role, schoolID string, expiry time.Duration) (string, error) {
     claims := jwt.MapClaims{
         "user_id":    userID,
         "email":      email,
         "role":       role,
+        "school_id":  schoolID,
         "session_id": GenerateUUID(),
         "exp":        time.Now().Add(expiry).Unix(),
         "iat":        time.Now().Unix(),

@@ -155,7 +155,7 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.LoginResponse, er
 		}
 	}
 
-	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role))
+	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role), schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,7 @@ func (s *AuthService) completeLoginWithRole(user *models.User, activeRole, clien
 	if user.Email != nil {
 		emailStr = *user.Email
 	}
-	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, activeRole)
+	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, activeRole, schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +401,7 @@ func (s *AuthService) RefreshToken(refreshToken string) (*dto.TokenResponse, err
 	if err != nil {
 		return nil, errors.New("user not found")
 	}
-	accessToken, newRefreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role))
+	accessToken, newRefreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role), schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -630,16 +630,26 @@ func (s *AuthService) DeleteAccount(userID string) error {
 	return s.repo.SoftDeleteUser(userID)
 }
 
-func (s *AuthService) generateTokens(userID, identifier, role string) (string, string, error) {
-	accessToken, err := utils.GenerateJWT(userID, identifier, role, 24*time.Hour)
+func (s *AuthService) generateTokens(userID, identifier, role, schoolID string) (string, string, error) {
+	accessToken, err := utils.GenerateJWT(userID, identifier, role, schoolID, 24*time.Hour)
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err := utils.GenerateJWT(userID, identifier, role, 7*24*time.Hour)
+	refreshToken, err := utils.GenerateJWT(userID, identifier, role, schoolID, 7*24*time.Hour)
 	if err != nil {
 		return "", "", err
 	}
 	return accessToken, refreshToken, nil
+}
+
+// schoolIDClaim converts a user's possibly-nil SchoolID into the plain
+// string GenerateJWT signs as the "school_id" claim ("" means no school -
+// e.g. models.RolePlatformOwner).
+func schoolIDClaim(user *models.User) string {
+	if user == nil || user.SchoolID == nil {
+		return ""
+	}
+	return *user.SchoolID
 }
 
 func (s *AuthService) sendOTPEmail(emailAddr, code, otpType string) {

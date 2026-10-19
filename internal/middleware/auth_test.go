@@ -33,7 +33,7 @@ func newPlatformOwnerTestServer(t *testing.T) *httptest.Server {
 
 func tokenFor(t *testing.T, role string) string {
 	t.Helper()
-	token, err := utils.GenerateJWT("user-"+role, role+"@example.com", role, time.Hour)
+	token, err := utils.GenerateJWT("user-"+role, role+"@example.com", role, "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT(%s) failed: %v", role, err)
 	}
@@ -110,7 +110,7 @@ func TestPlatformOwnerOnly_RejectsUnauthenticated(t *testing.T) {
 	})
 
 	t.Run("expired_token", func(t *testing.T) {
-		expired, err := utils.GenerateJWT("user-platform_owner", "owner@example.com", "platform_owner", -time.Hour)
+		expired, err := utils.GenerateJWT("user-platform_owner", "owner@example.com", "platform_owner", "", -time.Hour)
 		if err != nil {
 			t.Fatalf("GenerateJWT failed: %v", err)
 		}

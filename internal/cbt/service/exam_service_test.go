@@ -30,8 +30,12 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 	ddl := []string{
 		`CREATE TABLE exams (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-			title TEXT, class_id TEXT,
+			title TEXT, subject_id TEXT, class_id TEXT, session_id TEXT, term_id TEXT,
+			exam_type TEXT DEFAULT 'main_exam', status TEXT DEFAULT 'draft',
 			duration_minutes INTEGER NOT NULL, total_marks INTEGER NOT NULL, pass_mark INTEGER,
+			instructions TEXT, start_time DATETIME, end_time DATETIME,
+			shuffle_questions INTEGER DEFAULT 0, shuffle_options INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+			review_policy TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE users (
@@ -39,7 +43,7 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			first_name TEXT, last_name TEXT, role TEXT DEFAULT 'student', deleted_at DATETIME
 		)`,
 		`CREATE TABLE classes (
-			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), teacher_id TEXT, deleted_at DATETIME
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), school_id TEXT, teacher_id TEXT, deleted_at DATETIME
 		)`,
 		`CREATE TABLE students (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT
@@ -789,5 +793,140 @@ func TestSubmitExam_MixedObjectiveAndEssay_ScoresBothCorrectly(t *testing.T) {
 	}
 	if markResp.AttemptStatus != string(models.AttemptStatusCompleted) {
 		t.Fatalf("expected completed once the only essay question is marked, got %q", markResp.AttemptStatus)
+	}
+}
+
+// ---- Phase 2: cross-tenant exam isolation ----
+//
+// Exam carries no school_id of its own - it is scoped to a school only
+// transitively through its ClassID (classes.school_id). Before this fix,
+// GetExam/UpdateExam/DeleteExam/PublishExam took only an exam ID with no
+// ownership check at all, so any authenticated user who knew (or
+// enumerated) another school's exam ID could read, modify, delete, or
+// publish it. These tests seed two schools' classes/exams and confirm the
+// cross-tenant case is rejected while the same-tenant case still works,
+// and that an authenticated platform_owner (isPlatformOwner=true) is
+// deliberately exempt.
+
+func seedExamClass(t *testing.T, db *gorm.DB, schoolID string) (classID string) {
+	t.Helper()
+	classID = uuid.NewString()
+	if err := db.Exec("INSERT INTO classes (id, school_id) VALUES (?, ?)", classID, schoolID).Error; err != nil {
+		t.Fatalf("failed to seed class: %v", err)
+	}
+	return classID
+}
+
+func seedExamForClass(t *testing.T, db *gorm.DB, classID string) (examID string) {
+	t.Helper()
+	examID = uuid.NewString()
+	if err := db.Exec(
+		"INSERT INTO exams (id, class_id, title, duration_minutes, total_marks, pass_mark, status, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		examID, classID, "Mid-Term", 30, 10, 5, "draft", 1, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to seed exam: %v", err)
+	}
+	return examID
+}
+
+func TestGetExam_CrossTenant_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+
+	if _, err := svc.GetExam(context.Background(), examA, "school-B", false); err == nil {
+		t.Fatal("expected School B's token to be rejected reading School A's exam, got no error")
+	}
+
+	// Same-tenant access must still work - the fix must not be overly
+	// aggressive.
+	resp, err := svc.GetExam(context.Background(), examA, "school-A", false)
+	if err != nil {
+		t.Fatalf("expected School A to read its own exam, got error: %v", err)
+	}
+	if resp.ID != examA {
+		t.Fatalf("expected exam %s, got %s", examA, resp.ID)
+	}
+}
+
+func TestGetExam_PlatformOwner_BypassesTenantCheck(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+
+	// Platform owner carries no school_id of its own (see
+	// models.RolePlatformOwner) and must still be able to reach any
+	// tenant's exam - this is the one role deliberately not confined by
+	// authorizeExamTenant.
+	if _, err := svc.GetExam(context.Background(), examA, "", true); err != nil {
+		t.Fatalf("expected platform_owner to read any school's exam, got error: %v", err)
+	}
+}
+
+func TestGetExam_EmptySchoolID_NonPlatformOwner_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+
+	// A non-platform-owner caller with no school_id (e.g. a legacy account
+	// seeded with none) must NOT be treated as "unscoped" - "" must not
+	// coincidentally match a real exam's school.
+	if _, err := svc.GetExam(context.Background(), examA, "", false); err == nil {
+		t.Fatal("expected an empty school_id on a non-platform-owner caller to be rejected, got no error")
+	}
+}
+
+func TestUpdateExam_CrossTenant_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+	newTitle := "Hijacked Title"
+
+	if _, err := svc.UpdateExam(context.Background(), examA, &dto.UpdateExamRequest{Title: &newTitle}, "school-B", false); err == nil {
+		t.Fatal("expected School B's token to be rejected updating School A's exam, got no error")
+	}
+
+	var title string
+	db.Table("exams").Select("title").Where("id = ?", examA).Scan(&title)
+	if title == newTitle {
+		t.Fatal("exam title was changed by a cross-tenant update that should have been rejected")
+	}
+}
+
+func TestDeleteExam_CrossTenant_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+
+	if err := svc.DeleteExam(context.Background(), examA, "school-B", false); err == nil {
+		t.Fatal("expected School B's token to be rejected deleting School A's exam, got no error")
+	}
+
+	var count int64
+	db.Table("exams").Where("id = ? AND deleted_at IS NULL", examA).Count(&count)
+	if count != 1 {
+		t.Fatal("exam was deleted by a cross-tenant delete that should have been rejected")
+	}
+}
+
+func TestPublishExam_CrossTenant_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	classA := seedExamClass(t, db, "school-A")
+	examA := seedExamForClass(t, db, classA)
+
+	if err := svc.PublishExam(context.Background(), examA, "school-B", false); err == nil {
+		t.Fatal("expected School B's token to be rejected publishing School A's exam, got no error")
+	}
+
+	var status string
+	db.Table("exams").Select("status").Where("id = ?", examA).Scan(&status)
+	if status == string(models.ExamStatusPublished) {
+		t.Fatal("exam was published by a cross-tenant publish that should have been rejected")
 	}
 }

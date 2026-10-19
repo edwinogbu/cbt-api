@@ -126,6 +126,26 @@ func (r *ExamRepository) FindExamByIDWithContext(ctx context.Context, id string)
 	return &exam, nil
 }
 
+// ExamBelongsToSchool reports whether the exam identified by examID
+// ultimately belongs to schoolID. Exam itself carries no school_id - it
+// is scoped to a school transitively through its ClassID (classes.school_id
+// is non-nullable, see models.Class) - so this is a JOIN, not a direct
+// column check. This is the server-side ownership check that every
+// single-exam read/write (GetExam, UpdateExam, DeleteExam, PublishExam,
+// ...) must pass before touching the record; see ExamService's callers.
+func (r *ExamRepository) ExamBelongsToSchool(ctx context.Context, examID, schoolID string) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Table("exams").
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.id = ? AND exams.deleted_at IS NULL AND classes.school_id = ?", examID, schoolID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // UpdateExam updates an existing exam
 func (r *ExamRepository) UpdateExam(exam *models.Exam) error {
 	return r.db.Save(exam).Error

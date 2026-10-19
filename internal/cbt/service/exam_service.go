@@ -872,8 +872,41 @@ func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest
 	return s.toExamResponse(ctx, exam)
 }
 
-// GetExam gets an exam by ID
-func (s *ExamService) GetExam(ctx context.Context, id string) (*dto.ExamResponse, error) {
+// authorizeExamTenant is the server-side tenant boundary for every
+// single-exam operation reachable by ID from a handler (GetExam,
+// UpdateExam, DeleteExam, PublishExam): it refuses access unless the
+// exam's class belongs to schoolID, EXCEPT for an authenticated
+// platform_owner, who is deliberately not confined to one tenant. Returns
+// a generic "exam not found" on any mismatch - never a distinct
+// "forbidden" - so a user cannot use this to probe whether an exam ID
+// exists in another school.
+//
+// schoolID comes only from middleware.GetSchoolID(c) (the verified JWT
+// claim); isPlatformOwner only from middleware.IsPlatformOwner(c). An
+// empty schoolID on a non-platform-owner caller (e.g. a legacy account
+// seeded with no school) is NOT treated as "unscoped" - it simply never
+// matches any real exam's school and is correctly denied.
+func (s *ExamService) authorizeExamTenant(ctx context.Context, examID, schoolID string, isPlatformOwner bool) error {
+	if isPlatformOwner {
+		return nil
+	}
+	ok, err := s.examRepo.ExamBelongsToSchool(ctx, examID, schoolID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("exam not found")
+	}
+	return nil
+}
+
+// GetExam gets an exam by ID, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) GetExam(ctx context.Context, id, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, id)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -1014,8 +1047,13 @@ func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page
 	}, nil
 }
 
-// UpdateExam updates an exam
-func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.UpdateExamRequest) (*dto.ExamResponse, error) {
+// UpdateExam updates an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.UpdateExamRequest, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, id)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -1077,8 +1115,12 @@ func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.Update
 	return s.toExamResponse(ctx, exam)
 }
 
-// DeleteExam deletes an exam
-func (s *ExamService) DeleteExam(ctx context.Context, id string) error {
+// DeleteExam deletes an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) DeleteExam(ctx context.Context, id, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	return s.examRepo.DeleteExamWithContext(ctx, id)
 }
 
@@ -3576,7 +3618,13 @@ func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID,
 }
 
 // PublishExam publishes an exam
-func (s *ExamService) PublishExam(ctx context.Context, examID string) error {
+// PublishExam publishes an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) PublishExam(ctx context.Context, examID, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return errors.New("exam not found")

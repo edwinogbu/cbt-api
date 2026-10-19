@@ -105,7 +105,7 @@ func (h *ExamHandler) GetExam(c *gin.Context) {
 		return
 	}
 
-	exam, err := h.examService.GetExam(c.Request.Context(), id)
+	exam, err := h.examService.GetExam(c.Request.Context(), id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -323,7 +323,7 @@ func (h *ExamHandler) UpdateExam(c *gin.Context) {
 		return
 	}
 
-	exam, err := h.examService.UpdateExam(c.Request.Context(), id, &req)
+	exam, err := h.examService.UpdateExam(c.Request.Context(), id, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -352,7 +352,7 @@ func (h *ExamHandler) DeleteExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.DeleteExam(c.Request.Context(), id); err != nil {
+	if err := h.examService.DeleteExam(c.Request.Context(), id, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -2150,7 +2150,7 @@ func (h *ExamHandler) PublishExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.PublishExam(c.Request.Context(), examID); err != nil {
+	if err := h.examService.PublishExam(c.Request.Context(), examID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
