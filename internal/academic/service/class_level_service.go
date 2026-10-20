@@ -192,14 +192,6 @@ func (s *ClassLevelService) List(req *dto.ListClassLevelsRequest) (*dto.SearchCl
     }, nil
 }
 
-// NEW: Bulk delete
-func (s *ClassLevelService) BulkDelete(ids []string) (int64, error) {
-    if len(ids) == 0 {
-        return 0, errors.New("no IDs provided")
-    }
-    return s.repo.BulkDelete(ids)
-}
-
 // NEW: Get stats
 func (s *ClassLevelService) GetStats(schoolID string) (*dto.ClassLevelStatsResponse, error) {
     stats, err := s.repo.GetStats(schoolID)
