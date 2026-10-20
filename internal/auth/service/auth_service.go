@@ -166,8 +166,8 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.LoginResponse, er
 	if req.Email != "" {
 		go s.SendVerificationOTP(req.Email, "email_verification")
 	}
-	if role == models.RoleParent && s.parentService != nil && req.AdmissionNumber != "" {
-		if err := s.parentService.AutoLinkParentOnRegister(user.ID, req.AdmissionNumber); err != nil {
+	if role == models.RoleParent && s.parentService != nil && req.AdmissionNumber != "" && schoolID != nil {
+		if err := s.parentService.AutoLinkParentOnRegister(user.ID, req.AdmissionNumber, *schoolID); err != nil {
 			s.logger.Error("parent auto‑link failed", zap.String("parent_id", user.ID), zap.Error(err))
 		}
 	}
