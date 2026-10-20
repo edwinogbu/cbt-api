@@ -422,7 +422,7 @@ func (h *ExamHandler) AddQuestionsToExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.AddQuestionsToExam(c.Request.Context(), examID, req.QuestionIDs); err != nil {
+	if err := h.examService.AddQuestionsToExam(c.Request.Context(), examID, req.QuestionIDs, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -458,7 +458,7 @@ func (h *ExamHandler) BulkAddQuestionsToExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.BulkAddQuestionsToExam(c.Request.Context(), examID, &req); err != nil {
+	if err := h.examService.BulkAddQuestionsToExam(c.Request.Context(), examID, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -488,7 +488,7 @@ func (h *ExamHandler) RemoveQuestionFromExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.RemoveQuestionFromExam(c.Request.Context(), examID, questionID); err != nil {
+	if err := h.examService.RemoveQuestionFromExam(c.Request.Context(), examID, questionID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -515,7 +515,7 @@ func (h *ExamHandler) PreviewExam(c *gin.Context) {
 		return
 	}
 
-	preview, err := h.examService.PreviewExam(c.Request.Context(), examID)
+	preview, err := h.examService.PreviewExam(c.Request.Context(), examID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -556,7 +556,7 @@ func (h *ExamHandler) AssignExam(c *gin.Context) {
 		return
 	}
 
-	if err := h.examService.AssignExam(c.Request.Context(), examID, &req); err != nil {
+	if err := h.examService.AssignExam(c.Request.Context(), examID, &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1601,7 +1601,7 @@ func (h *ExamHandler) GetClassResults(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	results, err := h.examService.GetClassResults(c.Request.Context(), examID, classID, page, limit)
+	results, err := h.examService.GetClassResults(c.Request.Context(), examID, classID, page, limit, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1632,7 +1632,7 @@ func (h *ExamHandler) GetExamRankings(c *gin.Context) {
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 
-	rankings, err := h.examService.GetExamRankings(c.Request.Context(), examID, limit)
+	rankings, err := h.examService.GetExamRankings(c.Request.Context(), examID, limit, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1660,7 +1660,7 @@ func (h *ExamHandler) GetExamStatistics(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.examService.GetExamStatistics(c.Request.Context(), examID)
+	stats, err := h.examService.GetExamStatistics(c.Request.Context(), examID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -1702,7 +1702,7 @@ func (h *ExamHandler) ExportExamResults(c *gin.Context) {
 		format = "csv"
 	}
 
-	data, contentType, err := h.examService.ExportExamResults(c.Request.Context(), examID, classID, format)
+	data, contentType, err := h.examService.ExportExamResults(c.Request.Context(), examID, classID, format, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1935,7 +1935,7 @@ func (h *ExamHandler) GetExamAssignments(c *gin.Context) {
         return
     }
 
-    assignments, err := h.examService.GetExamAssignments(c.Request.Context(), examID)
+    assignments, err := h.examService.GetExamAssignments(c.Request.Context(), examID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
         return
@@ -1974,7 +1974,7 @@ func (h *ExamHandler) ExportResults(c *gin.Context) {
 
 	format := c.DefaultQuery("format", "csv")
 
-	data, contentType, err := h.examService.ExportExamResults(c.Request.Context(), examID, classID, format)
+	data, contentType, err := h.examService.ExportExamResults(c.Request.Context(), examID, classID, format, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

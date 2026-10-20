@@ -210,7 +210,13 @@ func (s *ExamService) toExamWithContextResponse(ctx context.Context, exam *model
 // BulkAddQuestionsToExam - PRODUCTION READY
 // ============================================
 
-func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string, req *dto.BulkAddQuestionsToExamRequest) error {
+// BulkAddQuestionsToExam has the same pre-existing gap as
+// AddQuestionsToExam - see its doc comment - and the same fix.
+func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string, req *dto.BulkAddQuestionsToExamRequest, schoolID string, isPlatformOwner bool) error {
+    if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+        return err
+    }
+
     // 1. Get the exam with full context
     exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
     if err != nil {
@@ -345,7 +351,16 @@ func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string,
 
 
 // PreviewExam previews an exam with all questions and statistics
-func (s *ExamService) PreviewExam(ctx context.Context, examID string) (*dto.ExamPreviewResponse, error) {
+// PreviewExam previews an exam with its full question text and options,
+// scoped to the caller's own school (see authorizeExamTenant). Before
+// this fix it had no school check at all, and the route backing it has
+// no role gate beyond AuthMiddleware - any authenticated user, any
+// role, any school, could read the full question content of any exam
+// on the entire platform ahead of it being taken.
+func (s *ExamService) PreviewExam(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (*dto.ExamPreviewResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, questions, err := s.examRepo.FindExamWithQuestionsWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -1142,7 +1157,18 @@ func (s *ExamService) DeleteExam(ctx context.Context, id, schoolID string, isPla
 // 	return s.examRepo.AddQuestionsToExam(ctx, examID, questionIDs)
 // }
 
-func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, questionIDs []string) error {
+// AddQuestionsToExam adds questions to an exam, scoped to the caller's
+// own school (see authorizeExamTenant). Before this fix it took no
+// school parameter at all - any authenticated caller who knew (or
+// guessed) another school's exam ID could mutate it, provided they also
+// knew a question ID belonging to that exam's own class
+// (ValidateQuestionsForExam already rejects a question from any other
+// class/school).
+func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, questionIDs []string, schoolID string, isPlatformOwner bool) error {
+    if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+        return err
+    }
+
     // Get exam with full context
     exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
     if err != nil {
@@ -1182,13 +1208,27 @@ func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, que
     })
 }
 
-// RemoveQuestionFromExam removes a question from an exam
-func (s *ExamService) RemoveQuestionFromExam(ctx context.Context, examID, questionID string) error {
+// RemoveQuestionFromExam removes a question from an exam, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no check of any kind - not even a class/school match on the question
+// itself - so any authenticated caller who knew (or guessed) another
+// school's exam ID and a question ID attached to it could remove it,
+// pure sabotage with no data leak needed to pull off.
+func (s *ExamService) RemoveQuestionFromExam(ctx context.Context, examID, questionID string, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	return s.examRepo.RemoveQuestionFromExamWithContext(ctx, examID, questionID)
 }
 
-// AssignExam assigns an exam to students or a class
-func (s *ExamService) AssignExam(ctx context.Context, examID string, req *dto.AssignExamRequest) error {
+// AssignExam assigns an exam to students or a class, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no school check at all - any authenticated caller could assign
+// another school's exam to arbitrary class/student IDs.
+func (s *ExamService) AssignExam(ctx context.Context, examID string, req *dto.AssignExamRequest, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	_, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return errors.New("exam not found")
@@ -2730,7 +2770,14 @@ func (s *ExamService) GetStudentExamResult(ctx context.Context, studentID, examI
 }
 
 // GetClassResults gets class results for an exam
-func (s *ExamService) GetClassResults(ctx context.Context, examID, classID string, page, limit int) (*dto.ClassResultResponse, error) {
+// GetClassResults reads a class's results for an exam, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no school check at all - a real student-privacy leak (names, scores,
+// pass/fail) across tenants, not just metadata.
+func (s *ExamService) GetClassResults(ctx context.Context, examID, classID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ClassResultResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -2799,7 +2846,12 @@ func (s *ExamService) GetClassResults(ctx context.Context, examID, classID strin
 }
 
 // GetExamRankings gets exam rankings
-func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit int) (*dto.ExamRankingResponse, error) {
+// GetExamRankings has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamRankingResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -2839,7 +2891,12 @@ func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit 
 }
 
 // GetExamStatistics gets exam statistics
-func (s *ExamService) GetExamStatistics(ctx context.Context, examID string) (*dto.ExamStatisticsResponse, error) {
+// GetExamStatistics has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamStatistics(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (*dto.ExamStatisticsResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	stats, err := s.examRepo.GetExamStatistics(ctx, examID)
 	if err != nil {
 		return nil, err
@@ -3298,7 +3355,12 @@ func (s *ExamService) getClassByID(ctx context.Context, id string) (*models.Clas
 }
 
 // ExportExamResults exports exam results to CSV or Excel
-func (s *ExamService) ExportExamResults(ctx context.Context, examID, classID, format string) ([]byte, string, error) {
+// ExportExamResults has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) ExportExamResults(ctx context.Context, examID, classID, format string, schoolID string, isPlatformOwner bool) ([]byte, string, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, "", err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, "", errors.New("exam not found")
@@ -3384,7 +3446,12 @@ func (s *ExamService) exportToExcel(attempts []models.ExamAttempt, exam *models.
 // ============================================
 
 // GetExamAssignments gets assignments for an exam
-func (s *ExamService) GetExamAssignments(ctx context.Context, examID string) (interface{}, error) {
+// GetExamAssignments has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamAssignments(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	assignments, err := s.examRepo.FindAssignmentsByExamWithContext(ctx, examID)
 	if err != nil {
 		return nil, err
