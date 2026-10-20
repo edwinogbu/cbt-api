@@ -295,15 +295,6 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 	exams := rg.Group("/exams")
 	exams.Use(middleware.AuthMiddleware())
 	{
-		exams.POST("/create", handler.CreateExam)
-		exams.GET("/:id", handler.GetExam)
-		exams.GET("/list", handler.ListExams)
-		exams.PUT("/:id", handler.UpdateExam)
-		exams.DELETE("/:id", handler.DeleteExam)
-		exams.POST("/:id/questions", handler.AddQuestionsToExam)
-		exams.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
-		exams.POST("/:id/assign", handler.AssignExam)
-		exams.GET("/:id/assignments", handler.GetExamAssignments)
 		// These four handlers (StartExam/SaveAnswer/BulkSaveAnswers/SubmitExam)
 		// call middleware.GetStudentID(c), which reads the "student_id" key
 		// set by StudentContextMiddleware - every other route in this group
@@ -322,22 +313,51 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		exams.POST("/save-answer", middleware.StudentContextMiddleware(studentRepo), handler.SaveAnswer)
 		exams.POST("/bulk-answer", middleware.StudentContextMiddleware(studentRepo), handler.BulkSaveAnswers)
 		exams.POST("/submit", middleware.StudentContextMiddleware(studentRepo), handler.SubmitExam)
-		exams.GET("/:id/results/class", handler.GetClassResults)
-		exams.GET("/:id/results/export", handler.ExportResults)
-		exams.GET("/:id/results/rankings", handler.GetExamRankings)
-		exams.GET("/:id/statistics", handler.GetExamStatistics)
-		exams.GET("/students/:studentId/performance", handler.GetStudentPerformance)
+		// These two ignore their :studentId path param entirely and
+		// resolve the real student from middleware.GetUserID(c) instead
+		// (self-service only), so they're safe under plain AuthMiddleware.
 		exams.GET("/students/:studentId/exams/:examId/result", handler.GetStudentExamResult)
 		exams.GET("/practice/:studentId/:subjectId", handler.StartPractice)
-		exams.GET("/teacher/subjects/:subjectId/results", handler.GetTeacherSubjectResults)
-		exams.GET("/teacher/classes/:classId/results", handler.GetTeacherClassResults)
-		exams.GET("/teacher/performance/dashboard", handler.GetTeacherDashboard)
-		exams.GET("/school/performance/overview", handler.GetSchoolPerformanceOverview)
-		exams.POST("/create-with-context", handler.CreateExamWithContext)
-		exams.GET("/subject-questions", handler.GetSubjectQuestionsForExam)
-		exams.POST("/:id/bulk-questions", handler.BulkAddQuestionsToExam)
-		exams.GET("/:id/preview", handler.PreviewExam)
-		exams.POST("/:id/publish", handler.PublishExam)
+
+		// Everything below is a teacher/admin/super_admin surface, plus
+		// platform_owner for cross-tenant oversight (same gate as the
+		// question-bank and academic route groups): students/parents have
+		// no legitimate call into exam creation, grading-adjacent data,
+		// or cross-student/class reporting. Before this fix this entire
+		// group (23+ routes) had ONLY AuthMiddleware - any authenticated
+		// role, students included, could call CreateExam, DeleteExam,
+		// PublishExam, GetClassResults, ExportResults, etc. for any exam
+		// in their own school. Each handler below still resolves its own
+		// school scope from the verified JWT (authorizeExamTenant/
+		// authorizeClassTenant), so this role gate is a second,
+		// independent layer, not the only one.
+		examsStaff := exams.Group("")
+		examsStaff.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			examsStaff.POST("/create", handler.CreateExam)
+			examsStaff.GET("/:id", handler.GetExam)
+			examsStaff.GET("/list", handler.ListExams)
+			examsStaff.PUT("/:id", handler.UpdateExam)
+			examsStaff.DELETE("/:id", handler.DeleteExam)
+			examsStaff.POST("/:id/questions", handler.AddQuestionsToExam)
+			examsStaff.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
+			examsStaff.POST("/:id/assign", handler.AssignExam)
+			examsStaff.GET("/:id/assignments", handler.GetExamAssignments)
+			examsStaff.GET("/:id/results/class", handler.GetClassResults)
+			examsStaff.GET("/:id/results/export", handler.ExportResults)
+			examsStaff.GET("/:id/results/rankings", handler.GetExamRankings)
+			examsStaff.GET("/:id/statistics", handler.GetExamStatistics)
+			examsStaff.GET("/students/:studentId/performance", handler.GetStudentPerformance)
+			examsStaff.GET("/teacher/subjects/:subjectId/results", handler.GetTeacherSubjectResults)
+			examsStaff.GET("/teacher/classes/:classId/results", handler.GetTeacherClassResults)
+			examsStaff.GET("/teacher/performance/dashboard", handler.GetTeacherDashboard)
+			examsStaff.GET("/school/performance/overview", handler.GetSchoolPerformanceOverview)
+			examsStaff.POST("/create-with-context", handler.CreateExamWithContext)
+			examsStaff.GET("/subject-questions", handler.GetSubjectQuestionsForExam)
+			examsStaff.POST("/:id/bulk-questions", handler.BulkAddQuestionsToExam)
+			examsStaff.GET("/:id/preview", handler.PreviewExam)
+			examsStaff.POST("/:id/publish", handler.PublishExam)
+		}
 
 		// Manual/essay marking - teacher/admin/super_admin, plus
 		// platform_owner for cross-tenant support (same role gate as the

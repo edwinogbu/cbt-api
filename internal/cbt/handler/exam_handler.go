@@ -45,9 +45,9 @@ func (h *ExamHandler) CreateExam(c *gin.Context) {
 		return
 	}
 
-	exam, err := h.examService.CreateExam(c.Request.Context(), &req)
+	exam, err := h.examService.CreateExam(c.Request.Context(), &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -76,9 +76,9 @@ func (h *ExamHandler) CreateExamWithContext(c *gin.Context) {
 		return
 	}
 
-	exam, err := h.examService.CreateExamWithContext(c.Request.Context(), &req)
+	exam, err := h.examService.CreateExamWithContext(c.Request.Context(), &req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -2009,7 +2009,7 @@ func (h *ExamHandler) GetStudentPerformance(c *gin.Context) {
 		return
 	}
 
-	performance, err := h.examService.GetStudentPerformance(c.Request.Context(), studentID)
+	performance, err := h.examService.GetStudentPerformance(c.Request.Context(), studentID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return

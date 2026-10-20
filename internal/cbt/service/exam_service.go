@@ -48,7 +48,15 @@ func NewExamService(examRepo *repository.ExamRepository, questionRepo *repositor
 // ============================================
 
 // CreateExamWithContext creates an exam with full academic context
-func (s *ExamService) CreateExamWithContext(ctx context.Context, req *dto.CreateExamWithContextRequest) (*dto.ExamWithContextResponse, error) {
+// CreateExamWithContext creates an exam under req.ClassID, which must
+// belong to the caller's own school (see authorizeClassTenant) - without
+// this check, any caller able to reach this endpoint could create an
+// exam under ANY school's class platform-wide, injecting content into a
+// tenant they have no relationship with.
+func (s *ExamService) CreateExamWithContext(ctx context.Context, req *dto.CreateExamWithContextRequest, schoolID string, isPlatformOwner bool) (*dto.ExamWithContextResponse, error) {
+	if err := s.authorizeClassTenant(ctx, req.ClassID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam := &models.Exam{
 		ID:               models.GenerateID(),
 		Title:            req.Title,
@@ -860,7 +868,12 @@ func (s *ExamService) GetTermlyReportCard(ctx context.Context, studentID, termID
 // ============================================
 
 // CreateExam creates a new exam
-func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest) (*dto.ExamResponse, error) {
+// CreateExam creates an exam under req.ClassID, which must belong to
+// the caller's own school - see CreateExamWithContext's doc comment.
+func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeClassTenant(ctx, req.ClassID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam := &models.Exam{
 		ID:               models.GenerateID(),
 		Title:            req.Title,
@@ -3493,10 +3506,18 @@ func (s *ExamService) GetExamAssignments(ctx context.Context, examID string, sch
 	return assignments, nil
 }
 
-// GetStudentPerformance gets student performance overview
-func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID string) (*dto.StudentPerformanceResponse, error) {
+// GetStudentPerformance gets student performance overview, scoped to
+// the caller's own school. Before this fix, studentID (taken straight
+// from the URL path - see the handler) had no check against the
+// caller's identity or school at all: any authenticated caller, from
+// any school, could pull any student's full exam performance history
+// platform-wide just by supplying their ID.
+func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID, schoolID string, isPlatformOwner bool) (*dto.StudentPerformanceResponse, error) {
 	student, err := s.examRepo.GetStudentByID(ctx, studentID)
 	if err != nil {
+		return nil, errors.New("student not found")
+	}
+	if !isPlatformOwner && student.SchoolID != schoolID {
 		return nil, errors.New("student not found")
 	}
 
