@@ -158,7 +158,13 @@ func (h *ExamHandler) ListExams(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	exams, err := h.examService.ListExams(c.Request.Context(), page, limit)
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ExamListResponse{Page: page, Limit: limit}})
+		return
+	}
+
+	exams, err := h.examService.ListExams(c.Request.Context(), page, limit, schoolID, middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -190,7 +196,13 @@ func (h *ExamHandler) ListExamsBySubject(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	exams, err := h.examService.ListExamsBySubject(c.Request.Context(), subjectID, page, limit)
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ExamListResponse{Page: page, Limit: limit}})
+		return
+	}
+
+	exams, err := h.examService.ListExamsBySubject(c.Request.Context(), subjectID, page, limit, schoolID, middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -222,7 +234,13 @@ func (h *ExamHandler) ListExamsByTerm(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	exams, err := h.examService.ListExamsByTerm(c.Request.Context(), termID, page, limit)
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ExamListResponse{Page: page, Limit: limit}})
+		return
+	}
+
+	exams, err := h.examService.ListExamsByTerm(c.Request.Context(), termID, page, limit, schoolID, middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -254,7 +272,13 @@ func (h *ExamHandler) ListExamsBySession(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	exams, err := h.examService.ListExamsBySession(c.Request.Context(), sessionID, page, limit)
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ExamListResponse{Page: page, Limit: limit}})
+		return
+	}
+
+	exams, err := h.examService.ListExamsBySession(c.Request.Context(), sessionID, page, limit, schoolID, middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -286,7 +310,13 @@ func (h *ExamHandler) ListExamsByClass(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	exams, err := h.examService.ListExamsByClass(c.Request.Context(), classID, page, limit)
+	schoolID, ok := middleware.ResolveSchoolIDOrNoResults(c, c.Query("school_id"))
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "success", "data": &dto.ExamListResponse{Page: page, Limit: limit}})
+		return
+	}
+
+	exams, err := h.examService.ListExamsByClass(c.Request.Context(), classID, page, limit, schoolID, middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

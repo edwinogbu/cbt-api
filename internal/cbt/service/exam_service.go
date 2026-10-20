@@ -915,8 +915,12 @@ func (s *ExamService) GetExam(ctx context.Context, id, schoolID string, isPlatfo
 	return s.toExamResponse(ctx, exam)
 }
 
-// ListExams lists all exams with pagination
-func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.ExamListResponse, error) {
+// ListExams lists all exams with pagination, scoped to the caller's own
+// school. Before this fix: no school parameter at all, and the route
+// backing this has no role gate beyond AuthMiddleware - any
+// authenticated user of any role, in any school, could list every exam
+// on the entire platform (titles, subjects, schedules, instructions).
+func (s *ExamService) ListExams(ctx context.Context, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -924,7 +928,7 @@ func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.Exam
 		limit = 20
 	}
 
-	exams, total, err := s.examRepo.ListExams(ctx, page, limit)
+	exams, total, err := s.examRepo.ListExams(ctx, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -947,9 +951,10 @@ func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.Exam
 	}, nil
 }
 
-// ListExamsBySubject lists exams by subject
-func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsBySubject(ctx, subjectID, page, limit)
+// ListExamsBySubject lists exams by subject, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsBySubject(ctx, subjectID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -972,9 +977,10 @@ func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, 
 	}, nil
 }
 
-// ListExamsByTerm lists exams by term
-func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsByTerm(ctx, termID, page, limit)
+// ListExamsByTerm lists exams by term, scoped to the caller's own school
+// (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsByTerm(ctx, termID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -997,9 +1003,10 @@ func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, 
 	}, nil
 }
 
-// ListExamsBySession lists exams by session
-func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsBySession(ctx, sessionID, page, limit)
+// ListExamsBySession lists exams by session, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsBySession(ctx, sessionID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -1022,9 +1029,10 @@ func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, 
 	}, nil
 }
 
-// ListExamsByClass lists exams by class
-func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsByClass(ctx, classID, page, limit)
+// ListExamsByClass lists exams by class, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsByClass(ctx, classID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
