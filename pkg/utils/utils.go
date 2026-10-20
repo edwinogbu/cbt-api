@@ -73,10 +73,17 @@ func GenerateJWT(userID, email, role, schoolID string, expiry time.Duration) (st
     return token.SignedString(jwtSecret)
 }
 
+// ValidateJWT restricts accepted tokens to HS256 (jwt.WithValidMethods)
+// so the keyFunc's unconditional return of jwtSecret can never be
+// reached for a token claiming a different algorithm. Every token this
+// app issues (GenerateJWT) is already HS256, so this changes nothing
+// for a real token - it only forecloses the well-known JWT algorithm-
+// confusion class of attack (e.g. a forged "alg" header) for good,
+// rather than relying on this package only ever using one algorithm.
 func ValidateJWT(tokenString string) (jwt.MapClaims, error) {
     token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
         return jwtSecret, nil
-    })
+    }, jwt.WithValidMethods([]string{"HS256"}))
     if err != nil {
         return nil, err
     }

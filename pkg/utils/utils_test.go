@@ -76,6 +76,26 @@ func TestValidateJWT_RejectsNoneAlgorithm(t *testing.T) {
 	}
 }
 
+// TestValidateJWT_RejectsNonHS256Algorithm guards against JWT algorithm
+// confusion: a token signed with the REAL server secret but under a
+// different algorithm (HS384 here) must still be rejected, since
+// ValidateJWT now pins jwt.WithValidMethods to HS256 explicitly rather
+// than accepting whatever algorithm the token's own header claims.
+func TestValidateJWT_RejectsNonHS256Algorithm(t *testing.T) {
+	wrongAlg := jwt.NewWithClaims(jwt.SigningMethodHS384, jwt.MapClaims{
+		"user_id": "user-123",
+		"role":    "super_admin",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	signed, err := wrongAlg.SignedString(jwtSecret)
+	if err != nil {
+		t.Fatalf("failed to build HS384 token: %v", err)
+	}
+	if _, err := ValidateJWT(signed); err == nil {
+		t.Fatal("expected a non-HS256 token (even with the real secret) to be rejected, got no error")
+	}
+}
+
 // TestValidateJWT_RejectsTamperedPayload confirms that flipping the role
 // claim in an otherwise-valid token (without re-signing, as an attacker
 // who can only read a token but not the server secret would have to try)
