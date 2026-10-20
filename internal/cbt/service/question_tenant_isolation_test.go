@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/repository"
 
 	"github.com/glebarez/sqlite"
@@ -173,5 +174,100 @@ func TestDeleteQuestion_SameTenant_OwnCreator_Allowed(t *testing.T) {
 
 	if err := s.DeleteQuestion(context.Background(), "q-1", "teacher-1", "school-A", false); err != nil {
 		t.Fatalf("expected the question's own creator in its own school to delete it, got error: %v", err)
+	}
+}
+
+// ---- BulkDelete/BulkUpdateStatus: before this fix, neither took a
+// school or ownership parameter at all - any authenticated teacher/admin
+// could bulk-delete or bulk-update the status of ANY question in ANY
+// school just by supplying its UUID, with zero check. Mirrors
+// DeleteQuestion/UpdateQuestion's per-question checks, applied to each
+// ID in the batch; IDs that fail are silently dropped (same policy as
+// BulkDeleteClasses) rather than failing the whole batch.
+
+func TestBulkDelete_CrossTenant_NotDeleted(t *testing.T) {
+	db := setupQuestionTenantTestDB(t)
+	s := newTenantTestQuestionService(db)
+	seedQuestionForSchool(t, db, "q-a", "school-A", "teacher-a")
+	seedQuestionForSchool(t, db, "q-b", "school-B", "teacher-b")
+
+	req := &dto.BulkDeleteRequest{QuestionIDs: []string{"q-a", "q-b"}}
+	deleted, err := s.BulkDelete(context.Background(), req, "teacher-a", "school-A", false)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected exactly 1 question deleted (the caller's own), got %d", deleted)
+	}
+
+	var countA, countB int64
+	db.Table("question_bank").Where("id = ? AND deleted_at IS NULL", "q-a").Count(&countA)
+	db.Table("question_bank").Where("id = ? AND deleted_at IS NULL", "q-b").Count(&countB)
+	if countA != 0 {
+		t.Fatal("expected School A's own question to be deleted")
+	}
+	if countB != 1 {
+		t.Fatal("School B's question was deleted by a cross-tenant bulk-delete request - should have been silently dropped")
+	}
+}
+
+func TestBulkDelete_PlatformOwner_BypassesSchoolCheck(t *testing.T) {
+	db := setupQuestionTenantTestDB(t)
+	s := newTenantTestQuestionService(db)
+	// checkQuestionOwnership (creator == caller) applies unconditionally
+	// to every role, same as the pre-existing single-item DeleteQuestion -
+	// this test isolates the school-ownership gate platform_owner is
+	// meant to bypass by making "owner-1" the creator of both, across
+	// two different schools.
+	seedQuestionForSchool(t, db, "q-a", "school-A", "owner-1")
+	seedQuestionForSchool(t, db, "q-b", "school-B", "owner-1")
+
+	req := &dto.BulkDeleteRequest{QuestionIDs: []string{"q-a", "q-b"}}
+	deleted, err := s.BulkDelete(context.Background(), req, "owner-1", "", true)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected platform_owner to delete both questions across schools, got %d", deleted)
+	}
+}
+
+func TestBulkUpdateStatus_CrossTenant_NotUpdated(t *testing.T) {
+	db := setupQuestionTenantTestDB(t)
+	s := newTenantTestQuestionService(db)
+	seedQuestionForSchool(t, db, "q-a", "school-A", "teacher-a")
+	seedQuestionForSchool(t, db, "q-b", "school-B", "teacher-b")
+
+	updated, err := s.BulkUpdateStatus(context.Background(), []string{"q-a", "q-b"}, "published", "teacher-a", "school-A", false)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("expected exactly 1 question updated (the caller's own), got %d", updated)
+	}
+
+	var statusA, statusB string
+	db.Table("question_bank").Select("status").Where("id = ?", "q-a").Scan(&statusA)
+	db.Table("question_bank").Select("status").Where("id = ?", "q-b").Scan(&statusB)
+	if statusA != "published" {
+		t.Fatalf("expected School A's own question to be updated, got status %q", statusA)
+	}
+	if statusB != "draft" {
+		t.Fatalf("School B's question status was changed by a cross-tenant bulk-status request (got %q) - should have been silently dropped", statusB)
+	}
+}
+
+func TestBulkUpdateStatus_PlatformOwner_BypassesSchoolCheck(t *testing.T) {
+	db := setupQuestionTenantTestDB(t)
+	s := newTenantTestQuestionService(db)
+	seedQuestionForSchool(t, db, "q-a", "school-A", "owner-1")
+	seedQuestionForSchool(t, db, "q-b", "school-B", "owner-1")
+
+	updated, err := s.BulkUpdateStatus(context.Background(), []string{"q-a", "q-b"}, "published", "owner-1", "", true)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if updated != 2 {
+		t.Fatalf("expected platform_owner to update both questions across schools, got %d", updated)
 	}
 }

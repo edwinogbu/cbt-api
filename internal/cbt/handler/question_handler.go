@@ -474,15 +474,24 @@ func (h *QuestionHandler) BulkDelete(c *gin.Context) {
 		}
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	if err := h.questionService.BulkDelete(ctx, &req); err != nil {
+	deleted, err := h.questionService.BulkDelete(ctx, &req, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
+	if err != nil {
 		h.handleError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Bulk delete successful",
+		"status":        "success",
+		"message":       "Bulk delete successful",
+		"deleted_count": deleted,
+		"requested":     len(req.QuestionIDs),
 	})
 }
 
@@ -529,15 +538,24 @@ func (h *QuestionHandler) BulkUpdateStatus(c *gin.Context) {
 		}
 	}
 
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+
 	ctx := c.Request.Context()
-	if err := h.questionService.BulkUpdateStatus(ctx, req.QuestionIDs, req.Status); err != nil {
+	updated, err := h.questionService.BulkUpdateStatus(ctx, req.QuestionIDs, req.Status, userID.(string), middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
+	if err != nil {
 		h.handleError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Bulk status update successful",
+		"status":        "success",
+		"message":       "Bulk status update successful",
+		"updated_count": updated,
+		"requested":     len(req.QuestionIDs),
 	})
 }
 

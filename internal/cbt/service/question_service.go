@@ -477,30 +477,75 @@ func (s *QuestionService) BulkCreateQuestionsFromJSON(ctx context.Context, req *
 	return responses, nil
 }
 
-func (s *QuestionService) BulkDelete(ctx context.Context, req *dto.BulkDeleteRequest) error {
-	if len(req.QuestionIDs) == 0 {
-		return errors.New("no question IDs provided")
+// allowedQuestionIDs filters ids down to the ones the caller may act on:
+// the same per-question checks DeleteQuestion/UpdateQuestion already
+// apply (school ownership, then creator ownership), applied one ID at a
+// time so a caller can't bulk-mutate another school's (or another
+// teacher's) questions just by listing their UUIDs. IDs that fail either
+// check, or don't exist, are silently dropped rather than erroring the
+// whole batch - the same policy BulkDeleteClasses uses - so the caller's
+// own valid IDs still go through.
+func (s *QuestionService) allowedQuestionIDs(ctx context.Context, ids []string, userID, schoolID string, isPlatformOwner bool) []string {
+	allowed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		q, err := s.qRepo.FindByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		if err := questionAuthorizeSchoolOwnership(q.SchoolID, schoolID, isPlatformOwner); err != nil {
+			continue
+		}
+		if err := s.checkQuestionOwnership(q, userID); err != nil {
+			continue
+		}
+		allowed = append(allowed, id)
 	}
-
-	if err := s.qRepo.BulkDelete(ctx, req.QuestionIDs); err != nil {
-		return fmt.Errorf("failed to delete questions: %w", err)
-	}
-	return nil
+	return allowed
 }
 
-func (s *QuestionService) BulkUpdateStatus(ctx context.Context, ids []string, status string) error {
+// BulkDelete was previously unscoped: it deleted every ID in the request
+// with no school or ownership check at all, letting any authenticated
+// teacher/admin delete another school's (or another teacher's) questions
+// just by supplying their UUIDs. Now mirrors DeleteQuestion's per-question
+// checks before deleting, and reports back how many were actually
+// deleted rather than a flat success regardless of what was dropped.
+func (s *QuestionService) BulkDelete(ctx context.Context, req *dto.BulkDeleteRequest, userID, schoolID string, isPlatformOwner bool) (int64, error) {
+	if len(req.QuestionIDs) == 0 {
+		return 0, errors.New("no question IDs provided")
+	}
+
+	allowed := s.allowedQuestionIDs(ctx, req.QuestionIDs, userID, schoolID, isPlatformOwner)
+	if len(allowed) == 0 {
+		return 0, nil
+	}
+
+	if err := s.qRepo.BulkDelete(ctx, allowed); err != nil {
+		return 0, fmt.Errorf("failed to delete questions: %w", err)
+	}
+	return int64(len(allowed)), nil
+}
+
+// BulkUpdateStatus had the same gap as BulkDelete - no school or
+// ownership check at all. Now mirrors UpdateQuestion's per-question
+// checks and reports back how many were actually updated.
+func (s *QuestionService) BulkUpdateStatus(ctx context.Context, ids []string, status, userID, schoolID string, isPlatformOwner bool) (int64, error) {
 	if len(ids) == 0 {
-		return errors.New("no question IDs provided")
+		return 0, errors.New("no question IDs provided")
 	}
 
 	if err := s.validateStatus(status); err != nil {
-		return err
+		return 0, err
 	}
 
-	if err := s.qRepo.BulkUpdateStatus(ctx, ids, status); err != nil {
-		return fmt.Errorf("failed to update statuses: %w", err)
+	allowed := s.allowedQuestionIDs(ctx, ids, userID, schoolID, isPlatformOwner)
+	if len(allowed) == 0 {
+		return 0, nil
 	}
-	return nil
+
+	if err := s.qRepo.BulkUpdateStatus(ctx, allowed, status); err != nil {
+		return 0, fmt.Errorf("failed to update statuses: %w", err)
+	}
+	return int64(len(allowed)), nil
 }
 
 // ============================================
