@@ -69,7 +69,24 @@ func (s *AuthService) generateUniqueUsername(base string) string {
 }
 
 // Register with role, username, parent linking, and school code validation
+// Register self-registers a new account. Before this fix, role=admin
+// was accepted here same as teacher/parent: anyone who obtained an
+// EXISTING school's school_code (itself leaked to any authenticated
+// teacher via GET /schools, which returns every school's code - see
+// that handler's own fix) could self-register as that school's admin
+// and log in immediately (Login never checks Status, and IsActive is
+// unconditionally true here) - full administrative control over a
+// real, already-operating tenant with zero human approval step. This
+// is categorically different from the onboarding flow's admin
+// creation, which always provisions a brand-new school for that admin
+// rather than attaching to an existing one. Admin accounts for an
+// existing school must now come only from onboarding (new school) or
+// GrantRole (an existing admin/platform_owner explicitly elevating a
+// user they already vetted) - both already properly scoped.
 func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.LoginResponse, error) {
+	if req.Role == "admin" {
+		return nil, errors.New("self-registration as admin is not permitted; use the onboarding flow to create a new school, or ask an existing admin to grant you the role")
+	}
 	// Validate school code for non-student roles
 	var schoolID *string
 	if req.Role != "student" {

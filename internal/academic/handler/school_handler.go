@@ -6,6 +6,7 @@ import (
 
     "cbt-api/internal/academic/dto"
     "cbt-api/internal/academic/service"
+    "cbt-api/internal/middleware"
 
     "github.com/gin-gonic/gin"
 )
@@ -88,7 +89,21 @@ func (h *SchoolHandler) GetAllSchools(c *gin.Context) {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
     }
-    
+
+    // Code is a registration secret (presented at /auth/register to
+    // self-provision an account against that school) - before this fix,
+    // any teacher/admin calling this list-every-school endpoint saw
+    // every OTHER school's code too, each one directly usable to
+    // self-register staff against a school the caller has nothing to
+    // do with. A caller viewing their own single school by ID still
+    // sees their own code (GetSchool is unaffected); this only redacts
+    // it from the cross-school listing.
+    if !middleware.IsPlatformOwner(c) {
+        for i := range schools {
+            schools[i].Code = ""
+        }
+    }
+
     c.JSON(http.StatusOK, gin.H{
         "data": schools,
         "meta": gin.H{
