@@ -30,9 +30,28 @@ func NewAdminService(
 	}
 }
 
-func (s *AdminService) AssignTeacher(req *dto.AssignTeacherRequest) error {
+// adminAuthorizeSchoolOwnership mirrors the same "not found on
+// mismatch" convention used throughout this codebase's other modules
+// (e.g. questionAuthorizeSchoolOwnership, authorizeExamTenant).
+func adminAuthorizeSchoolOwnership(recordSchoolID, ctxSchoolID string, isPlatformOwner bool) bool {
+	if isPlatformOwner {
+		return true
+	}
+	return ctxSchoolID != "" && recordSchoolID == ctxSchoolID
+}
+
+// AssignTeacher assigns a teacher to a class, scoped to the caller's
+// own school: both the class and the teacher must belong to it (unless
+// the caller is platform_owner). Before this fix it had no school check
+// at all - any school's admin could reassign another school's class to
+// a teacher of their choosing (including a teacher from yet another
+// school), or hijack another school's teacher onto their own class.
+func (s *AdminService) AssignTeacher(req *dto.AssignTeacherRequest, schoolID string, isPlatformOwner bool) error {
 	class, err := s.classRepo.FindByID(req.ClassID)
 	if err != nil {
+		return errors.New("class not found")
+	}
+	if !adminAuthorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner) {
 		return errors.New("class not found")
 	}
 	teacher, err := s.userRepo.FindByID(req.TeacherID)
@@ -42,23 +61,42 @@ func (s *AdminService) AssignTeacher(req *dto.AssignTeacherRequest) error {
 	if teacher.Role != models.RoleTeacher {
 		return errors.New("user is not a teacher")
 	}
+	teacherSchoolID := ""
+	if teacher.SchoolID != nil {
+		teacherSchoolID = *teacher.SchoolID
+	}
+	if !adminAuthorizeSchoolOwnership(teacherSchoolID, schoolID, isPlatformOwner) {
+		return errors.New("teacher not found")
+	}
 	class.TeacherID = &teacher.ID
 	return s.classRepo.Update(class)
 }
 
-func (s *AdminService) UnassignTeacher(classID string) error {
+// UnassignTeacher has the same pre-existing gap AssignTeacher had - see
+// its doc comment - and the same fix.
+func (s *AdminService) UnassignTeacher(classID string, schoolID string, isPlatformOwner bool) error {
 	class, err := s.classRepo.FindByID(classID)
 	if err != nil {
+		return errors.New("class not found")
+	}
+	if !adminAuthorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner) {
 		return errors.New("class not found")
 	}
 	class.TeacherID = nil
 	return s.classRepo.Update(class)
 }
 
-func (s *AdminService) ListUsersByRole(query dto.ListUsersQuery) ([]dto.UserListResponse, int64, error) {
+// ListUsersByRole lists users, scoped to the caller's own school.
+// Before this fix it had no school filter at all - any school's admin
+// could list every user (name, email, phone) on the entire platform,
+// not just their own school's.
+func (s *AdminService) ListUsersByRole(query dto.ListUsersQuery, schoolID string, isPlatformOwner bool) ([]dto.UserListResponse, int64, error) {
 	var users []models.User
 	var total int64
 	db := s.db.Model(&models.User{}).Where("deleted_at IS NULL")
+	if !isPlatformOwner {
+		db = db.Where("school_id = ?", schoolID)
+	}
 	if query.Role != "" {
 		db = db.Where("role = ?", query.Role)
 	}
@@ -155,7 +193,11 @@ func (s *AdminService) ListUsersByRole(query dto.ListUsersQuery) ([]dto.UserList
 // }
 
 // ListAllStudents returns all students with class name and user details
-func (s *AdminService) ListAllStudents(page, limit int, search string) ([]dto.StudentListResponse, int64, error) {
+// ListAllStudents lists students, scoped to the caller's own school.
+// Before this fix it had no school filter at all - any school's admin
+// could list every student (name, admission number, class, status) on
+// the entire platform, not just their own school's.
+func (s *AdminService) ListAllStudents(page, limit int, search string, schoolID string, isPlatformOwner bool) ([]dto.StudentListResponse, int64, error) {
     var students []models.Student
     var total int64
 
@@ -165,6 +207,9 @@ func (s *AdminService) ListAllStudents(page, limit int, search string) ([]dto.St
         Preload("Class.ClassLevel").
         Preload("Class.ClassArm").
         Where("students.deleted_at IS NULL")
+    if !isPlatformOwner {
+        query = query.Where("students.school_id = ?", schoolID)
+    }
 
     if search != "" {
         searchTerm := "%" + search + "%"
@@ -215,9 +260,17 @@ func (s *AdminService) ListAllStudents(page, limit int, search string) ([]dto.St
     return result, total, nil
 }
 
-func (s *AdminService) HardDeleteStudent(studentID string) error {
+// HardDeleteStudent permanently (Unscoped) deletes a student, scoped to
+// the caller's own school. Before this fix it had no school check at
+// all - any school's admin could permanently, irreversibly destroy any
+// other school's student record just by knowing or guessing its ID,
+// bypassing the model's normal soft-delete entirely.
+func (s *AdminService) HardDeleteStudent(studentID string, schoolID string, isPlatformOwner bool) error {
 	student, err := s.studentRepo.FindByID(studentID)
 	if err != nil {
+		return errors.New("student not found")
+	}
+	if !adminAuthorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner) {
 		return errors.New("student not found")
 	}
 	return s.db.Unscoped().Delete(student).Error
@@ -287,7 +340,11 @@ func (s *AdminService) HardDeleteStudent(studentID string) error {
 // }
 
 // ListAllClasses returns all classes with school, level, arm, and teacher details
-func (s *AdminService) ListAllClasses(page, limit int, search string) ([]dto.ClassListResponse, int64, error) {
+// ListAllClasses lists classes, scoped to the caller's own school.
+// Before this fix it had no school filter at all - any school's admin
+// could list every class (and its assigned teacher) on the entire
+// platform, not just their own school's.
+func (s *AdminService) ListAllClasses(page, limit int, search string, schoolID string, isPlatformOwner bool) ([]dto.ClassListResponse, int64, error) {
     var classes []models.Class
     var total int64
 
@@ -295,6 +352,9 @@ func (s *AdminService) ListAllClasses(page, limit int, search string) ([]dto.Cla
         Preload("ClassLevel").
         Preload("ClassArm").
         Where("classes.deleted_at IS NULL")
+    if !isPlatformOwner {
+        query = query.Where("classes.school_id = ?", schoolID)
+    }
 
     if search != "" {
         searchTerm := "%" + search + "%"
@@ -360,13 +420,20 @@ func (s *AdminService) ListAllClasses(page, limit int, search string) ([]dto.Cla
 }
 
 // ListAllTeachers returns all teachers with their personal details and assigned classes
-func (s *AdminService) ListAllTeachers(page, limit int, search string) ([]dto.TeacherListResponse, int64, error) {
+// ListAllTeachers lists teachers, scoped to the caller's own school.
+// Before this fix it had no school filter at all - any school's admin
+// could list every teacher (name, email, username, assigned classes)
+// on the entire platform, not just their own school's.
+func (s *AdminService) ListAllTeachers(page, limit int, search string, schoolID string, isPlatformOwner bool) ([]dto.TeacherListResponse, int64, error) {
     var teachers []models.User
     var total int64
 
     // Query users with role 'teacher' and not soft-deleted
     query := s.db.Model(&models.User{}).
         Where("role = ? AND deleted_at IS NULL", models.RoleTeacher)
+    if !isPlatformOwner {
+        query = query.Where("school_id = ?", schoolID)
+    }
 
     if search != "" {
         searchTerm := "%" + search + "%"
