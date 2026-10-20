@@ -915,6 +915,40 @@ func (s *ExamService) authorizeExamTenant(ctx context.Context, examID, schoolID 
 	return nil
 }
 
+// authorizeClassTenant is authorizeExamTenant's counterpart for the
+// teacher-results endpoints (GetTeacherSubjectResults/GetTeacherClassResults/
+// GetSubjectQuestionsForExam), which take a class ID rather than an exam
+// ID and had no school check of any kind - any authenticated caller who
+// knew (or guessed) another school's class ID could pull that class's
+// full student results, or that class's subject question bank.
+func (s *ExamService) authorizeClassTenant(ctx context.Context, classID, schoolID string, isPlatformOwner bool) error {
+	if isPlatformOwner {
+		return nil
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Table("classes").
+		Where("id = ? AND school_id = ? AND deleted_at IS NULL", classID, schoolID).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("class not found")
+	}
+	return nil
+}
+
+// examEffectiveSchoolID mirrors questionEffectiveSchoolID: a
+// client-supplied school ID must never independently establish access -
+// only platform_owner's explicit target school is honored; every other
+// caller is always resolved to their own verified JWT school, regardless
+// of what they submit.
+func examEffectiveSchoolID(clientSuppliedSchoolID, ctxSchoolID string, isPlatformOwner bool) string {
+	if isPlatformOwner {
+		return clientSuppliedSchoolID
+	}
+	return ctxSchoolID
+}
+
 // GetExam gets an exam by ID, scoped to the caller's own school (see
 // authorizeExamTenant).
 func (s *ExamService) GetExam(ctx context.Context, id, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
@@ -3557,8 +3591,13 @@ func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID strin
 	}, nil
 }
 
-// GetTeacherSubjectResults gets subject results for a teacher
-func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, classID string) (interface{}, error) {
+// GetTeacherSubjectResults gets subject results for a teacher, scoped
+// to the caller's own school (see authorizeClassTenant). Before this
+// fix it had no school check at all.
+func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, classID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	attempts, err := s.examRepo.GetTeacherSubjectResults(ctx, subjectID, classID)
 	if err != nil {
 		return nil, err
@@ -3597,8 +3636,12 @@ func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, c
 	return studentResults, nil
 }
 
-// GetTeacherClassResults gets class results for a teacher
-func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subjectID string) (interface{}, error) {
+// GetTeacherClassResults has the same pre-existing gap as
+// GetTeacherSubjectResults - see its doc comment - and the same fix.
+func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subjectID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	attempts, err := s.examRepo.GetTeacherClassResults(ctx, classID, subjectID)
 	if err != nil {
 		return nil, err
@@ -3633,8 +3676,18 @@ func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subje
 	}, nil
 }
 
-// GetSchoolPerformanceOverview gets school performance overview
-func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, schoolID string) (interface{}, error) {
+// GetSchoolPerformanceOverview gets school performance overview. Before
+// this fix, the client-supplied schoolID was trusted outright with no
+// comparison to the caller's own verified school at all - exactly the
+// "tenant ID supplied by a client independently establishes access"
+// pattern this engagement's mandate singles out. Now resolved via
+// examEffectiveSchoolID: a non-platform-owner's requested schoolID is
+// ignored entirely in favor of their own ctxSchoolID.
+func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, requestedSchoolID, ctxSchoolID string, isPlatformOwner bool) (interface{}, error) {
+	schoolID := examEffectiveSchoolID(requestedSchoolID, ctxSchoolID, isPlatformOwner)
+	if schoolID == "" {
+		return nil, errors.New("school id required")
+	}
 	stats, err := s.examRepo.GetSchoolPerformanceOverview(ctx, schoolID)
 	if err != nil {
 		return nil, err
@@ -3642,8 +3695,15 @@ func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, schoolID
 	return stats, nil
 }
 
-// GetSubjectQuestionsForExam gets subject questions for exam creation
-func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, classID string) (*dto.SubjectQuestionsResponse, error) {
+// GetSubjectQuestionsForExam gets subject questions for exam creation,
+// scoped to the caller's own school via the class ID (see
+// authorizeClassTenant). Before this fix it had no school check at all -
+// a real question-bank content leak (text, options) cross-tenant, the
+// same class of issue PreviewExam had.
+func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, classID string, schoolID string, isPlatformOwner bool) (*dto.SubjectQuestionsResponse, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	// Get subject
 	subject, err := s.questionRepo.GetSubjectByID(ctx, subjectID)
 	if err != nil {

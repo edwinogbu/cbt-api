@@ -2044,7 +2044,7 @@ func (h *ExamHandler) GetTeacherSubjectResults(c *gin.Context) {
 		return
 	}
 
-	results, err := h.examService.GetTeacherSubjectResults(c.Request.Context(), subjectID, classID)
+	results, err := h.examService.GetTeacherSubjectResults(c.Request.Context(), subjectID, classID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2075,7 +2075,7 @@ func (h *ExamHandler) GetTeacherClassResults(c *gin.Context) {
 
 	subjectID := c.Query("subjectId")
 
-	results, err := h.examService.GetTeacherClassResults(c.Request.Context(), classID, subjectID)
+	results, err := h.examService.GetTeacherClassResults(c.Request.Context(), classID, subjectID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2103,7 +2103,7 @@ func (h *ExamHandler) GetSchoolPerformanceOverview(c *gin.Context) {
 		return
 	}
 
-	overview, err := h.examService.GetSchoolPerformanceOverview(c.Request.Context(), schoolID)
+	overview, err := h.examService.GetSchoolPerformanceOverview(c.Request.Context(), schoolID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2152,7 +2152,7 @@ func (h *ExamHandler) GetSubjectQuestionsForExam(c *gin.Context) {
 		return
 	}
 
-	questions, err := h.examService.GetSubjectQuestionsForExam(c.Request.Context(), subjectID, termID, sessionID, classID)
+	questions, err := h.examService.GetSubjectQuestionsForExam(c.Request.Context(), subjectID, termID, sessionID, classID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
