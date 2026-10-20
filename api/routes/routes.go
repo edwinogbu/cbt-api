@@ -122,15 +122,29 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 		setupOnboardingRoutes(v1, onboardingH)
 
 		// ========== SUBJECT ROUTES ==========
+		// Subject is a global, platform-shared curriculum taxonomy (no
+		// school_id column at all - confirmed against the live schema),
+		// so there's no tenant-isolation dimension to scope these by.
+		// But before this fix, mutating endpoints had no role gate
+		// beyond AuthMiddleware - any authenticated user, including a
+		// student or parent, could create/rename/delete a subject every
+		// school's exam and question-bank data references, a platform-
+		// wide vandalism vector. Reads stay open to any authenticated
+		// user; writes now require the same roles the academic routes
+		// already use for curriculum management.
 		subject := v1.Group("/subjects")
 		subject.Use(middleware.AuthMiddleware())
 		{
-			subject.POST("/create", subjectHandler.CreateSubject)
 			subject.GET("/list", subjectHandler.ListSubjects)
 			subject.GET("/active", subjectHandler.ListActiveSubjects)
 			subject.GET("/view/:id", subjectHandler.GetSubject)
-			subject.PUT("/update/:id", subjectHandler.UpdateSubject)
-			subject.DELETE("/delete/:id", subjectHandler.DeleteSubject)
+		}
+		subjectWrite := v1.Group("/subjects")
+		subjectWrite.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			subjectWrite.POST("/create", subjectHandler.CreateSubject)
+			subjectWrite.PUT("/update/:id", subjectHandler.UpdateSubject)
+			subjectWrite.DELETE("/delete/:id", subjectHandler.DeleteSubject)
 		}
 
 		// ==================== EXAM ROUTES ====================
