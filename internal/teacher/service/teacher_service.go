@@ -341,7 +341,18 @@ func (s *TeacherService) getTermsSpent(studentID string) int {
 // 	}, nil
 // }
   
-// createStudentInternal – core logic with password encryption
+// createStudentInternal – core logic with password encryption.
+// req.SchoolID is client-supplied and deliberately never trusted for
+// anything that matters: before this fix, the new student record was
+// tagged with req.SchoolID outright, so a teacher (legitimately
+// authorized for their own class via the check below) could submit any
+// school_id in the request body and get a student record whose
+// SchoolID doesn't match the class it's actually enrolled in - exactly
+// the kind of mismatch that would let a different school's admin
+// later see/manage/hard-delete that student via this codebase's other
+// school_id-scoped checks, or make the student vanish from their own
+// school's own admin view. class.SchoolID (resolved server-side from
+// the already-authorized class) is used everywhere instead.
 func (s *TeacherService) createStudentInternal(
 	userRepo *repository.UserRepository,
 	studentRepo *repository.StudentRepository,
@@ -362,7 +373,7 @@ func (s *TeacherService) createStudentInternal(
 	// Generate admission number if not provided
 	admissionNo := req.AdmissionNo
 	if admissionNo == "" {
-		admissionNo, err = s.generateAdmissionNo(req.SchoolID)
+		admissionNo, err = s.generateAdmissionNo(class.SchoolID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate admission number: %w", err)
 		}
@@ -433,7 +444,7 @@ func (s *TeacherService) createStudentInternal(
 	student := &models.Student{
 		ID:            uuid.New().String(),
 		UserID:        user.ID,
-		SchoolID:      req.SchoolID,
+		SchoolID:      class.SchoolID,
 		ClassID:       req.ClassID,
 		AdmissionNo:   admissionNo,
 		DateOfBirth:   req.DateOfBirth,
@@ -453,8 +464,8 @@ func (s *TeacherService) createStudentInternal(
 	// Get class info with all details - PASS THE CLASS OBJECT DIRECTLY
 	classInfo := s.getClassInfo(class)
 	
-	schoolName := s.getSchoolName(req.SchoolID)
-	expectedGradYear := s.calculateExpectedGraduationYear(class, req.SchoolID)
+	schoolName := s.getSchoolName(class.SchoolID)
+	expectedGradYear := s.calculateExpectedGraduationYear(class, class.SchoolID)
 	termsSpent := s.getTermsSpent(student.ID)
 
 	return &dto.CompleteStudentResponse{
