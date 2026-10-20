@@ -127,8 +127,13 @@ func (r *AuthRepository) FindSessionsByUserID(userID string) ([]models.UserSessi
 	return sessions, err
 }
 
-func (r *AuthRepository) DeleteSession(sessionID string) error {
-	return r.db.Delete(&models.UserSession{}, "id = ?", sessionID).Error
+// DeleteSessionForUser deletes a session only if it belongs to userID,
+// returning how many rows were actually removed. sessionID alone must
+// never be enough to delete a session - see RevokeSession's doc comment
+// for why.
+func (r *AuthRepository) DeleteSessionForUser(sessionID, userID string) (int64, error) {
+	result := r.db.Where("id = ? AND user_id = ?", sessionID, userID).Delete(&models.UserSession{})
+	return result.RowsAffected, result.Error
 }
 
 func (r *AuthRepository) DeleteAllUserSessions(userID string, exceptSessionID string) error {

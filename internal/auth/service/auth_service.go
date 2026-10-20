@@ -464,7 +464,13 @@ func (s *AuthService) RefreshToken(refreshToken string) (*dto.TokenResponse, err
 }
 
 func (s *AuthService) Logout(userID, sessionID string) error {
-	return s.repo.DeleteSession(sessionID)
+	// sessionID here is always server-derived (middleware.GetSessionID,
+	// from the caller's own JWT), never client input, so this is scoped
+	// defensively rather than to close a live exploit. Zero rows affected
+	// (session already gone, e.g. a double logout) is not an error -
+	// logout must stay idempotent.
+	_, err := s.repo.DeleteSessionForUser(sessionID, userID)
+	return err
 }
 
 func (s *AuthService) LogoutAllDevices(userID, currentSessionID string) error {
@@ -626,8 +632,22 @@ func (s *AuthService) GetUserSessions(userID, currentSessionID string) ([]dto.Se
 	return sessionDTOs, nil
 }
 
+// RevokeSession deletes one of the CALLER's own sessions. sessionID
+// comes straight from the URL path (c.Param("sessionId")) - client
+// input - so without the userID ownership check below, any
+// authenticated user could force-logout any OTHER user's session by ID,
+// regardless of whose account it belongs to. A mismatch reports the
+// same generic error as a nonexistent session, so a caller can't use
+// this to probe which session IDs are real.
 func (s *AuthService) RevokeSession(userID, sessionID string) error {
-	return s.repo.DeleteSession(sessionID)
+	rows, err := s.repo.DeleteSessionForUser(sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("session not found")
+	}
+	return nil
 }
 
 func (s *AuthService) GetProfile(userID string) (*dto.UserDTO, error) {

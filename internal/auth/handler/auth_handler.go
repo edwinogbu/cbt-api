@@ -510,6 +510,10 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 	sessionID := c.Param("sessionId")
 
 	if err := h.service.RevokeSession(userID, sessionID); err != nil {
+		if err.Error() == "session not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not revoke session. Please try again."})
 		return
 	}
