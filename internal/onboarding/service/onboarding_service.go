@@ -1556,7 +1556,7 @@ func (s *OnboardingService) sendVerificationOTPWithTracking(email, firstName, us
 		return
 	}
 
-	s.logger.Printf("[INFO] Sending verification OTP to: %s with code: %s", email, code)
+	s.logger.Printf("[INFO] Sending verification OTP to: %s", email)
 
 	err = s.emailService.SendAdminVerifyEmail(email, firstName, code)
 	if err != nil {
@@ -1564,7 +1564,7 @@ func (s *OnboardingService) sendVerificationOTPWithTracking(email, firstName, us
 		return
 	}
 
-	s.logger.Printf("[SUCCESS] Admin verify email sent to %s with OTP: %s", email, code)
+	s.logger.Printf("[SUCCESS] Admin verify email sent to %s", email)
 }
 
 func (s *OnboardingService) sendPaymentLinkEmailWithTracking(user *models.User, school *models.School, sub *models.Subscription, inv *models.Invoice, pi *models.PaymentIntent, gateway models.PaymentGateway) {

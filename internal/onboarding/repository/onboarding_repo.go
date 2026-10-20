@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"cbt-api/internal/models"
+	"cbt-api/pkg/utils"
 	"gorm.io/gorm"
 )
 
@@ -312,13 +313,20 @@ func (r *OnboardingRepository) CreateOnboardOTP(otp *models.OTP) error {
 	return r.db.Create(otp).Error
 }
 
-// FindValidOnboardOTP finds a valid (unused, not expired) OTP
+// FindValidOnboardOTP finds a valid (unused, not expired) OTP whose
+// hash matches code. Currently unused by any live call site, but kept
+// consistent with VerifyOnboardEmailWithOTP's fix (see its doc comment)
+// rather than left as a landmine that looks like it validates the code
+// but doesn't.
 func (r *OnboardingRepository) FindValidOnboardOTP(userID, code, otpType string) (*models.OTP, error) {
 	var otp models.OTP
 	err := r.db.Where("user_id = ? AND type = ? AND expires_at > ? AND used = false",
 		userID, otpType, time.Now()).First(&otp).Error
 	if err != nil {
 		return nil, err
+	}
+	if !utils.CheckPasswordHash(code, otp.Code) {
+		return nil, gorm.ErrRecordNotFound
 	}
 	return &otp, nil
 }
@@ -336,12 +344,26 @@ func (r *OnboardingRepository) InvalidateOnboardUserOTPs(userID, otpType string)
 }
 
 // VerifyOnboardEmailWithOTP verifies email with OTP code
+// VerifyOnboardEmailWithOTP marks userID's email verified only if code
+// matches the hash stored on their outstanding email_verification OTP.
+// Before this fix, the code parameter was never checked at all: the
+// query below matched on userID/type/used/expiry alone, so ANY string
+// (empty, wrong, anything) verified the email as long as one unused,
+// unexpired OTP row existed - a complete bypass of email-ownership
+// proof, not just a weak one. Anyone could POST /onboarding/start with
+// a third party's email, then POST /onboarding/verify-email with a
+// throwaway code and have that email marked "verified" with zero proof
+// they ever received anything sent to it.
 func (r *OnboardingRepository) VerifyOnboardEmailWithOTP(userID, code string) error {
 	var otp models.OTP
 	err := r.db.Where("user_id = ? AND type = ? AND used = ? AND expires_at > ?",
 		userID, "email_verification", false, time.Now()).
 		First(&otp).Error
 	if err != nil {
+		return errors.New("invalid or expired verification code")
+	}
+
+	if !utils.CheckPasswordHash(code, otp.Code) {
 		return errors.New("invalid or expired verification code")
 	}
 
