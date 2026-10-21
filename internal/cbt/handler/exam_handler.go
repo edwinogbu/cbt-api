@@ -589,13 +589,27 @@ func (h *ExamHandler) StartExam(c *gin.Context) {
 		return
 	}
 
-	// Get student ID from context (authenticated user)
-	userID := middleware.GetUserID(c)
-	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	// Get student ID from context. This route has StudentContextMiddleware
+	// applied (see api/routes/routes.go), the same middleware that sets
+	// the academic Student.ID every other handler on the exam-attempt
+	// write path (SaveAnswer/BulkSaveAnswers/SubmitExam) uses for its
+	// ownership check via middleware.GetStudentID(c) - and the same ID
+	// flavor StartExamForUser (the route the live frontend actually
+	// calls) already uses. Using middleware.GetUserID(c) here instead
+	// stored the wrong ID: attempt.StudentID ended up holding the User
+	// table's ID rather than the Student table's own ID, which are
+	// different UUIDs for the same person. Every subsequent
+	// save-answer/bulk-answer/submit call's "attempt.StudentID !=
+	// studentID" ownership check then compared a User ID against a
+	// Student ID and failed with "unauthorized" for every attempt
+	// started through this endpoint, every time - confirmed live via a
+	// real exam attempt on a fresh LAN node.
+	studentID := middleware.GetStudentID(c)
+	if studentID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "student context not found"})
 		return
 	}
-	req.StudentID = userID
+	req.StudentID = studentID
 
 	resp, err := h.examService.StartExam(c.Request.Context(), &req)
 	if err != nil {
