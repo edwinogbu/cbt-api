@@ -48,6 +48,11 @@ import (
 	nodeSyncRepo "cbt-api/internal/nodesync/repository"
 	nodeSyncService "cbt-api/internal/nodesync/service"
 
+	// PLATFORM OWNER: TENANT REGISTRY, BRANDING, AUDIT LOG, LAN SETUP DASHBOARD
+	platformHandler "cbt-api/internal/platform/handler"
+	platformRepo "cbt-api/internal/platform/repository"
+	platformService "cbt-api/internal/platform/service"
+
 	"cbt-api/pkg/email"
 	"cbt-api/pkg/payment"
 	"cbt-api/pkg/database"
@@ -102,6 +107,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 	nodeSyncRepository := nodeSyncRepo.NewNodeSyncRepository(database.DB)
 	nodeSyncSvc := nodeSyncService.NewNodeSyncService(nodeSyncRepository)
 	nodeSyncH := nodeSyncHandler.NewNodeSyncHandler(nodeSyncSvc)
+
+	// PLATFORM OWNER INITIALIZATION
+	platformH := initPlatformHandler()
 
 	// API version 1 group
 	v1 := r.Group("/api/v1")
@@ -163,6 +171,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== SCHOOL NODE <-> CLOUD SYNC ROUTES ====================
 		setupNodeSyncRoutes(v1, nodeSyncH, nodeSyncSvc)
+
+		// ==================== PLATFORM OWNER ROUTES ====================
+		setupPlatformRoutes(v1, platformH)
 	}
 
 	// Swagger UI endpoint (no version prefix, accessible directly)
@@ -737,6 +748,45 @@ func setupNodeSyncRoutes(rg *gin.RouterGroup, handler *nodeSyncHandler.NodeSyncH
 	{
 		adminNodes.POST("/credentials", handler.CreateCredential)
 	}
+}
+
+// ============================================
+// PLATFORM OWNER ROUTES (Master Implementation Plan Phases 3-4, 10, 11)
+// ============================================
+// Tenant registry, platform-controlled branding, cross-tenant audit log,
+// and the LAN Setup Dashboard. Every route here is gated to EXACTLY
+// "platform_owner" via middleware.PlatformOwnerOnly() - never "admin" or
+// "super_admin", which are school-scoped roles. Unlike every other admin-ish
+// group in this file (which adds platform_owner alongside admin/super_admin
+// for cross-tenant oversight), this group grants NO access at all to
+// admin/super_admin: a school administrator must never read or write
+// another school's tenant record, another school's LAN configuration, or
+// the platform-wide audit log, regardless of their own school's role.
+func setupPlatformRoutes(rg *gin.RouterGroup, handler *platformHandler.PlatformHandler) {
+	platform := rg.Group("/platform")
+	platform.Use(middleware.AuthMiddleware(), middleware.PlatformOwnerOnly())
+	{
+		platform.GET("/tenants", handler.ListTenants)
+		platform.GET("/tenants/:id", handler.GetTenant)
+		platform.PUT("/tenants/:id/branding", handler.UpdateBranding)
+		platform.PUT("/tenants/:id/provision", handler.ProvisionTenant)
+		platform.PUT("/tenants/:id/suspend", handler.SuspendTenant)
+
+		platform.GET("/audit-logs", handler.ListAuditLogs)
+
+		platform.GET("/lan-config/:schoolId", handler.GetLANConfig)
+		platform.PUT("/lan-config/:schoolId", handler.UpdateLANConfig)
+		platform.PUT("/lan-config/:schoolId/active", handler.SetLANConfigActive)
+		platform.POST("/lan-config/:schoolId/test", handler.TestLANConnectivity)
+		platform.GET("/lan-config/:schoolId/history", handler.ListLANConfigHistory)
+		platform.POST("/lan-config/:schoolId/rollback", handler.RollbackLANConfig)
+	}
+}
+
+func initPlatformHandler() *platformHandler.PlatformHandler {
+	repo := platformRepo.NewPlatformRepository(database.DB)
+	svc := platformService.NewPlatformService(repo)
+	return platformHandler.NewPlatformHandler(svc)
 }
 
 func initSyncHandler() *syncHandler.SyncHandler {
