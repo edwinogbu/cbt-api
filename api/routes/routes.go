@@ -423,6 +423,11 @@ func setupActorRoutes(rg *gin.RouterGroup,
 		// as every other /admin/* route; a backup is a per-node/
 		// per-school concern, not platform-owner-exclusive.
 		admin.GET("/backups", adminHandler.ListBackups)
+		// Live, real-time node health (Master Implementation Plan
+		// section 1 "guided setup... health monitoring") - DB/Redis
+		// connectivity + latency, process uptime, node identity. Same
+		// role gate as every other /admin/* route.
+		admin.GET("/system/health", adminHandler.GetSystemHealth)
 	}
 
 	teacher := rg.Group("/teacher")
