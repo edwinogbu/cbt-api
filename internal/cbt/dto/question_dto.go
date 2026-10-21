@@ -999,6 +999,15 @@ func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, 
 		var questionLines []string
 		var options []QuestionOption
 		var correctAnswer string
+		// correctAnswer above always ends up mangled down to a single
+		// A-D letter once the loop below matches it against an MCQ-
+		// style answer line - that's correct for the MCQ case, but
+		// wrong for an essay's "Answer:" line, whose real content is a
+		// model-answer paragraph, not an option key. rawAnswerText
+		// keeps that paragraph's full, untouched text so the essay
+		// fallback in determineQuestionType can use it as the
+		// question's Explanation instead of a single stray letter.
+		var rawAnswerText string
 
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
@@ -1021,6 +1030,7 @@ func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, 
 					if len(parts) > 1 {
 						answer := strings.TrimSpace(parts[1])
 						log.Printf("Extracted answer from colon: '%s'", answer)
+						rawAnswerText = answer
 
 						if len(answer) == 1 && answer >= "A" && answer <= "D" {
 							correctAnswer = answer
@@ -1037,6 +1047,7 @@ func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, 
 						}
 					}
 				} else {
+					rawAnswerText = line
 					lastChar := string(line[len(line)-1])
 					if lastChar >= "A" && lastChar <= "D" {
 						correctAnswer = lastChar
@@ -1176,7 +1187,7 @@ func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, 
 			}
 		}
 
-		p.determineQuestionType(&q, options, correctAnswer)
+		p.determineQuestionType(&q, options, correctAnswer, rawAnswerText)
 		p.setDefaults(&q)
 
 		log.Printf("Final question %d: options=%d, correctOptionKeys=%v", idx+1, len(q.Options), q.CorrectOptionKeys)
@@ -1192,7 +1203,7 @@ func (p *DOCXParser) parseQuestionsFromText(text string) ([]QuestionImportItem, 
 	return questions, nil
 }
 
-func (p *DOCXParser) determineQuestionType(q *QuestionImportItem, options []QuestionOption, correctAnswer string) {
+func (p *DOCXParser) determineQuestionType(q *QuestionImportItem, options []QuestionOption, correctAnswer string, rawAnswerText string) {
 	if len(q.Options) > 0 {
 		return
 	}
@@ -1228,9 +1239,23 @@ func (p *DOCXParser) determineQuestionType(q *QuestionImportItem, options []Ques
 		return
 	}
 
-	q.QuestionType = QuestionTypeSingle
-	if correctAnswer != "" {
-		q.CorrectOptionKeys = []string{strings.ToUpper(strings.TrimSpace(correctAnswer))}
+	// No options were found and no fill-in-the-blank pattern matched -
+	// this is an open-ended/essay question, not a single-choice one.
+	// Before this fix, every such question fell through to
+	// QuestionTypeSingle with zero options, which the bulk-upload
+	// validation this item eventually reaches (question_service.go's
+	// validateImportItem) always rejected with "options are required
+	// for MCQ questions" - confirmed live: every essay question in
+	// every DOCX bulk upload failed this way, 100% of the time,
+	// including the system's own official DOCX template's own sample
+	// essay question. The "Answer:"/"Ans:" line under an essay question
+	// holds its model answer, not an MCQ option letter - carried into
+	// Explanation (never an invented CorrectOptionKeys entry) so the
+	// bulk-upload essay-rubric fallback can build a real rubric from it
+	// instead of silently discarding it.
+	q.QuestionType = QuestionTypeEssay
+	if rawAnswerText != "" && q.Explanation == "" {
+		q.Explanation = rawAnswerText
 	}
 }
 
@@ -1322,6 +1347,15 @@ func (p *TXTParser) parseQuestionsFromText(text string) ([]QuestionImportItem, e
 		var questionLines []string
 		var options []QuestionOption
 		var correctAnswer string
+		// correctAnswer above always ends up mangled down to a single
+		// A-D letter once the loop below matches it against an MCQ-
+		// style answer line - that's correct for the MCQ case, but
+		// wrong for an essay's "Answer:" line, whose real content is a
+		// model-answer paragraph, not an option key. rawAnswerText
+		// keeps that paragraph's full, untouched text so the essay
+		// fallback in determineQuestionType can use it as the
+		// question's Explanation instead of a single stray letter.
+		var rawAnswerText string
 
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
@@ -1335,6 +1369,7 @@ func (p *TXTParser) parseQuestionsFromText(text string) ([]QuestionImportItem, e
 				parts := strings.SplitN(line, ":", 2)
 				if len(parts) > 1 {
 					answer := strings.TrimSpace(parts[1])
+					rawAnswerText = answer
 					if len(answer) == 1 && answer >= "A" && answer <= "D" {
 						correctAnswer = answer
 					} else {
@@ -1411,7 +1446,7 @@ func (p *TXTParser) parseQuestionsFromText(text string) ([]QuestionImportItem, e
 			}
 		}
 
-		p.determineQuestionType(&q, options, correctAnswer)
+		p.determineQuestionType(&q, options, correctAnswer, rawAnswerText)
 		p.setDefaults(&q)
 		questions = append(questions, q)
 	}
@@ -1423,7 +1458,7 @@ func (p *TXTParser) parseQuestionsFromText(text string) ([]QuestionImportItem, e
 	return questions, nil
 }
 
-func (p *TXTParser) determineQuestionType(q *QuestionImportItem, options []QuestionOption, correctAnswer string) {
+func (p *TXTParser) determineQuestionType(q *QuestionImportItem, options []QuestionOption, correctAnswer string, rawAnswerText string) {
 	if len(options) == 2 {
 		lowerA := strings.ToLower(options[0].Text)
 		lowerB := strings.ToLower(options[1].Text)
@@ -1455,9 +1490,13 @@ func (p *TXTParser) determineQuestionType(q *QuestionImportItem, options []Quest
 		return
 	}
 
-	q.QuestionType = QuestionTypeSingle
-	if correctAnswer != "" {
-		q.CorrectOptionKeys = []string{strings.ToUpper(strings.TrimSpace(correctAnswer))}
+	// Same fix as DOCXParser.determineQuestionType above, for the
+	// identical bug in this format: no options and no blank pattern
+	// means an open-ended/essay question, never QuestionTypeSingle with
+	// zero options (which bulk-upload validation always rejected).
+	q.QuestionType = QuestionTypeEssay
+	if rawAnswerText != "" && q.Explanation == "" {
+		q.Explanation = rawAnswerText
 	}
 }
 

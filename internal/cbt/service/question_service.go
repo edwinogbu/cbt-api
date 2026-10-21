@@ -904,7 +904,27 @@ func (s *QuestionService) validateImportItem(item *dto.QuestionImportItem) error
 		}
 	case dto.QuestionTypeEssay:
 		if len(item.Rubric) == 0 {
-			return errors.New("rubric is required for essay questions")
+			// None of the bulk-import parsers (CSV, Excel, DOCX, TXT,
+			// JSON) ever populate a structured Rubric - no import format
+			// has a column/field for it. Every essay row in every
+			// format's own official downloadable template therefore
+			// failed this exact check, 100% of the time, for every
+			// school: confirmed live by uploading GET
+			// /questions/templates/csv's own unmodified output back
+			// through this endpoint. Every bulk-import format's
+			// Explanation column is already documented and used as the
+			// essay's model answer (see the CSV template's own sample
+			// row), so reusing it as a single default rubric criterion
+			// unblocks essay questions in bulk import entirely, using
+			// only data the teacher already provided - never a
+			// fabricated grading criterion. A teacher can still add more
+			// criteria or edit this one afterward via the question edit
+			// screen.
+			if item.Explanation != "" {
+				item.Rubric = []dto.RubricCriteria{{Criteria: item.Explanation, Marks: item.Marks}}
+			} else {
+				return errors.New("rubric is required for essay questions - add a model-answer/explanation to the imported row, or add a rubric after import")
+			}
 		}
 		if len(item.Options) > 0 {
 			return errors.New("essay questions cannot have options")
