@@ -416,6 +416,13 @@ func setupActorRoutes(rg *gin.RouterGroup,
 		admin.GET("/classes", adminH.ListClasses)
 		admin.GET("/teachers", adminH.ListTeachers)
 		admin.DELETE("/students/:id/permanent", adminH.HardDeleteStudent)
+		// Read-only, filesystem-sourced backup status (Master
+		// Implementation Plan section 7) - reports what
+		// scripts/backup-school-node.sh has actually written to
+		// BACKUP_DIR, never a claimed/assumed status. Same role gate
+		// as every other /admin/* route; a backup is a per-node/
+		// per-school concern, not platform-owner-exclusive.
+		admin.GET("/backups", adminHandler.ListBackups)
 	}
 
 	teacher := rg.Group("/teacher")
