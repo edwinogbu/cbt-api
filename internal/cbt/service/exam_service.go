@@ -3218,19 +3218,30 @@ func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, s
 		return dto.SubjectTermlyResult{}, err
 	}
 
+	components := make([]dto.SubjectComponentResult, len(assessment.Components))
+	for i, c := range assessment.Components {
+		components[i] = dto.SubjectComponentResult{
+			Code: c.Code, Name: c.Name, Weight: c.Weight,
+			Percentage: c.Percentage, HasResults: c.HasResults,
+		}
+	}
+
 	return dto.SubjectTermlyResult{
 		Subject: dto.SubjectInfo{
 			ID:   subject.ID,
 			Name: subject.Name,
 			Code: subject.Code,
 		},
-		Exams:       subjectResults,
-		TotalScore:  totalScore,
-		TotalMarks:  totalMarks,
-		Percentage:  percentage,
-		Grade:       grade,
-		GradePoint:  gp,
-		Remarks:     remark,
+		Exams:         subjectResults,
+		TotalScore:    totalScore,
+		TotalMarks:    totalMarks,
+		Percentage:    percentage,
+		Grade:         grade,
+		GradePoint:    gp,
+		Remarks:       remark,
+		Components:    components,
+		IsComplete:    assessment.IsComplete,
+		IsProvisional: assessment.IsProvisional,
 	}, nil
 }
 
@@ -3419,6 +3430,108 @@ func (s *ExamService) getSessionByID(ctx context.Context, id string) (*models.Ac
 	var session models.AcademicSession
 	err := s.db.WithContext(ctx).Where("id = ?", id).First(&session).Error
 	return &session, err
+}
+
+// findNextTermStart resolves a real "next term begins" date for a
+// report card's footer - the term after currentTerm within the same
+// session, or term 1 of the next academic session (by StartDate, same
+// school) if currentTerm is that session's last term. Returns nil
+// rather than guessing when no such term/session has been created yet;
+// a report card must show "not yet scheduled", never a fabricated date.
+func (s *ExamService) findNextTermStart(ctx context.Context, currentTerm *models.Term) *time.Time {
+	var nextTerm models.Term
+	if err := s.db.WithContext(ctx).
+		Where("session_id = ? AND term_number = ?", currentTerm.SessionID, currentTerm.TermNumber+1).
+		First(&nextTerm).Error; err == nil {
+		return &nextTerm.StartDate
+	}
+
+	var currentSession models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ?", currentTerm.SessionID).First(&currentSession).Error; err != nil {
+		return nil
+	}
+	var nextSession models.AcademicSession
+	if err := s.db.WithContext(ctx).
+		Where("school_id = ? AND start_date > ?", currentSession.SchoolID, currentSession.StartDate).
+		Order("start_date ASC").
+		First(&nextSession).Error; err != nil {
+		return nil
+	}
+	if err := s.db.WithContext(ctx).
+		Where("session_id = ? AND term_number = ?", nextSession.ID, 1).
+		First(&nextTerm).Error; err != nil {
+		return nil
+	}
+	return &nextTerm.StartDate
+}
+
+// getReportCardRemark fetches a student's persisted teacher/principal
+// remark for one term, or nil if none has been entered yet (every real
+// report card looked at before this method existed had these hardcoded
+// to "").
+func (s *ExamService) getReportCardRemark(ctx context.Context, studentID, termID, sessionID string) *models.ReportCardRemark {
+	var remark models.ReportCardRemark
+	if err := s.db.WithContext(ctx).
+		Where("student_id = ? AND term_id = ? AND session_id = ?", studentID, termID, sessionID).
+		First(&remark).Error; err != nil {
+		return nil
+	}
+	return &remark
+}
+
+// setReportCardRemark upserts the teacher or principal half of a
+// student's report-card remark. schoolID must already be the caller's
+// own resolved tenant (middleware.ResolveSchoolID) - this only re-checks
+// that the named student actually belongs to it, the same tenant
+// boundary every other report-card write path in this file enforces.
+func (s *ExamService) setReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest, isTeacher bool) error {
+	student, err := s.examRepo.GetStudentByID(ctx, req.StudentID)
+	if err != nil {
+		return errors.New("student not found")
+	}
+	if student.SchoolID != schoolID {
+		return errors.New("student does not belong to your school")
+	}
+
+	var remark models.ReportCardRemark
+	err = s.db.WithContext(ctx).
+		Where("student_id = ? AND term_id = ? AND session_id = ?", req.StudentID, req.TermID, req.SessionID).
+		First(&remark).Error
+	if err == gorm.ErrRecordNotFound {
+		remark = models.ReportCardRemark{
+			ID: models.GenerateID(), SchoolID: schoolID,
+			StudentID: req.StudentID, TermID: req.TermID, SessionID: req.SessionID,
+		}
+	} else if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	if isTeacher {
+		remark.TeacherRemark = req.Remark
+		remark.TeacherID = &actorUserID
+		remark.TeacherSetAt = &now
+		if req.Conduct != "" {
+			remark.Conduct = req.Conduct
+		}
+	} else {
+		remark.PrincipalRemark = req.Remark
+		remark.PrincipalID = &actorUserID
+		remark.PrincipalSetAt = &now
+	}
+	return s.db.WithContext(ctx).Save(&remark).Error
+}
+
+// SetTeacherReportCardRemark records a class teacher's comment (and
+// optionally conduct) on a student's termly report card.
+func (s *ExamService) SetTeacherReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest) error {
+	return s.setReportCardRemark(ctx, schoolID, actorUserID, req, true)
+}
+
+// SetPrincipalReportCardRemark records the principal/admin's comment on
+// a student's termly report card.
+func (s *ExamService) SetPrincipalReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest) error {
+	return s.setReportCardRemark(ctx, schoolID, actorUserID, req, false)
 }
 
 // getSchoolByID gets a school by ID
@@ -5226,17 +5339,27 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
     reportCardSubjects := make([]dto.ReportCardSubject, 0, len(termlyResult.Subjects))
     for _, subject := range termlyResult.Subjects {
         reportCardSubjects = append(reportCardSubjects, dto.ReportCardSubject{
-            SubjectName:  subject.Subject.Name,
-            SubjectCode:  subject.Subject.Code,
-            TotalScore:   subject.TotalScore,
-            Grade:        subject.Grade,
-            GradePoint:   subject.GradePoint,
-            Position:     subject.Position,
-            ClassAverage: subject.ClassAverage,
-            HighestScore: subject.HighestScore,
-            LowestScore:  subject.LowestScore,
-            Remarks:      subject.Remarks,
+            SubjectName:   subject.Subject.Name,
+            SubjectCode:   subject.Subject.Code,
+            TotalScore:    subject.TotalScore,
+            Grade:         subject.Grade,
+            GradePoint:    subject.GradePoint,
+            Position:      subject.Position,
+            ClassAverage:  subject.ClassAverage,
+            HighestScore:  subject.HighestScore,
+            LowestScore:   subject.LowestScore,
+            Remarks:       subject.Remarks,
+            Components:    subject.Components,
+            IsComplete:    subject.IsComplete,
+            IsProvisional: subject.IsProvisional,
         })
+    }
+
+    teacherRemarks, principalRemarks, conduct := "", "", ""
+    if remark := s.getReportCardRemark(ctx, student.ID, termID, sessionID); remark != nil {
+        teacherRemarks = remark.TeacherRemark
+        principalRemarks = remark.PrincipalRemark
+        conduct = remark.Conduct
     }
 
     // ✅ Return with class name properly populated
@@ -5282,9 +5405,13 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
             BestPerformingSubject: termlyResult.Summary.BestPerformingSubject,
             WorstPerformingSubject: termlyResult.Summary.WorstPerformingSubject,
         },
-        TeacherRemarks:   "",
-        PrincipalRemarks: "",
-        NextTermBegins:   nil,
+        TeacherRemarks:   teacherRemarks,
+        PrincipalRemarks: principalRemarks,
+        Conduct:          conduct,
+        NextTermBegins:   s.findNextTermStart(ctx, term),
+        // No attendance-tracking feature exists in this codebase yet -
+        // nil rather than a fabricated figure.
+        Attendance: nil,
     }, nil
 }
 

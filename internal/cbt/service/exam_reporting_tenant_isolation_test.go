@@ -20,23 +20,6 @@ import (
 // authorizeClassTenant or resolve via examEffectiveSchoolID. Reuses
 // seedExamClass from exam_service_test.go.
 
-// patchStudentsTableForReporting patches the shared setupExamTestDB's
-// minimal `students` table (user_id only) with the class_id, school_id,
-// and deleted_at columns the teacher/school reporting queries need,
-// scoped to just this test file's own DB handle.
-func patchStudentsTableForReporting(t *testing.T, db *gorm.DB) {
-	t.Helper()
-	for _, stmt := range []string{
-		`ALTER TABLE students ADD COLUMN class_id TEXT`,
-		`ALTER TABLE students ADD COLUMN school_id TEXT`,
-		`ALTER TABLE students ADD COLUMN deleted_at DATETIME`,
-	} {
-		if err := db.Exec(stmt).Error; err != nil {
-			t.Fatalf("failed to patch students table (%s): %v", stmt, err)
-		}
-	}
-}
-
 func seedStudentForSchoolExamOverview(t *testing.T, db *gorm.DB, id, schoolID string) {
 	t.Helper()
 	if err := db.Exec("INSERT INTO students (id, school_id) VALUES (?, ?)", id, schoolID).Error; err != nil {
@@ -63,7 +46,6 @@ func seedSubjectsTable(t *testing.T, db *gorm.DB, id string) {
 
 func TestGetTeacherSubjectResults_CrossTenant_Rejected(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 
@@ -74,7 +56,6 @@ func TestGetTeacherSubjectResults_CrossTenant_Rejected(t *testing.T) {
 
 func TestGetTeacherSubjectResults_SameTenant_Allowed(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 
@@ -85,7 +66,6 @@ func TestGetTeacherSubjectResults_SameTenant_Allowed(t *testing.T) {
 
 func TestGetTeacherSubjectResults_PlatformOwner_Bypasses(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 
@@ -96,7 +76,6 @@ func TestGetTeacherSubjectResults_PlatformOwner_Bypasses(t *testing.T) {
 
 func TestGetTeacherClassResults_CrossTenant_Rejected(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 
@@ -107,7 +86,6 @@ func TestGetTeacherClassResults_CrossTenant_Rejected(t *testing.T) {
 
 func TestGetTeacherClassResults_SameTenant_Allowed(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 
@@ -144,7 +122,6 @@ func TestGetSubjectQuestionsForExam_PlatformOwner_Bypasses(t *testing.T) {
 
 func TestGetSchoolPerformanceOverview_CrossTenant_IgnoresClientSchoolID(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	seedStudentForSchoolExamOverview(t, db, "student-a1", "school-A")
 	seedStudentForSchoolExamOverview(t, db, "student-b1", "school-B")
@@ -171,7 +148,6 @@ func TestGetSchoolPerformanceOverview_CrossTenant_IgnoresClientSchoolID(t *testi
 
 func TestGetSchoolPerformanceOverview_PlatformOwner_HonorsClientSchoolID(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForReporting(t, db)
 	s := newTestExamService(db)
 	seedStudentForSchoolExamOverview(t, db, "student-a1", "school-A")
 	seedStudentForSchoolExamOverview(t, db, "student-b1", "school-B")

@@ -90,6 +90,7 @@ func init() {
 	Register(&AssessmentScheme{})
 	Register(&AssessmentComponent{})
 	Register(&ClassLevelSubject{})
+	Register(&ReportCardRemark{})
 
 	// ============================================
 	// OFFLINE-FIRST SYNC MODELS

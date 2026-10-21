@@ -1027,6 +1027,32 @@ type SubjectTermlyResult struct {
 	LowestScore      int              `json:"lowest_score"`
 	PerformanceTrend string           `json:"performance_trend"`
 	Remarks          string           `json:"remarks"`
+	// Components breaks the subject's total down by the school's
+	// configured assessment components (e.g. CA/Test/Exam) - see
+	// internal/grading.ComputeSubjectAssessment. Empty for a school with
+	// no AssessmentScheme configured, in which case a report card should
+	// fall back to showing just the single Percentage/Grade above.
+	Components []SubjectComponentResult `json:"components,omitempty"`
+	// IsComplete is false if this subject has no results at all yet, or
+	// (under a configured scheme) if any of its components is still
+	// missing a result. A report card must show such a subject as
+	// pending, never as a 0 or a fail.
+	IsComplete bool `json:"is_complete"`
+	// IsProvisional is true if any contributing result isn't yet fully
+	// graded (an essay/descriptive answer still awaiting manual
+	// marking) - distinct from IsComplete, which is about components
+	// missing entirely.
+	IsProvisional bool `json:"is_provisional"`
+}
+
+// SubjectComponentResult is one assessment component's resolved share
+// of a subject's total (e.g. {Code: "ca", Percentage: 85, Weight: 30}).
+type SubjectComponentResult struct {
+	Code       string  `json:"code"`
+	Name       string  `json:"name"`
+	Weight     float64 `json:"weight"`
+	Percentage float64 `json:"percentage"`
+	HasResults bool    `json:"has_results"`
 }
 
 // ExamResultItem - Individual exam result within a subject
@@ -1088,25 +1114,63 @@ type TermlyReportCardResponse struct {
 	Summary          ReportCardSummary    `json:"summary"`
 	TeacherRemarks   string               `json:"teacher_remarks"`
 	PrincipalRemarks string               `json:"principal_remarks"`
+	Conduct          string               `json:"conduct,omitempty"`
 	NextTermBegins   *time.Time           `json:"next_term_begins"`
+	// Attendance is nil until attendance tracking exists in this
+	// codebase (it does not yet) - a report card must show "not
+	// available" rather than fabricate attendance figures.
+	Attendance *AttendanceSummary `json:"attendance"`
+}
+
+// AttendanceSummary - a term's attendance figures for one student.
+// Not yet populated by any endpoint (no attendance-tracking feature
+// exists in this codebase yet) - the type exists so report-card
+// consumers have a stable shape to render once that feature lands,
+// instead of inventing their own ad hoc fields.
+type AttendanceSummary struct {
+	DaysPresent  int `json:"days_present"`
+	DaysAbsent   int `json:"days_absent"`
+	DaysSchoolOpen int `json:"days_school_open"`
+}
+
+// SetReportCardRemarkRequest - set a teacher's or principal's remark on
+// a student's termly report card.
+type SetReportCardRemarkRequest struct {
+	StudentID string `json:"student_id" binding:"required"`
+	TermID    string `json:"term_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	Remark    string `json:"remark" binding:"required"`
+	// Conduct is only meaningful on a teacher remark - a principal
+	// remark leaves it blank rather than overwriting the teacher's.
+	Conduct string `json:"conduct,omitempty"`
 }
 
 // ReportCardSubject - Subject entry in report card
 type ReportCardSubject struct {
-	SubjectName   string  `json:"subject_name"`
-	SubjectCode   string  `json:"subject_code"`
-	FirstTest     *int    `json:"first_test,omitempty"`
-	SecondTest    *int    `json:"second_test,omitempty"`
-	ThirdTest     *int    `json:"third_test,omitempty"`
-	ExamScore     *int    `json:"exam_score,omitempty"`
-	TotalScore    int     `json:"total_score"`
-	Grade         string  `json:"grade"`
-	GradePoint    float64 `json:"grade_point"`
-	Position      int     `json:"position"`
-	ClassAverage  float64 `json:"class_average"`
-	HighestScore  int     `json:"highest_score"`
-	LowestScore   int     `json:"lowest_score"`
-	Remarks       string  `json:"remarks"`
+	SubjectName  string  `json:"subject_name"`
+	SubjectCode  string  `json:"subject_code"`
+	FirstTest    *int    `json:"first_test,omitempty"`
+	SecondTest   *int    `json:"second_test,omitempty"`
+	ThirdTest    *int    `json:"third_test,omitempty"`
+	ExamScore    *int    `json:"exam_score,omitempty"`
+	TotalScore   int     `json:"total_score"`
+	Grade        string  `json:"grade"`
+	GradePoint   float64 `json:"grade_point"`
+	Position     int     `json:"position"`
+	ClassAverage float64 `json:"class_average"`
+	HighestScore int     `json:"highest_score"`
+	LowestScore  int     `json:"lowest_score"`
+	Remarks      string  `json:"remarks"`
+	// Components/IsComplete/IsProvisional mirror SubjectTermlyResult's
+	// own fields of the same name - see its doc comment. Printed report
+	// cards should render these dynamic component columns (CA/Test/
+	// Exam, whatever a school has configured) instead of the legacy
+	// FirstTest/SecondTest/ThirdTest/ExamScore fields above, which no
+	// code populates and which cannot express more than 3 named
+	// components or a school-specific weighting.
+	Components    []SubjectComponentResult `json:"components,omitempty"`
+	IsComplete    bool                      `json:"is_complete"`
+	IsProvisional bool                      `json:"is_provisional"`
 }
 
 // ReportCardSummary - Summary section of report card

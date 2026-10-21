@@ -1360,6 +1360,82 @@ func (h *ExamHandler) MarkDescriptiveAnswer(c *gin.Context) {
 	})
 }
 
+// SetTeacherReportCardRemark godoc
+// @Summary      Set a class teacher's remark on a student's report card
+// @Tags         Termly Results
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.SetReportCardRemarkRequest true "Remark"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/report-card/teacher-remark [post]
+func (h *ExamHandler) SetTeacherReportCardRemark(c *gin.Context) {
+	var req dto.SetReportCardRemarkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	schoolID := middleware.ResolveSchoolID(c, "")
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	if err := h.examService.SetTeacherReportCardRemark(c.Request.Context(), schoolID, userID, &req); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// SetPrincipalReportCardRemark godoc
+// @Summary      Set the principal/admin's remark on a student's report card
+// @Tags         Termly Results
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.SetReportCardRemarkRequest true "Remark"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/report-card/principal-remark [post]
+func (h *ExamHandler) SetPrincipalReportCardRemark(c *gin.Context) {
+	var req dto.SetReportCardRemarkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	schoolID := middleware.ResolveSchoolID(c, "")
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	if err := h.examService.SetPrincipalReportCardRemark(c.Request.Context(), schoolID, userID, &req); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
 // SubmitExam godoc
 // @Summary      Submit an exam for grading
 // @Tags         Student Exam

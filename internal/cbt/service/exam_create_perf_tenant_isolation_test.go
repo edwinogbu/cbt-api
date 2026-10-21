@@ -7,7 +7,6 @@ import (
 	"cbt-api/internal/cbt/dto"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // ---- CreateExam/CreateExamWithContext: class must belong to caller's school ----
@@ -93,19 +92,8 @@ func TestCreateExamWithContext_CrossTenantClass_Rejected(t *testing.T) {
 // any school, could pull any student's full performance history
 // platform-wide.
 
-func patchStudentsTableForPerformance(t *testing.T, db *gorm.DB) {
-	t.Helper()
-	if err := db.Exec("ALTER TABLE students ADD COLUMN school_id TEXT").Error; err != nil {
-		t.Fatalf("failed to patch students table (school_id): %v", err)
-	}
-	if err := db.Exec("ALTER TABLE students ADD COLUMN deleted_at DATETIME").Error; err != nil {
-		t.Fatalf("failed to patch students table (deleted_at): %v", err)
-	}
-}
-
 func TestGetStudentPerformance_CrossTenant_Rejected(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForPerformance(t, db)
 	svc := newTestExamService(db)
 
 	studentID := uuid.NewString()
@@ -120,7 +108,6 @@ func TestGetStudentPerformance_CrossTenant_Rejected(t *testing.T) {
 
 func TestGetStudentPerformance_SameTenant_Succeeds(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForPerformance(t, db)
 	svc := newTestExamService(db)
 
 	studentID := uuid.NewString()
@@ -135,7 +122,6 @@ func TestGetStudentPerformance_SameTenant_Succeeds(t *testing.T) {
 
 func TestGetStudentPerformance_PlatformOwner_Bypasses(t *testing.T) {
 	db := setupExamTestDB(t)
-	patchStudentsTableForPerformance(t, db)
 	svc := newTestExamService(db)
 
 	studentID := uuid.NewString()

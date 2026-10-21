@@ -9,18 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// addStudentsClassIDColumn patches the shared setupExamTestDB's minimal
-// `students` table (user_id only) with the class_id column
-// GetExamResultsByClass's join needs, scoped to just this test file's
-// own DB handle so it can't affect any other test using the same
-// shared helper.
-func addStudentsClassIDColumn(t *testing.T, db *gorm.DB) {
-	t.Helper()
-	if err := db.Exec(`ALTER TABLE students ADD COLUMN class_id TEXT`).Error; err != nil {
-		t.Fatalf("failed to add students.class_id column: %v", err)
-	}
-}
-
 func seedExamAssignmentsTable(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	if err := db.Exec(`CREATE TABLE IF NOT EXISTS exam_assignments (
@@ -169,7 +157,6 @@ func TestPreviewExam_PlatformOwner_Bypasses(t *testing.T) {
 
 func TestGetClassResults_CrossTenant_Rejected(t *testing.T) {
 	db := setupExamTestDB(t)
-	addStudentsClassIDColumn(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 	examA := seedExamForClass(t, db, classA)
@@ -214,7 +201,6 @@ func TestGetExamStatistics_SameTenant_Allowed(t *testing.T) {
 
 func TestExportExamResults_CrossTenant_Rejected(t *testing.T) {
 	db := setupExamTestDB(t)
-	addStudentsClassIDColumn(t, db)
 	s := newTestExamService(db)
 	classA := seedExamClass(t, db, "school-A")
 	examA := seedExamForClass(t, db, classA)

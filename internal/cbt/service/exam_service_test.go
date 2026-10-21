@@ -47,7 +47,8 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), school_id TEXT, teacher_id TEXT, deleted_at DATETIME
 		)`,
 		`CREATE TABLE students (
-			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT, school_id TEXT, class_id TEXT,
+			deleted_at DATETIME
 		)`,
 		`CREATE TABLE exam_attempts (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
@@ -123,6 +124,13 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			scheme_id TEXT, code TEXT, name TEXT, weight REAL,
 			exam_types TEXT DEFAULT '[]', aggregation TEXT DEFAULT 'pooled',
 			sort_order INTEGER, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE report_card_remarks (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, student_id TEXT, term_id TEXT, session_id TEXT,
+			teacher_remark TEXT, teacher_id TEXT, teacher_set_at DATETIME,
+			principal_remark TEXT, principal_id TEXT, principal_set_at DATETIME,
+			conduct TEXT, created_at DATETIME, updated_at DATETIME
 		)`,
 	}
 	for _, stmt := range ddl {
@@ -1268,5 +1276,101 @@ func TestBuildSubjectTermlyResult_WeightedSchemeAppliesConfiguredWeights(t *test
 	}
 	if got.Grade != "A" {
 		t.Errorf("Grade = %s, want A (72%% weighted total crosses the builtin 70%% boundary that the unweighted 68%% would not)", got.Grade)
+	}
+}
+
+// ---- Report-card teacher/principal remarks: previously hardcoded to
+// "" with nowhere to persist them ----
+
+func seedStudentWithSchool(t *testing.T, db *gorm.DB, id, schoolID string) {
+	t.Helper()
+	if err := db.Exec("INSERT INTO students (id, user_id, school_id) VALUES (?, ?, ?)", id, id, schoolID).Error; err != nil {
+		t.Fatalf("failed to seed student: %v", err)
+	}
+}
+
+func TestGetReportCardRemark_NoneYetReturnsNil(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	if got := svc.getReportCardRemark(context.Background(), "student-x", "term-x", "session-x"); got != nil {
+		t.Errorf("getReportCardRemark = %+v, want nil when no remark has ever been set", got)
+	}
+}
+
+func TestSetTeacherReportCardRemark_CreatesNewRemark(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedStudentWithSchool(t, db, "student-1", "school-1")
+
+	req := &dto.SetReportCardRemarkRequest{
+		StudentID: "student-1", TermID: "term-1", SessionID: "session-1",
+		Remark: "Good effort this term.", Conduct: "Good",
+	}
+	if err := svc.SetTeacherReportCardRemark(context.Background(), "school-1", "teacher-1", req); err != nil {
+		t.Fatalf("SetTeacherReportCardRemark failed: %v", err)
+	}
+
+	got := svc.getReportCardRemark(context.Background(), "student-1", "term-1", "session-1")
+	if got == nil {
+		t.Fatal("getReportCardRemark returned nil after setting a teacher remark")
+	}
+	if got.TeacherRemark != req.Remark || got.Conduct != req.Conduct {
+		t.Errorf("TeacherRemark/Conduct = %q/%q, want %q/%q", got.TeacherRemark, got.Conduct, req.Remark, req.Conduct)
+	}
+	if got.PrincipalRemark != "" {
+		t.Errorf("PrincipalRemark = %q, want empty - only the teacher remark was set", got.PrincipalRemark)
+	}
+}
+
+func TestSetPrincipalReportCardRemark_DoesNotClobberTeacherRemark(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedStudentWithSchool(t, db, "student-1", "school-1")
+	ctx := context.Background()
+
+	teacherReq := &dto.SetReportCardRemarkRequest{
+		StudentID: "student-1", TermID: "term-1", SessionID: "session-1",
+		Remark: "Good effort this term.", Conduct: "Good",
+	}
+	if err := svc.SetTeacherReportCardRemark(ctx, "school-1", "teacher-1", teacherReq); err != nil {
+		t.Fatalf("SetTeacherReportCardRemark failed: %v", err)
+	}
+
+	principalReq := &dto.SetReportCardRemarkRequest{
+		StudentID: "student-1", TermID: "term-1", SessionID: "session-1",
+		Remark: "Keep up the good work.",
+	}
+	if err := svc.SetPrincipalReportCardRemark(ctx, "school-1", "principal-1", principalReq); err != nil {
+		t.Fatalf("SetPrincipalReportCardRemark failed: %v", err)
+	}
+
+	got := svc.getReportCardRemark(ctx, "student-1", "term-1", "session-1")
+	if got == nil {
+		t.Fatal("getReportCardRemark returned nil after setting both remarks")
+	}
+	if got.TeacherRemark != teacherReq.Remark {
+		t.Errorf("TeacherRemark = %q, want %q (must survive the later principal-remark write, same row)", got.TeacherRemark, teacherReq.Remark)
+	}
+	if got.PrincipalRemark != principalReq.Remark {
+		t.Errorf("PrincipalRemark = %q, want %q", got.PrincipalRemark, principalReq.Remark)
+	}
+}
+
+func TestSetTeacherReportCardRemark_CrossTenant_Rejected(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedStudentWithSchool(t, db, "student-1", "school-A")
+
+	req := &dto.SetReportCardRemarkRequest{
+		StudentID: "student-1", TermID: "term-1", SessionID: "session-1",
+		Remark: "Should never be written.",
+	}
+	err := svc.SetTeacherReportCardRemark(context.Background(), "school-B", "teacher-1", req)
+	if err == nil {
+		t.Fatal("expected School B's token to be rejected setting a remark on School A's student, got no error")
+	}
+
+	if got := svc.getReportCardRemark(context.Background(), "student-1", "term-1", "session-1"); got != nil {
+		t.Errorf("a rejected cross-tenant remark write must not be persisted, got %+v", got)
 	}
 }

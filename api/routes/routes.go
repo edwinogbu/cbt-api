@@ -395,6 +395,21 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			marking.GET("/pending", handler.GetPendingManualMarking)
 			marking.POST("/grade", handler.MarkDescriptiveAnswer)
 		}
+
+		// Report-card comments: a teacher sets their own remark, but
+		// "principal" has no distinct role in this system - an
+		// admin/super_admin stands in for the principal's sign-off, so
+		// that endpoint is deliberately NOT open to "teacher".
+		reportCardRemarks := exams.Group("/report-card")
+		{
+			teacherRemark := reportCardRemarks.Group("")
+			teacherRemark.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			teacherRemark.POST("/teacher-remark", handler.SetTeacherReportCardRemark)
+
+			principalRemark := reportCardRemarks.Group("")
+			principalRemark.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			principalRemark.POST("/principal-remark", handler.SetPrincipalReportCardRemark)
+		}
 	}
 }
 
