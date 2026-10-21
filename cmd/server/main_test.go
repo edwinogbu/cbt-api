@@ -156,3 +156,40 @@ func headerListContains(list, header string) bool {
 	}
 	return false
 }
+
+// ---- ClientIP spoofing: Gin's unsafe default trusted-proxy config ----
+//
+// Without an explicit SetTrustedProxies call, Gin's default engine
+// trusts 0.0.0.0/0 and ::/0 as proxies (with ForwardedByClientIP: true),
+// so c.ClientIP() blindly honors a client-supplied X-Forwarded-For
+// header from ANY remote address - a real client could set it to
+// whatever IP it likes, spoofing session audit logs, exam attempt IP
+// tracking, and any IP-based rate limiting built on top of it.
+
+func TestNewRouter_ClientIPIsNotSpoofableViaForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r, err := newRouter()
+	if err != nil {
+		t.Fatalf("newRouter failed: %v", err)
+	}
+
+	var observedIP string
+	r.GET("/whoami", func(c *gin.Context) {
+		observedIP = c.ClientIP()
+		c.String(http.StatusOK, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/whoami", nil)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.RemoteAddr = "127.0.0.1:54321"
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if observedIP == "1.2.3.4" {
+		t.Fatalf("ClientIP() trusted a client-supplied X-Forwarded-For header: got %q, want the real TCP peer (127.0.0.1)", observedIP)
+	}
+	if observedIP != "127.0.0.1" {
+		t.Fatalf("expected ClientIP() to return the real TCP peer 127.0.0.1, got %q", observedIP)
+	}
+}
