@@ -14,6 +14,7 @@ import (
 
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/repository"
+	"cbt-api/internal/grading"
 	"cbt-api/internal/models"
 
 	"github.com/xuri/excelize/v2"
@@ -30,6 +31,7 @@ type ExamService struct {
 	examRepo     *repository.ExamRepository
 	questionRepo *repository.QuestionRepository
 	db           *gorm.DB
+	gradingSvc   *grading.Service
 }
 
 func NewExamService(examRepo *repository.ExamRepository, questionRepo *repository.QuestionRepository, db *gorm.DB) *ExamService {
@@ -37,6 +39,7 @@ func NewExamService(examRepo *repository.ExamRepository, questionRepo *repositor
 		examRepo:     examRepo,
 		questionRepo: questionRepo,
 		db:           db,
+		gradingSvc:   grading.NewService(db),
 	}
 }
 
@@ -3078,8 +3081,17 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	totalMarks := 0
 	passed := 0
 
+	school, err := s.getSchoolByID(ctx, student.SchoolID)
+	if err != nil {
+		return nil, err
+	}
+	class, err := s.getClassByID(ctx, student.ClassID)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, subject := range subjects {
-		subjectResult, err := s.buildSubjectTermlyResult(ctx, studentID, subject.ID, results)
+		subjectResult, err := s.buildSubjectTermlyResult(ctx, studentID, subject.ID, student.SchoolID, class.ClassLevelID, results)
 		if err != nil {
 			continue
 		}
@@ -3095,7 +3107,8 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	if totalMarks > 0 {
 		overallPercentage = float64(totalScore) / float64(totalMarks) * 100
 	}
-	overallGrade, overallGP, _ := dto.GetGrade(overallPercentage)
+	overallGradeResult := s.gradingSvc.ComputeGrade(ctx, student.SchoolID, class.ClassLevelID, overallPercentage)
+	overallGrade, overallGP := overallGradeResult.Grade, overallGradeResult.GradePoint
 
 	// Get term and session info
 	term, err := s.getTermByID(ctx, termID)
@@ -3103,14 +3116,6 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 		return nil, err
 	}
 	session, err := s.getSessionByID(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	school, err := s.getSchoolByID(ctx, student.SchoolID)
-	if err != nil {
-		return nil, err
-	}
-	class, err := s.getClassByID(ctx, student.ClassID)
 	if err != nil {
 		return nil, err
 	}
@@ -3161,9 +3166,15 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	}, nil
 }
 
-// buildSubjectTermlyResult builds a subject's termly result
-func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, subjectID string, allResults []models.Result) (dto.SubjectTermlyResult, error) {
+// buildSubjectTermlyResult builds a subject's termly result. Percentage
+// and grade are resolved through the shared grading/assessment engine
+// (internal/grading): a school/class-level with no configured
+// AssessmentScheme or GradingScale gets the exact pre-existing behavior
+// (plain pooled score/marks sum, builtin grade boundaries) - these calls
+// only change output for a school that has explicitly configured one.
+func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, subjectID, schoolID, classLevelID string, allResults []models.Result) (dto.SubjectTermlyResult, error) {
 	var subjectResults []dto.ExamResultItem
+	var scoredExams []grading.ScoredExam
 	totalScore := 0
 	totalMarks := 0
 
@@ -3186,15 +3197,20 @@ func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, s
 			Grade:      result.Grade,
 			Date:       result.CreatedAt,
 		})
+		scoredExams = append(scoredExams, grading.ScoredExam{
+			ExamType:    exam.ExamType,
+			TotalMarks:  exam.TotalMarks,
+			TotalScore:  result.TotalScore,
+			FullyGraded: result.FullyGraded,
+		})
 		totalScore += result.TotalScore
 		totalMarks += exam.TotalMarks
 	}
 
-	percentage := 0.0
-	if totalMarks > 0 {
-		percentage = float64(totalScore) / float64(totalMarks) * 100
-	}
-	grade, gp, remark := dto.GetGrade(percentage)
+	scheme := s.gradingSvc.ResolveScheme(ctx, schoolID, classLevelID, subjectID)
+	assessment := grading.ComputeSubjectAssessment(scheme, scoredExams)
+	gradeResult := s.gradingSvc.ComputeGrade(ctx, schoolID, classLevelID, assessment.TotalPercent)
+	percentage, grade, gp, remark := assessment.TotalPercent, gradeResult.Grade, gradeResult.GradePoint, gradeResult.Remark
 
 	// Get subject info
 	subject, err := s.questionRepo.GetSubjectByID(ctx, subjectID)
@@ -5040,6 +5056,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
 
     // ✅ FIX: Get class display name for the response
     classDisplayName := ""
+    classLevelID := ""
     if student.ClassID != "" {
         var class models.Class
         if err := s.db.WithContext(ctx).
@@ -5048,6 +5065,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
             Where("id = ?", student.ClassID).
             First(&class).Error; err == nil {
             classDisplayName = models.GetClassDisplayName(&class)
+            classLevelID = class.ClassLevelID
         }
     }
 
@@ -5084,7 +5102,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     passed := 0
 
     for _, subject := range subjects {
-        subjectResult, err := s.buildSubjectTermlyResult(ctx, student.ID, subject.ID, results)
+        subjectResult, err := s.buildSubjectTermlyResult(ctx, student.ID, subject.ID, student.SchoolID, classLevelID, results)
         if err != nil {
             continue
         }
@@ -5101,7 +5119,8 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     if totalMarks > 0 {
         overallPercentage = float64(totalScore) / float64(totalMarks) * 100
     }
-    overallGrade, overallGP, _ := dto.GetGrade(overallPercentage)
+    overallGradeResult := s.gradingSvc.ComputeGrade(ctx, student.SchoolID, classLevelID, overallPercentage)
+    overallGrade, overallGP := overallGradeResult.Grade, overallGradeResult.GradePoint
 
     // ✅ Return with class name properly populated
     return &dto.TermlyResultResponse{

@@ -91,6 +91,39 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), exam_id TEXT NOT NULL, question_id TEXT NOT NULL,
 			sort_order INTEGER DEFAULT 0
 		)`,
+		`CREATE TABLE subjects (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			name TEXT, code TEXT, description TEXT, is_active INTEGER DEFAULT 1,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
+		// Mirrors internal/grading/grading_test.go's DDL - needed here too
+		// since buildSubjectTermlyResult now resolves a school's
+		// configured grading/assessment rules (internal/grading) rather
+		// than always using the hardcoded builtin defaults.
+		`CREATE TABLE grading_scales (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_level_id TEXT, scope_key TEXT,
+			name TEXT, pass_mark REAL DEFAULT 50, is_active INTEGER DEFAULT 1,
+			updated_by TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE grading_scale_bands (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			grading_scale_id TEXT, grade TEXT, min_percent REAL,
+			grade_point REAL DEFAULT 0, remark TEXT, sort_order INTEGER,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE assessment_schemes (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_level_id TEXT, subject_id TEXT, scope_key TEXT,
+			missing_policy TEXT DEFAULT 'renormalize', is_active INTEGER DEFAULT 1,
+			updated_by TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE assessment_components (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			scheme_id TEXT, code TEXT, name TEXT, weight REAL,
+			exam_types TEXT DEFAULT '[]', aggregation TEXT DEFAULT 'pooled',
+			sort_order INTEGER, created_at DATETIME, updated_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -1127,5 +1160,113 @@ func TestPublishExam_CrossTenant_Rejected(t *testing.T) {
 	db.Table("exams").Select("status").Where("id = ?", examA).Scan(&status)
 	if status == string(models.ExamStatusPublished) {
 		t.Fatal("exam was published by a cross-tenant publish that should have been rejected")
+	}
+}
+
+// ---- buildSubjectTermlyResult: report-card subject totals now resolved
+// through the shared grading/assessment engine (internal/grading) ----
+
+func seedTermlySubject(t *testing.T, db *gorm.DB, id, name string) {
+	t.Helper()
+	if err := db.Exec(
+		"INSERT INTO subjects (id, name, code, is_active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
+		id, name, name, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to seed subject: %v", err)
+	}
+}
+
+func seedTermlyExam(t *testing.T, db *gorm.DB, id, subjectID, examType string, totalMarks int) {
+	t.Helper()
+	if err := db.Exec(
+		"INSERT INTO exams (id, subject_id, exam_type, duration_minutes, total_marks, pass_mark, created_at, updated_at) VALUES (?, ?, ?, 60, ?, 50, ?, ?)",
+		id, subjectID, examType, totalMarks, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to seed exam: %v", err)
+	}
+}
+
+// TestBuildSubjectTermlyResult_NoConfigMatchesPlainPooledSum locks in
+// that a school with no AssessmentScheme/GradingScale configured sees
+// EXACTLY the same subject percentage/grade this function always
+// produced (plain Σscore/Σmarks, builtin grade boundaries) - the whole
+// point of routing it through internal/grading is that this case must
+// not change.
+func TestBuildSubjectTermlyResult_NoConfigMatchesPlainPooledSum(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedTermlySubject(t, db, "subj-1", "Mathematics")
+	seedTermlyExam(t, db, "exam-ca-1", "subj-1", "continuous_assessment", 20)
+	seedTermlyExam(t, db, "exam-main-1", "subj-1", "main_exam", 80)
+
+	results := []models.Result{
+		{ExamID: "exam-ca-1", TotalScore: 18, FullyGraded: true},
+		{ExamID: "exam-main-1", TotalScore: 60, FullyGraded: true},
+	}
+
+	got, err := svc.buildSubjectTermlyResult(context.Background(), "student-1", "subj-1", "school-1", "level-1", results)
+	if err != nil {
+		t.Fatalf("buildSubjectTermlyResult failed: %v", err)
+	}
+
+	wantPct := (18.0 + 60.0) / (20.0 + 80.0) * 100 // 78%
+	if got.Percentage != wantPct {
+		t.Errorf("Percentage = %.4f, want %.4f (plain pooled sum, unchanged by this school having no grading config)", got.Percentage, wantPct)
+	}
+	if got.TotalScore != 78 || got.TotalMarks != 100 {
+		t.Errorf("TotalScore/TotalMarks = %d/%d, want 78/100 (raw sums unchanged)", got.TotalScore, got.TotalMarks)
+	}
+	wantGrade, wantGP, wantRemark := dto.GetGrade(wantPct)
+	if got.Grade != wantGrade || got.GradePoint != wantGP || got.Remarks != wantRemark {
+		t.Errorf("Grade/GradePoint/Remarks = %s/%.1f/%s, want %s/%.1f/%s (builtin boundaries, unchanged)",
+			got.Grade, got.GradePoint, got.Remarks, wantGrade, wantGP, wantRemark)
+	}
+}
+
+// TestBuildSubjectTermlyResult_WeightedSchemeAppliesConfiguredWeights
+// proves a school's configured AssessmentScheme actually changes the
+// subject total - not just that the no-config path is unaffected. CA
+// scores 100%, the exam scores 60%: the plain pooled sum (68%, grade B)
+// and this school's weighted 30/70 split (72%, grade A) must disagree,
+// which is only possible if buildSubjectTermlyResult is really applying
+// the configured weights rather than falling back to the old formula.
+func TestBuildSubjectTermlyResult_WeightedSchemeAppliesConfiguredWeights(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedTermlySubject(t, db, "subj-1", "Mathematics")
+	seedTermlyExam(t, db, "exam-ca-1", "subj-1", "continuous_assessment", 20)
+	seedTermlyExam(t, db, "exam-main-1", "subj-1", "main_exam", 80)
+
+	scheme := models.AssessmentScheme{
+		SchoolID: "school-1", ScopeKey: "school", MissingPolicy: "renormalize", IsActive: true,
+		Components: []models.AssessmentComponent{
+			{Code: "ca", Name: "CA", Weight: 30, ExamTypes: models.StringArray{"continuous_assessment"}, Aggregation: "pooled"},
+			{Code: "exam", Name: "Exam", Weight: 70, ExamTypes: models.StringArray{"main_exam"}, Aggregation: "pooled"},
+		},
+	}
+	if err := db.Create(&scheme).Error; err != nil {
+		t.Fatalf("failed to seed assessment scheme: %v", err)
+	}
+
+	results := []models.Result{
+		{ExamID: "exam-ca-1", TotalScore: 20, FullyGraded: true},   // 100%
+		{ExamID: "exam-main-1", TotalScore: 48, FullyGraded: true}, // 60%
+	}
+
+	got, err := svc.buildSubjectTermlyResult(context.Background(), "student-1", "subj-1", "school-1", "level-1", results)
+	if err != nil {
+		t.Fatalf("buildSubjectTermlyResult failed: %v", err)
+	}
+
+	plainPooled := (20.0 + 48.0) / (20.0 + 80.0) * 100 // 68%
+	wantWeighted := 100.0*0.30 + 60.0*0.70              // 72%
+	if got.Percentage == plainPooled {
+		t.Fatalf("Percentage = %.4f equals the plain pooled sum - the configured 30/70 weighting was not applied", got.Percentage)
+	}
+	if got.Percentage != wantWeighted {
+		t.Errorf("Percentage = %.4f, want %.4f (30%% CA + 70%% Exam per this school's configured scheme)", got.Percentage, wantWeighted)
+	}
+	if got.Grade != "A" {
+		t.Errorf("Grade = %s, want A (72%% weighted total crosses the builtin 70%% boundary that the unweighted 68%% would not)", got.Grade)
 	}
 }
