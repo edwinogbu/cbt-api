@@ -10,12 +10,14 @@ It supersedes nothing in `OFFLINE-FIRST-COMPLETION-REPORT.md` or
 `MASTER-PLAN-COMPLETION-REPORT.md` — both predate this round and cover
 different work (the TypeScript backlog, JWT fix, multi-role switching, the
 PWA registration/precaching bugs, Platform Owner tenant registry). This
-report now covers five rounds of work: the five initial tasks (§1-§4),
+report now covers six rounds of work: the five initial tasks (§1-§4),
 a round (§5) that ran the remaining items from your Section 8
 end-to-end checklist, the health-monitoring dashboard (noted inline in
 §4 item 5), a round (§6) that re-verified CSV/Excel/Word/TXT bulk
-question import against the real HTTP API, and a round (§7) that
-closed out the remaining JSON/RTF/PDF/XLS formats the same way.
+question import against the real HTTP API, a round (§7) that closed
+out the remaining JSON/RTF/PDF/XLS formats the same way, and a round
+(§8) that re-verified report printing - finding and fixing a real
+crash and a complete absence of print styling.
 
 ## 1. Repositories, branches, commits — all pushed, nothing uncommitted
 
@@ -38,6 +40,8 @@ Commits produced by this round of work, in order:
 | `512b839` | cbt-api | `GET /admin/system/health` — backend for the node health-monitoring dashboard |
 | `df40426` | elias-cbt-portal | Node Health dashboard page (`/dashboard/admin/node-health`) |
 | `7e73c32` | cbt-api | **Round 4** — Fix bulk-import: essay questions failed in every format (CSV/Excel/Word/TXT), every time — see §6 |
+| `ed18af8` | elias-cbt-portal | **Round 6** — Fix a real crash blocking every exam result page (snake_case/camelCase mismatch) — see §8a |
+| `3788592` | elias-cbt-portal | **Round 6** — Add a real print stylesheet; printing produced the full dashboard chrome, not a report — see §8b |
 
 Two earlier commits this session (`ac0ff71`, `899aa3a` in cbt-api) were
 Platform Owner / tenant-branding backend work queued before your
@@ -464,11 +468,112 @@ trusting that code-reading conclusion alone.
 **Still not covered**: none of the nine supported bulk-import formats
 remain unverified against the real HTTP endpoint as of this round.
 
-## 8. What to do next, in priority order
+## 8. Round 6 — report-printing re-verification
+
+Started by actually loading a real completed exam's result page rather
+than trusting it worked, per your instruction. It crashed immediately:
+*"Unable to Load Results / Cannot read properties of undefined
+(reading 'correctAnswers')"*.
+
+### 8a. A real crash blocking every exam result page
+
+Root cause: the real backend response (`GET
+/student/exams/result/:examId`) is snake_case throughout
+(`result_summary`, `exam_title`, `total_score`, ...), confirmed
+directly against cbt-api's own struct tags and a real response. But
+`elias-cbt-portal`'s `src/types/student.ts` declared this response as
+**camelCase** - a type that was never checked against a real response
+- and two pages (`result/page.tsx`,
+`result/[resultId]/page.tsx`) trusted it, reading
+`raw.resultSummary.correctAnswers`. That key doesn't exist (the real
+one is `raw.result_summary`), so every load of either page crashed
+before rendering anything. A third page using the same endpoint
+(`review/page.tsx`) was never affected - it already read the real
+snake_case fields with a camelCase fallback, the pattern applied to
+fix the other two.
+
+Fixed in `elias-cbt-portal` `ed18af8`. Verified live: logged in as a
+real student with a real completed exam, both pages now render the
+real score (40/60, 66.7%, grade B) correctly.
+
+### 8b. Printing produced the full dashboard chrome, not a report
+
+Separately, **zero `@media print` rules existed anywhere in this
+codebase** (confirmed by grepping the whole `src/` tree) - none of the
+six `window.print()` call sites in the app would have produced a
+usable printout. Confirmed live by emulating print media on the (now-
+fixed) result page: the printed render was pixel-identical to the
+screen render - full dark sidebar, topbar, confetti canvas, and action
+buttons included.
+
+Fixed in `elias-cbt-portal` `3788592`: a real print stylesheet that
+hides the actual Sidebar/Header components specifically (via a
+`data-app-chrome` marker, not a bare `aside`/`header` tag selector that
+could also hide a report's own masthead), hides page-specific controls
+via a new `.no-print` class, and resets the content area to a plain,
+full-width, ink-friendly layout. Applied across both result pages, the
+review page, the parent termly-results page, and the admin exam-paper
+preview.
+
+The exam-paper preview (`PreviewExamModal`, the "examination papers...
+for printing" feature) needed an additional fix beyond the global
+rules: it's a fixed, backdrop-blurred, height-capped overlay with an
+internal scroll area, so printing it unmodified would print a dark
+backdrop and cut the exam paper off at the modal's own on-screen
+scroll height instead of printing every question. Added specific
+overrides to reset position/background/height/overflow for print, plus
+a print-only title heading, and marked the dashboard list page behind
+the modal as non-printable too (it was printing stacked alongside the
+actual exam paper).
+
+**Verified live for both printable-report types the spec names** -
+screenshots captured before and after each fix:
+- A real exam result: confetti/sidebar/topbar/buttons gone, clean
+  full-width report remains.
+- A real exam paper (6 real questions): backdrop and underlying
+  dashboard page gone, all 6 questions print instead of being cut off.
+
+`npx tsc --noEmit` and `npx vitest run` (70/70) pass after both fixes.
+
+### 8c. Known remaining gaps in report printing
+
+1. **The student `report-card` page
+   (`/dashboard/student/results/report-card`) is still entirely mock
+   data** - a pre-existing, already-disclosed condition (the page's own
+   comment says "In production, fetch from API" with the real call
+   commented out). The real backend endpoint
+   (`GET /student/exams/report-card`) was confirmed live this round to
+   work correctly and return real, correct, snake_case termly data for
+   a real student - but the frontend page was not wired up to it. This
+   is a larger feature-completion task (the page also has no real
+   term/session selection UI yet, just a hardcoded placeholder) rather
+   than a bug fix, and was not attempted this round to avoid a rushed,
+   inadequately-verified integration under time pressure. Recommended
+   as focused follow-up work.
+2. **`src/types/student.ts`'s `StudentExamResultResponse` type is still
+   wrong** (declared camelCase, real shape is snake_case). Both broken
+   pages were fixed at the call site with defensive fallbacks rather
+   than correcting the shared type, since the type is also referenced
+   by mock adapters and other services not evaluated this round - a
+   wider, riskier change than this round's scope. The type lie remains
+   a latent trap for any future page that trusts it naively, same as
+   the two just fixed.
+3. **A pre-existing, unrelated display quirk noticed in passing**: a
+   wrong-answer row's "Correct:" label shows blank on the
+   `result/[resultId]` page - the backend's `GetStudentExamResult`
+   populates `CorrectAnswer` from the legacy single-string field only,
+   which is empty for modern option-key-based questions (the same
+   `CorrectOptionKeys` vs `CorrectAnswer` distinction behind the
+   auto-grading bug fixed earlier in this engagement, `5afdb10`). Not
+   fixed this round - noted for follow-up.
+
+## 9. What to do next, in priority order
 
 1. Get access to a real Windows machine to close the two Windows-specific
    gaps (§4.3, §4.4) and the real multi-device/client-network-cut gaps
    (§5f) — nothing further can be verified for those from this sandbox.
-2. Add handler-level test coverage for `internal/cbt/handler` so a bug
+2. Wire the student report-card page to the real, already-working
+   backend endpoint (§8c.1).
+3. Add handler-level test coverage for `internal/cbt/handler` so a bug
    like §5e's can't silently recur.
-3. Resume the Windows-installer GitHub Releases publish.
+4. Resume the Windows-installer GitHub Releases publish.
