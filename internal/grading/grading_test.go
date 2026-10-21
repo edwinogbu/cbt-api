@@ -47,6 +47,13 @@ func setupGradingTestDB(t *testing.T) *gorm.DB {
 			exam_types TEXT DEFAULT '[]', aggregation TEXT DEFAULT 'pooled',
 			sort_order INTEGER, created_at DATETIME, updated_at DATETIME
 		)`,
+		`CREATE TABLE promotion_policies (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_level_id TEXT, scope_key TEXT,
+			overall_threshold REAL DEFAULT 50, core_subject_ids TEXT DEFAULT '[]',
+			core_subject_pass_mark REAL DEFAULT 40, is_active INTEGER DEFAULT 1,
+			updated_by TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {

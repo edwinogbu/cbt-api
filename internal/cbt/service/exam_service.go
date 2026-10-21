@@ -3593,6 +3593,34 @@ func (s *ExamService) getClassByID(ctx context.Context, id string) (*models.Clas
 	return &class, err
 }
 
+// resolveClassWithTeacher is the shared version of the inline class
+// lookup GetReportCardForUser already does (display name + real
+// assigned teacher's name + class level ID, all real data, empty
+// strings when the class or teacher isn't resolvable) - used by the
+// Mid-Term and Promotion report paths too so they report the same real
+// class teacher name instead of leaving it blank by using
+// getClassByID, which doesn't preload Teacher at all.
+func (s *ExamService) resolveClassWithTeacher(ctx context.Context, classID string) (displayName, teacherName, classLevelID string) {
+	if classID == "" {
+		return "", "", ""
+	}
+	var class models.Class
+	if err := s.db.WithContext(ctx).
+		Preload("ClassLevel").
+		Preload("ClassArm").
+		Preload("Teacher").
+		Where("id = ?", classID).
+		First(&class).Error; err != nil {
+		return "", "", ""
+	}
+	displayName = models.GetClassDisplayName(&class)
+	classLevelID = class.ClassLevelID
+	if class.Teacher != nil {
+		teacherName = strings.TrimSpace(class.Teacher.FirstName + " " + class.Teacher.LastName)
+	}
+	return displayName, teacherName, classLevelID
+}
+
 // ExportExamResults exports exam results to CSV or Excel
 // ExportExamResults has the same pre-existing gap as GetClassResults -
 // see its doc comment - and the same fix.

@@ -91,6 +91,8 @@ func init() {
 	Register(&AssessmentComponent{})
 	Register(&ClassLevelSubject{})
 	Register(&ReportCardRemark{})
+	Register(&PromotionPolicy{})
+	Register(&PromotionDecision{})
 
 	// ============================================
 	// OFFLINE-FIRST SYNC MODELS

@@ -33,11 +33,19 @@ type MidTermReportCardResponse struct {
 // template's GRADE column, always "—") - a mid-term snapshot is not a
 // final result.
 type MidTermSubjectResult struct {
-	SubjectName string                    `json:"subject_name"`
-	SubjectCode string                    `json:"subject_code"`
-	Components  []SubjectComponentResult  `json:"components,omitempty"`
-	Percentage  float64                   `json:"percentage"`
-	IsComplete  bool                      `json:"is_complete"`
+	SubjectName string                   `json:"subject_name"`
+	SubjectCode string                   `json:"subject_code"`
+	Components  []SubjectComponentResult `json:"components,omitempty"`
+	// TotalScore/TotalMarks are the raw Σscore/Σmarks across every
+	// included (non-final-exam-type) result - the same plain-sum
+	// convention SubjectTermlyResult/ReportCardSubject use, kept
+	// separate from Percentage for the identical reason: Percentage is
+	// the resolved grading-engine figure (weighted when a scheme is
+	// configured), which a raw score/marks pair can't represent.
+	TotalScore int     `json:"total_score"`
+	TotalMarks int     `json:"total_marks"`
+	Percentage float64 `json:"percentage"`
+	IsComplete bool    `json:"is_complete"`
 }
 
 // MidTermAttendance - a mid-term snapshot's attendance and homework
@@ -47,6 +55,16 @@ type MidTermAttendance struct {
 	DaysPresent  int    `json:"days_present"`
 	DaysAbsent   int    `json:"days_absent"`
 	HomeworkNote string `json:"homework_note"`
+}
+
+// SetMidTermRemarkRequest - set a teacher's mid-term progress comment
+// and next-steps note on a student's Mid-Term Progress Report Card.
+type SetMidTermRemarkRequest struct {
+	StudentID string `json:"student_id" binding:"required"`
+	TermID    string `json:"term_id" binding:"required"`
+	SessionID string `json:"session_id" binding:"required"`
+	Comment   string `json:"comment" binding:"required"`
+	NextSteps string `json:"next_steps,omitempty"`
 }
 
 // ============================================
@@ -82,4 +100,16 @@ type PromotionReportCardResponse struct {
 	Strengths             string `json:"strengths"`
 	FollowUp              string `json:"follow_up"`
 	RemedialPlan          string `json:"remedial_plan"`
+}
+
+// RecordPromotionDecisionRequest - record the authorized, final
+// promotion decision for one student's session. Deliberately has no
+// field for "copy the system recommendation" - whoever calls this
+// must state the decision themselves.
+type RecordPromotionDecisionRequest struct {
+	StudentID            string  `json:"student_id" binding:"required"`
+	SessionID            string  `json:"session_id" binding:"required"`
+	Decision             string  `json:"decision" binding:"required"`
+	Notes                string  `json:"notes,omitempty"`
+	ProposedClassLevelID *string `json:"proposed_class_level_id,omitempty"`
 }

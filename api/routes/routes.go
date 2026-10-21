@@ -296,6 +296,10 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 		student.GET("/termly-result", handler.GetStudentTermlyResultForUser)
 		student.GET("/report-card", handler.GetTermlyReportCardForUser)
 		student.GET("/report-card/pdf", handler.DownloadTermlyReportCardForUser)
+		student.GET("/report-card/midterm", handler.GetMidTermProgressReportForUser)
+		student.GET("/report-card/midterm/pdf", handler.DownloadMidTermProgressReportForUser)
+		student.GET("/report-card/promotion", handler.GetPromotionReportCardForUser)
+		student.GET("/report-card/promotion/pdf", handler.DownloadPromotionReportCardForUser)
 		student.POST("/practice", handler.StartPracticeForUser)
 		// Reuses the exact same handler/service/tenant-scoping as the
 		// teacher/admin-only GET /questions/academic/current (both end
@@ -418,6 +422,19 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			templatePreview := reportCardRemarks.Group("")
 			templatePreview.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 			templatePreview.GET("/preview", handler.PreviewReportCardTemplate)
+
+			midTermRemark := reportCardRemarks.Group("")
+			midTermRemark.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			midTermRemark.POST("/midterm-remark", handler.SetMidTermRemark)
+
+			// Recording the FINAL promotion decision is never open to
+			// "teacher" - a recommendation (computed, shown on the
+			// report itself) is not the same as the school's
+			// authorized decision, which only admin-tier roles may
+			// record.
+			promotionDecision := reportCardRemarks.Group("")
+			promotionDecision.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			promotionDecision.POST("/promotion-decision", handler.RecordPromotionDecision)
 		}
 	}
 }

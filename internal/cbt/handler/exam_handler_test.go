@@ -65,6 +65,75 @@ func TestDownloadTermlyReportCardForUser_Unauthenticated_Rejected(t *testing.T) 
 	}
 }
 
+func TestGetMidTermProgressReportForUser_MissingParams_Rejected(t *testing.T) {
+	h := &ExamHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/student/exams/report-card/midterm", nil)
+
+	h.GetMidTermProgressReportForUser(c)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 when both termId and sessionId are missing", w.Code)
+	}
+}
+
+func TestDownloadMidTermProgressReportForUser_Unauthenticated_Rejected(t *testing.T) {
+	h := &ExamHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/student/exams/report-card/midterm/pdf?termId=term-1&sessionId=session-1", nil)
+
+	h.DownloadMidTermProgressReportForUser(c)
+
+	if w.Code != 401 {
+		t.Errorf("status = %d, want 401 when no authenticated user_id is present", w.Code)
+	}
+	if bytes.HasPrefix(w.Body.Bytes(), []byte("%PDF")) {
+		t.Error("an unauthenticated request must not produce PDF output")
+	}
+}
+
+func TestGetPromotionReportCardForUser_MissingSessionID_Rejected(t *testing.T) {
+	h := &ExamHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/student/exams/report-card/promotion", nil)
+
+	h.GetPromotionReportCardForUser(c)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 for a missing sessionId", w.Code)
+	}
+}
+
+func TestDownloadPromotionReportCardForUser_Unauthenticated_Rejected(t *testing.T) {
+	h := &ExamHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/student/exams/report-card/promotion/pdf?sessionId=session-1", nil)
+
+	h.DownloadPromotionReportCardForUser(c)
+
+	if w.Code != 401 {
+		t.Errorf("status = %d, want 401 when no authenticated user_id is present", w.Code)
+	}
+}
+
+func TestRecordPromotionDecision_MissingBody_Rejected(t *testing.T) {
+	h := &ExamHandler{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/exams/report-card/promotion-decision", bytes.NewReader([]byte(`{}`)))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.RecordPromotionDecision(c)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400 when required fields (student_id, session_id, decision) are missing", w.Code)
+	}
+}
+
 func TestSanitizeFilename_StripsPathSeparatorsAndQuotes(t *testing.T) {
 	cases := map[string]string{
 		"report-card-First Term-2025/2026.pdf":  "report-card-First Term-2025-2026.pdf",

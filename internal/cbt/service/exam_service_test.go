@@ -44,7 +44,8 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			first_name TEXT, last_name TEXT, role TEXT DEFAULT 'student', deleted_at DATETIME
 		)`,
 		`CREATE TABLE classes (
-			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), school_id TEXT, teacher_id TEXT, deleted_at DATETIME
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), school_id TEXT, teacher_id TEXT,
+			class_level_id TEXT, class_arm_id TEXT, deleted_at DATETIME
 		)`,
 		`CREATE TABLE students (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT, school_id TEXT, class_id TEXT,
@@ -130,7 +131,46 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			school_id TEXT, student_id TEXT, term_id TEXT, session_id TEXT,
 			teacher_remark TEXT, teacher_id TEXT, teacher_set_at DATETIME,
 			principal_remark TEXT, principal_id TEXT, principal_set_at DATETIME,
-			conduct TEXT, created_at DATETIME, updated_at DATETIME
+			conduct TEXT,
+			mid_term_comment TEXT, mid_term_next_steps TEXT, mid_term_set_by TEXT, mid_term_set_at DATETIME,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE promotion_policies (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_level_id TEXT, scope_key TEXT,
+			overall_threshold REAL DEFAULT 50, core_subject_ids TEXT DEFAULT '[]',
+			core_subject_pass_mark REAL DEFAULT 40, is_active INTEGER DEFAULT 1,
+			updated_by TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE promotion_decisions (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, student_id TEXT, session_id TEXT,
+			proposed_class_level_id TEXT, decision TEXT, notes TEXT,
+			decided_by TEXT, decided_at DATETIME, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE class_levels (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, name TEXT, level_number INTEGER, category TEXT,
+			promotion_to TEXT, sort_order INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
+		`CREATE TABLE class_arms (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, name TEXT, arm_code TEXT, capacity INTEGER DEFAULT 40,
+			room_number TEXT, sort_order INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
+		`CREATE TABLE academic_sessions (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, name TEXT, start_date DATETIME, end_date DATETIME,
+			is_current INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
+		`CREATE TABLE terms (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			session_id TEXT, term_number INTEGER, name TEXT, start_date DATETIME, end_date DATETIME,
+			is_current INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE schools (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),

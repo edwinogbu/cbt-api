@@ -1522,6 +1522,220 @@ func (h *ExamHandler) PreviewReportCardTemplate(c *gin.Context) {
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }
 
+// ============================================
+// MID-TERM PROGRESS REPORT
+// ============================================
+
+// GetMidTermProgressReportForUser godoc
+// @Summary      Get the authenticated student's Mid-Term Progress Report Card
+// @Tags         Termly Results
+// @Produce      json
+// @Param        termId query string true "Term ID"
+// @Param        sessionId query string true "Session ID"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/report-card/midterm [get]
+func (h *ExamHandler) GetMidTermProgressReportForUser(c *gin.Context) {
+	termID := c.Query("termId")
+	sessionID := c.Query("sessionId")
+	if termID == "" || sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "term id and session id are required"})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	report, err := h.examService.GetMidTermProgressReportForUser(c.Request.Context(), termID, sessionID, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": report})
+}
+
+// DownloadMidTermProgressReportForUser godoc
+// @Summary      Download the authenticated student's Mid-Term Progress Report Card as a PDF
+// @Tags         Termly Results
+// @Produce      application/pdf
+// @Param        termId query string true "Term ID"
+// @Param        sessionId query string true "Session ID"
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/report-card/midterm/pdf [get]
+func (h *ExamHandler) DownloadMidTermProgressReportForUser(c *gin.Context) {
+	termID := c.Query("termId")
+	sessionID := c.Query("sessionId")
+	if termID == "" || sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "term id and session id are required"})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	report, err := h.examService.GetMidTermProgressReportForUser(c.Request.Context(), termID, sessionID, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	pdfBytes, err := pdf.GenerateMidTermProgressReport(report)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate mid-term report PDF"})
+		return
+	}
+	filename := sanitizeFilename(fmt.Sprintf("midterm-report-%s-%s.pdf", report.Term.Name, report.Session.Name))
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
+// SetMidTermRemark godoc
+// @Summary      Set a teacher's mid-term progress comment and next-steps note
+// @Tags         Termly Results
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.SetMidTermRemarkRequest true "Remark"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/report-card/midterm-remark [post]
+func (h *ExamHandler) SetMidTermRemark(c *gin.Context) {
+	var req dto.SetMidTermRemarkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	schoolID := middleware.ResolveSchoolID(c, "")
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	if err := h.examService.SetMidTermRemark(c.Request.Context(), schoolID, userID, &req); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// ============================================
+// PROMOTION EXAMINATION REPORT
+// ============================================
+
+// GetPromotionReportCardForUser godoc
+// @Summary      Get the authenticated student's Promotion Examination Report Card
+// @Tags         Termly Results
+// @Produce      json
+// @Param        sessionId query string true "Session ID"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/report-card/promotion [get]
+func (h *ExamHandler) GetPromotionReportCardForUser(c *gin.Context) {
+	sessionID := c.Query("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	report, err := h.examService.GetPromotionReportCardForUser(c.Request.Context(), sessionID, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": report})
+}
+
+// DownloadPromotionReportCardForUser godoc
+// @Summary      Download the authenticated student's Promotion Examination Report Card as a PDF
+// @Tags         Termly Results
+// @Produce      application/pdf
+// @Param        sessionId query string true "Session ID"
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/report-card/promotion/pdf [get]
+func (h *ExamHandler) DownloadPromotionReportCardForUser(c *gin.Context) {
+	sessionID := c.Query("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id is required"})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	report, err := h.examService.GetPromotionReportCardForUser(c.Request.Context(), sessionID, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	pdfBytes, err := pdf.GeneratePromotionExaminationReport(report)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate promotion report PDF"})
+		return
+	}
+	filename := sanitizeFilename(fmt.Sprintf("promotion-report-%s.pdf", report.Session.Name))
+	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
+// RecordPromotionDecision godoc
+// @Summary      Record the authorized, final promotion decision for a student
+// @Tags         Termly Results
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.RecordPromotionDecisionRequest true "Decision"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/report-card/promotion-decision [post]
+func (h *ExamHandler) RecordPromotionDecision(c *gin.Context) {
+	var req dto.RecordPromotionDecisionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	schoolID := middleware.ResolveSchoolID(c, "")
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	if err := h.examService.RecordPromotionDecision(c.Request.Context(), schoolID, userID, &req); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not belong") || strings.Contains(err.Error(), "required") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
 // SubmitExam godoc
 // @Summary      Submit an exam for grading
 // @Tags         Student Exam
