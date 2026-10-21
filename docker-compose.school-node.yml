@@ -61,6 +61,7 @@ services:
       REDIS_ADDR: redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - generate a unique one per node, see README-SCHOOL-NODE.md}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required - generate a unique one per node, see README-SCHOOL-NODE.md}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:?ENCRYPTION_MASTER_KEY is required (exactly 32 characters) - see .env.school-node.example}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       GIN_MODE: release

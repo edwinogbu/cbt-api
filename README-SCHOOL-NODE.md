@@ -18,8 +18,8 @@ file from one school's node to another's.
 scripts/generate-school-node-secrets.sh
 ```
 
-This prints a fresh `DB_PASSWORD`, `JWT_SECRET`, and `JWT_REFRESH_SECRET`.
-Copy the template and paste them in:
+This prints a fresh `DB_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and
+`ENCRYPTION_MASTER_KEY`. Copy the template and paste them in:
 
 ```bash
 cp .env.school-node.example .env.school-node
@@ -42,11 +42,12 @@ This builds the `cbt-api` image from the `Dockerfile` in this repo (multi-stage,
 `CGO_ENABLED=0`, runs as a non-root user) and starts three containers on an
 isolated network: `postgres`, `redis`, and `cbt-api`. The compose file
 deliberately refuses to start (`required variable ... is missing`) if
-`DB_PASSWORD`, `JWT_SECRET`, or `JWT_REFRESH_SECRET` aren't set - there is no
-insecure fallback baked into the deployment config, and the binary itself
-now refuses to boot in `ENVIRONMENT=production` with the placeholder JWT
-secret checked into the repo (see `config/config.go`), so a node can't come
-up silently misconfigured either way.
+`DB_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, or `ENCRYPTION_MASTER_KEY`
+aren't set - there is no insecure fallback baked into the deployment config,
+and the binary itself now refuses to boot in `ENVIRONMENT=production` with
+the placeholder JWT secret or encryption key checked into the repo (see
+`config/config.go` and `pkg/utils/encryption.go`), so a node can't come up
+silently misconfigured either way.
 
 On first boot, `AUTO_MIGRATE=true` runs the schema migration against the
 fresh local Postgres, and if `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set, the
@@ -140,10 +141,12 @@ address kept as the fallback if the node ever goes down.
 ## Troubleshooting
 
 - **Container `cbt-api` restarts in a loop, logs show
-  `FATAL: JWT_SECRET must be set...`**: step 1 wasn't completed, or
-  `.env.school-node` still has the placeholder `CHANGE_ME...` value. Re-run
-  the generator script and check the file was actually passed via
-  `--env-file`.
+  `FATAL: JWT_SECRET must be set...`** (or `ENCRYPTION_MASTER_KEY must be
+  set...` / `...must be exactly 32 bytes...`): step 1 wasn't completed, or
+  `.env.school-node` still has the placeholder `CHANGE_ME...` value, or
+  `ENCRYPTION_MASTER_KEY` was edited to something other than exactly 32
+  characters. Re-run the generator script and check the file was actually
+  passed via `--env-file`.
 - **`docker compose ... config` errors with
   `required variable DB_PASSWORD is missing a value`**: same as above - a
   required secret isn't set. This is the compose file's env-var guard
