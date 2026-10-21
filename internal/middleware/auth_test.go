@@ -146,3 +146,57 @@ func TestPlatformOwnerOnly_RoleValueCannotBeSpoofedViaHeader(t *testing.T) {
 		t.Fatalf("a spoofed X-Role header granted access: got status %d, want 403", resp.StatusCode)
 	}
 }
+
+// newAdminGroupTestServer mirrors the real /admin route group's gate in
+// api/routes/routes.go: AuthMiddleware() + RoleMiddleware("admin",
+// "super_admin", "platform_owner"). AdminOnly() (RoleMiddleware("admin")
+// alone) used to gate this group and silently locked out every real
+// super_admin and platform_owner account - every AdminHandler method
+// behind it is already role-agnostic once past the gate (it scopes or
+// bypasses purely on schoolID/isPlatformOwner from the verified JWT), so
+// the gate itself was the only thing out of step with the rest of the
+// codebase's admin-ish route groups (academic/questions/subscriptions/exams).
+func newAdminGroupTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	admin := r.Group("/admin")
+	admin.Use(AuthMiddleware(), RoleMiddleware("admin", "super_admin", "platform_owner"))
+	admin.GET("/users", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestAdminGroup_AllowsAdminSuperAdminAndPlatformOwner(t *testing.T) {
+	srv := newAdminGroupTestServer(t)
+
+	cases := []struct {
+		role       string
+		wantStatus int
+	}{
+		{"admin", http.StatusOK},
+		{"super_admin", http.StatusOK},
+		{"platform_owner", http.StatusOK},
+		{"teacher", http.StatusForbidden},
+		{"student", http.StatusForbidden},
+		{"parent", http.StatusForbidden},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.role, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, srv.URL+"/admin/users", nil)
+			req.Header.Set("Authorization", "Bearer "+tokenFor(t, tc.role))
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("role=%s: got status %d, want %d", tc.role, resp.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+}

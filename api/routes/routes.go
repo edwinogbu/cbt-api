@@ -383,7 +383,20 @@ func setupActorRoutes(rg *gin.RouterGroup,
 	parentH *parentHandler.ParentHandler) {
 
 	admin := rg.Group("/admin")
-	admin.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	// AdminOnly() is an exact-match RoleMiddleware("admin") - it never
+	// included super_admin or platform_owner, even though every method
+	// AdminHandler calls into (AdminService.AssignTeacher/ListUsersByRole/
+	// ListAllStudents/ListAllClasses/ListAllTeachers/HardDeleteStudent/
+	// UnassignTeacher) is already role-agnostic once past this gate - each
+	// takes schoolID+isPlatformOwner and scopes/bypasses on those alone,
+	// matching the RoleMiddleware("admin", "super_admin", "platform_owner")
+	// gate every other admin-ish route group in this codebase already
+	// uses (academic/questions/subscriptions/exams). Confirmed live: a
+	// real super_admin's own dashboard got 403 "Insufficient permissions"
+	// on every one of these calls (ListUsers/ListStudents/ListClasses/
+	// ListTeachers), rendering it empty - not a deliberate restriction,
+	// just this one group never updated when super_admin was introduced.
+	admin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		admin.POST("/teachers/assign", adminH.AssignTeacher)
 		admin.DELETE("/teachers/unassign/:classId", adminH.UnassignTeacher)
