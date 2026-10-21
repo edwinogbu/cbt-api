@@ -875,6 +875,10 @@ func (s *AuthService) GetAuthStatus(userID string) (*dto.AuthStatusResponse, err
             response.SchoolID = &school.ID
             response.SchoolStatus = string(school.Status)
             response.SchoolName = school.Name
+            response.ApplicationName = school.ApplicationName
+            response.PrimaryColor = school.PrimaryColor
+            response.SecondaryColor = school.SecondaryColor
+            response.Logo = school.Logo
         }
 
         // School-level admins see subscription status: both admin and

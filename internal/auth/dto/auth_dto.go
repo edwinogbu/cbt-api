@@ -175,6 +175,16 @@ type AuthStatusResponse struct {
     SchoolStatus        string     `json:"school_status,omitempty"`
     SchoolName          string     `json:"school_name,omitempty"`
 
+    // Platform-owner-controlled tenant branding (Master Implementation
+    // Plan Phase 5) - read-only here for every school-scoped role.
+    // ApplicationName falls back to "" when the platform owner hasn't
+    // set one yet; the frontend falls back to a neutral platform name
+    // rather than ever hardcoding one tenant's identity as the default.
+    ApplicationName     string     `json:"application_name,omitempty"`
+    PrimaryColor        string     `json:"primary_color,omitempty"`
+    SecondaryColor      string     `json:"secondary_color,omitempty"`
+    Logo                string     `json:"logo,omitempty"`
+
     HasSubscription     bool       `json:"has_subscription"`
     SubscriptionStatus  string     `json:"subscription_status,omitempty"`
     SubscriptionTier    string     `json:"subscription_tier,omitempty"`
