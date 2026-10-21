@@ -410,6 +410,14 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			principalRemark := reportCardRemarks.Group("")
 			principalRemark.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 			principalRemark.POST("/principal-remark", handler.SetPrincipalReportCardRemark)
+
+			// Lets an authorized school admin preview their own
+			// school's report-card template (real name/logo/brand
+			// color, illustrative sample student data) before any real
+			// result is ever printed.
+			templatePreview := reportCardRemarks.Group("")
+			templatePreview.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			templatePreview.GET("/preview", handler.PreviewReportCardTemplate)
 		}
 	}
 }

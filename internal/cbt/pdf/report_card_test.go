@@ -14,9 +14,15 @@ import (
 func sampleReportCard() *dto.TermlyReportCardResponse {
 	nextTerm := time.Date(2026, time.January, 12, 0, 0, 0, 0, time.UTC)
 	return &dto.TermlyReportCardResponse{
-		School:  dto.SchoolInfo{ID: "school-1", Name: "Greenfield Academy", Address: "12 Victoria Island Road, Lagos"},
+		School: dto.SchoolInfo{
+			ID: "school-1", Name: "Greenfield Academy", Address: "12 Victoria Island Road, Lagos",
+			// A real, distinctive configured brand color - not the
+			// neutral default - so a test can prove each school's own
+			// color is actually used, not a hardcoded platform color.
+			PrimaryColor: "#0f4c3a",
+		},
 		Student: dto.StudentInfo{ID: "student-1", Name: "Amara Okonkwo", AdmissionNumber: "GA/2024/0137"},
-		Class:   dto.ClassInfo{ID: "class-1", Name: "SSS 2A"},
+		Class:   dto.ClassInfo{ID: "class-1", Name: "SSS 2A", ClassTeacher: "Mrs. A. Ibrahim"},
 		Term:    dto.TermInfo{ID: "term-1", Name: "First Term", Number: 1},
 		Session: dto.SessionInfo{ID: "session-1", Name: "2025/2026"},
 		Subjects: []dto.ReportCardSubject{
@@ -40,7 +46,8 @@ func sampleReportCard() *dto.TermlyReportCardResponse {
 			},
 		},
 		Summary: dto.ReportCardSummary{
-			TotalSubjects: 2, OverallPercentage: 68.7, OverallGrade: "B",
+			TotalSubjects: 2, TotalScore: 891, TotalMarks: 1000,
+			OverallPercentage: 68.7, OverallGrade: "B",
 			NumberPassed: 1, ClassPosition: 4, TotalStudentsInClass: 32,
 		},
 		TeacherRemarks:   "Amara has shown consistent improvement this term.",
@@ -83,13 +90,16 @@ func TestGenerateTermlyReportCard_ProducesValidPDFWithRealData(t *testing.T) {
 	// rendered content stream, not just that some PDF was produced.
 	mustContain := []string{
 		"Greenfield Academy",
+		"12 Victoria Island Road, Lagos",
 		"Amara Okonkwo",
 		"GA/2024/0137",
 		"SSS 2A",
+		"Mrs. A. Ibrahim", // real class teacher name
 		"Mathematics",
 		"Biology",
 		"Excellent",   // Mathematics' remark and the conduct value
 		"pending",     // Biology's missing exam component / incomplete subject
+		"891",         // Summary.TotalScore
 		"Attendance tracking is not yet available for this school.",
 		"Amara has shown consistent improvement this term.",
 		"A commendable result.",
@@ -122,11 +132,62 @@ func TestGenerateTermlyReportCard_NoComponentsFallsBackToScoreColumn(t *testing.
 	if err != nil {
 		t.Fatalf("failed to extract text: %v", err)
 	}
-	if !strings.Contains(pageText, "Score") {
-		t.Errorf("expected the unconfigured-scheme fallback header \"Score\" in the PDF, got:\n%s", pageText)
+	if !strings.Contains(pageText, "SCORE") {
+		t.Errorf("expected the unconfigured-scheme fallback header \"SCORE\" in the PDF, got:\n%s", pageText)
 	}
-	if strings.Contains(pageText, "Total %") {
-		t.Errorf("did not expect a \"Total %%\" column header when no subject has configured components, got:\n%s", pageText)
+	if strings.Contains(pageText, "TOTAL %") {
+		t.Errorf("did not expect a \"TOTAL %%\" column header when no subject has configured components, got:\n%s", pageText)
+	}
+}
+
+func TestResolveAccent_UsesEachSchoolsOwnConfiguredColorIndependently(t *testing.T) {
+	schoolA := resolveAccent("#0f4c3a")
+	schoolB := resolveAccent("#8a1f2b")
+	if schoolA == schoolB {
+		t.Fatalf("two schools with different configured colors resolved to the same accent %v - School B's color must never leak onto School A's report", schoolA)
+	}
+	wantA := [3]int{0x0f, 0x4c, 0x3a}
+	if schoolA != wantA {
+		t.Errorf("resolveAccent(#0f4c3a) = %v, want %v", schoolA, wantA)
+	}
+}
+
+func TestResolveAccent_NoConfiguredColorFallsBackToNeutralDefault(t *testing.T) {
+	got := resolveAccent("")
+	if got != defaultAccent {
+		t.Errorf("resolveAccent(\"\") = %v, want the neutral default %v - never fabricate a brand color for a school with none configured", got, defaultAccent)
+	}
+	gotMalformed := resolveAccent("not-a-color")
+	if gotMalformed != defaultAccent {
+		t.Errorf("resolveAccent(malformed) = %v, want the neutral default %v", gotMalformed, defaultAccent)
+	}
+}
+
+func TestGenerateTermlyReportCard_UnreachableLogoFallsBackToPlaceholder(t *testing.T) {
+	data := sampleReportCard()
+	// A school-configured logo URL that cannot be reached (exactly the
+	// situation an offline LAN school-node server is in for a
+	// cloud-hosted logo) must never fail or hang generation - it must
+	// fall back to the plain placeholder box.
+	data.School.Logo = "http://127.0.0.1:1/unreachable-logo.png"
+
+	out, err := GenerateTermlyReportCard(data)
+	if err != nil {
+		t.Fatalf("GenerateTermlyReportCard failed with an unreachable logo URL (must degrade gracefully): %v", err)
+	}
+	if !bytes.HasPrefix(out, []byte("%PDF")) {
+		t.Fatal("output is not a valid PDF after an unreachable logo URL")
+	}
+	reader, err := pdfreader.NewReader(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("generated PDF could not be parsed back: %v", err)
+	}
+	pageText, err := reader.Page(1).GetPlainText(nil)
+	if err != nil {
+		t.Fatalf("failed to extract text: %v", err)
+	}
+	if !strings.Contains(pageText, "LOGO") || !strings.Contains(pageText, "PLACEHOLDER") {
+		t.Errorf("expected the LOGO PLACEHOLDER fallback text when the configured logo URL is unreachable, got:\n%s", pageText)
 	}
 }
 

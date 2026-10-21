@@ -132,6 +132,14 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			principal_remark TEXT, principal_id TEXT, principal_set_at DATETIME,
 			conduct TEXT, created_at DATETIME, updated_at DATETIME
 		)`,
+		`CREATE TABLE schools (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			name TEXT, code TEXT, address TEXT, phone TEXT, email TEXT, logo TEXT, website TEXT,
+			status TEXT DEFAULT 'PENDING', is_active INTEGER DEFAULT 1,
+			application_name TEXT, primary_color TEXT, secondary_color TEXT,
+			provisioned_at DATETIME, provisioned_by TEXT,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -1372,5 +1380,58 @@ func TestSetTeacherReportCardRemark_CrossTenant_Rejected(t *testing.T) {
 
 	if got := svc.getReportCardRemark(context.Background(), "student-1", "term-1", "session-1"); got != nil {
 		t.Errorf("a rejected cross-tenant remark write must not be persisted, got %+v", got)
+	}
+}
+
+// ---- PreviewTermlyReportCard: a school's own real identity, with
+// illustrative (never real) sample student/result data ----
+
+func seedSchool(t *testing.T, db *gorm.DB, id, name, logo, primaryColor string) {
+	t.Helper()
+	if err := db.Exec(
+		"INSERT INTO schools (id, name, logo, primary_color) VALUES (?, ?, ?, ?)",
+		id, name, logo, primaryColor,
+	).Error; err != nil {
+		t.Fatalf("failed to seed school: %v", err)
+	}
+}
+
+func TestPreviewTermlyReportCard_UsesTheCallersOwnRealSchoolIdentity(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedSchool(t, db, "school-1", "Greenfield Academy", "https://cdn.example/greenfield-logo.png", "#0f4c3a")
+
+	preview, err := svc.PreviewTermlyReportCard(context.Background(), "school-1")
+	if err != nil {
+		t.Fatalf("PreviewTermlyReportCard failed: %v", err)
+	}
+	if preview.School.Name != "Greenfield Academy" {
+		t.Errorf("School.Name = %q, want the school's real registered name", preview.School.Name)
+	}
+	if preview.School.Logo != "https://cdn.example/greenfield-logo.png" {
+		t.Errorf("School.Logo = %q, want the school's own real configured logo URL", preview.School.Logo)
+	}
+	if preview.School.PrimaryColor != "#0f4c3a" {
+		t.Errorf("School.PrimaryColor = %q, want the school's own real configured brand color", preview.School.PrimaryColor)
+	}
+}
+
+func TestPreviewTermlyReportCard_TwoSchoolsNeverShareIdentity(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedSchool(t, db, "school-A", "School A Academy", "https://cdn.example/a-logo.png", "#0f4c3a")
+	seedSchool(t, db, "school-B", "School B College", "https://cdn.example/b-logo.png", "#8a1f2b")
+
+	previewA, err := svc.PreviewTermlyReportCard(context.Background(), "school-A")
+	if err != nil {
+		t.Fatalf("PreviewTermlyReportCard(school-A) failed: %v", err)
+	}
+	previewB, err := svc.PreviewTermlyReportCard(context.Background(), "school-B")
+	if err != nil {
+		t.Fatalf("PreviewTermlyReportCard(school-B) failed: %v", err)
+	}
+
+	if previewA.School.Name == previewB.School.Name || previewA.School.Logo == previewB.School.Logo || previewA.School.PrimaryColor == previewB.School.PrimaryColor {
+		t.Fatalf("School A's preview must never carry School B's identity - got A=%+v B=%+v", previewA.School, previewB.School)
 	}
 }

@@ -3144,9 +3144,11 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 			Name: session.Name,
 		},
 		School: dto.SchoolInfo{
-			ID:      school.ID,
-			Name:    school.Name,
-			Address: school.Address,
+			ID:           school.ID,
+			Name:         school.Name,
+			Address:      school.Address,
+			Logo:         school.Logo,
+			PrimaryColor: school.PrimaryColor,
 		},
 		Subjects: subjectResults,
 		Summary: dto.TermlySummary{
@@ -3533,6 +3535,45 @@ func (s *ExamService) SetTeacherReportCardRemark(ctx context.Context, schoolID, 
 // a student's termly report card.
 func (s *ExamService) SetPrincipalReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest) error {
 	return s.setReportCardRemark(ctx, schoolID, actorUserID, req, false)
+}
+
+// PreviewTermlyReportCard builds a Main Termly Report Card response
+// carrying the caller's OWN school's real, configured identity (name,
+// address, logo, brand color - models.School) so a school admin can
+// see their own template rendered before any real student is
+// involved. Every student/subject/score field is explicit illustrative
+// sample data, not a real student's record - the same convention the
+// reference design itself uses ("SAMPLE TEMPLATE - replace sample
+// details with school-approved data"), never real academic records.
+func (s *ExamService) PreviewTermlyReportCard(ctx context.Context, schoolID string) (*dto.TermlyReportCardResponse, error) {
+	school, err := s.getSchoolByID(ctx, schoolID)
+	if err != nil {
+		return nil, errors.New("school not found")
+	}
+
+	nextTerm := time.Now().AddDate(0, 4, 0)
+	return &dto.TermlyReportCardResponse{
+		School: dto.SchoolInfo{
+			ID: school.ID, Name: school.Name, Address: school.Address,
+			Logo: school.Logo, PrimaryColor: school.PrimaryColor,
+		},
+		Student: dto.StudentInfo{Name: "Sample Student", AdmissionNumber: "SAMPLE/0000"},
+		Class:   dto.ClassInfo{Name: "Sample Class", ClassTeacher: "Sample Teacher"},
+		Term:    dto.TermInfo{Name: "Sample Term", Number: 1},
+		Session: dto.SessionInfo{Name: "Sample Session"},
+		Subjects: []dto.ReportCardSubject{
+			{SubjectName: "Sample Subject A", SubjectCode: "SMPA", TotalScore: 82, Percentage: 82, Grade: "A", Position: 1, ClassAverage: 65, Remarks: "Excellent", IsComplete: true},
+			{SubjectName: "Sample Subject B", SubjectCode: "SMPB", TotalScore: 68, Percentage: 68, Grade: "B", Position: 5, ClassAverage: 60, Remarks: "Good", IsComplete: true},
+		},
+		Summary: dto.ReportCardSummary{
+			TotalSubjects: 2, TotalScore: 150, TotalMarks: 200, OverallPercentage: 75, OverallGrade: "B",
+			NumberPassed: 2, ClassPosition: 1, TotalStudentsInClass: 1,
+		},
+		TeacherRemarks:   "Sample class teacher comment.",
+		PrincipalRemarks: "Sample principal comment.",
+		Conduct:          "Good",
+		NextTermBegins:   &nextTerm,
+	}, nil
 }
 
 // getSchoolByID gets a school by ID
@@ -5261,9 +5302,11 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
             Name: session.Name,
         },
         School: dto.SchoolInfo{
-            ID:      school.ID,
-            Name:    school.Name,
-            Address: school.Address,
+            ID:           school.ID,
+            Name:         school.Name,
+            Address:      school.Address,
+            Logo:         school.Logo,
+            PrimaryColor: school.PrimaryColor,
         },
         Subjects: subjectResults,
         Summary: dto.TermlySummary{
@@ -5306,14 +5349,19 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
 
     // ✅ FIX: Get class display name with proper preload
     classDisplayName := ""
+    classTeacherName := ""
     if student.ClassID != "" {
         var class models.Class
         if err := s.db.WithContext(ctx).
             Preload("ClassLevel").
             Preload("ClassArm").
+            Preload("Teacher").
             Where("id = ?", student.ClassID).
             First(&class).Error; err == nil {
             classDisplayName = models.GetClassDisplayName(&class)
+            if class.Teacher != nil {
+                classTeacherName = strings.TrimSpace(class.Teacher.FirstName + " " + class.Teacher.LastName)
+            }
         }
     }
 
@@ -5368,9 +5416,11 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
     // ✅ Return with class name properly populated
     return &dto.TermlyReportCardResponse{
         School: dto.SchoolInfo{
-            ID:      termlyResult.School.ID,
-            Name:    termlyResult.School.Name,
-            Address: termlyResult.School.Address,
+            ID:           termlyResult.School.ID,
+            Name:         termlyResult.School.Name,
+            Address:      termlyResult.School.Address,
+            Logo:         termlyResult.School.Logo,
+            PrimaryColor: termlyResult.School.PrimaryColor,
         },
         Student: dto.StudentInfo{
             ID:              student.ID,
@@ -5382,8 +5432,9 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
             SchoolID:        student.SchoolID,
         },
         Class: dto.ClassInfo{
-            ID:   student.ClassID,
-            Name: classDisplayName, // ✅ FIXED
+            ID:           student.ClassID,
+            Name:         classDisplayName, // ✅ FIXED
+            ClassTeacher: classTeacherName,
         },
         Term: dto.TermInfo{
             ID:     term.ID,

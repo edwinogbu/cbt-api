@@ -1494,6 +1494,34 @@ func (h *ExamHandler) SetPrincipalReportCardRemark(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
+// PreviewReportCardTemplate godoc
+// @Summary      Preview this school's own report-card template as a PDF
+// @Tags         Termly Results
+// @Produce      application/pdf
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/report-card/preview [get]
+func (h *ExamHandler) PreviewReportCardTemplate(c *gin.Context) {
+	schoolID := middleware.ResolveSchoolID(c, c.Query("schoolId"))
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	preview, err := h.examService.PreviewTermlyReportCard(c.Request.Context(), schoolID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	pdfBytes, err := pdf.GenerateTermlyReportCard(preview)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate report card preview"})
+		return
+	}
+	c.Header("Content-Disposition", "inline; filename=\"report-card-template-preview.pdf\"")
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
 // SubmitExam godoc
 // @Summary      Submit an exam for grading
 // @Tags         Student Exam

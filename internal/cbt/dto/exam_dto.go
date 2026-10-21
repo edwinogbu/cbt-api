@@ -802,6 +802,20 @@ type SchoolInfo struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Address string `json:"address,omitempty"`
+	// Logo is a URL the school configured (models.School.Logo) - empty
+	// for most schools today, since no upload flow exists yet. A
+	// printed report must fall back to a plain placeholder, never fail
+	// or block, when this is empty or unreachable (a LAN school-node
+	// server may have no path to a cloud-hosted logo URL at all).
+	Logo string `json:"logo,omitempty"`
+	// PrimaryColor is this school's own platform-owner-approved brand
+	// color (models.School.PrimaryColor, hex e.g. "#1a3a5c") - every
+	// school's report card uses ITS OWN color for the restrained accent
+	// (title bar, section headings), never one shared platform-wide
+	// color, so School A's report never looks like School B's. Empty
+	// for a school with none configured, in which case callers fall
+	// back to a neutral default navy.
+	PrimaryColor string `json:"primary_color,omitempty"`
 }
 
 type SchoolSummary struct {
@@ -1000,6 +1014,10 @@ type TermlyResultResponse struct {
 type ClassInfo struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// ClassTeacher is the real assigned teacher's name
+	// (models.Class.Teacher, via TeacherID) - empty for a class with
+	// none assigned yet, never a placeholder name.
+	ClassTeacher string `json:"class_teacher,omitempty"`
 }
 
 type TermInfo struct {
