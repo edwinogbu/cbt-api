@@ -295,6 +295,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 		student.GET("/review/:attemptId", handler.GetStudentExamReviewForUser)
 		student.GET("/termly-result", handler.GetStudentTermlyResultForUser)
 		student.GET("/report-card", handler.GetTermlyReportCardForUser)
+		student.GET("/report-card/pdf", handler.DownloadTermlyReportCardForUser)
 		student.POST("/practice", handler.StartPracticeForUser)
 		// Reuses the exact same handler/service/tenant-scoping as the
 		// teacher/admin-only GET /questions/academic/current (both end

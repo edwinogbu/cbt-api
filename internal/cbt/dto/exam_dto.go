@@ -799,8 +799,9 @@ type SchoolPerformanceResponse struct {
 }
 
 type SchoolInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Address string `json:"address,omitempty"`
 }
 
 type SchoolSummary struct {
@@ -1154,6 +1155,13 @@ type ReportCardSubject struct {
 	ThirdTest    *int    `json:"third_test,omitempty"`
 	ExamScore    *int    `json:"exam_score,omitempty"`
 	TotalScore   int     `json:"total_score"`
+	// Percentage is the resolved grading-engine percentage (weighted by
+	// Components when a scheme is configured; otherwise the plain
+	// Σscore/Σmarks ratio TotalScore already reflects). TotalScore
+	// alone cannot represent a weighted total, so a printed report
+	// card showing component columns must display this field, not
+	// TotalScore, for the subject's overall figure.
+	Percentage   float64 `json:"percentage"`
 	Grade        string  `json:"grade"`
 	GradePoint   float64 `json:"grade_point"`
 	Position     int     `json:"position"`

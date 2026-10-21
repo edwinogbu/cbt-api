@@ -3144,8 +3144,9 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 			Name: session.Name,
 		},
 		School: dto.SchoolInfo{
-			ID:   school.ID,
-			Name: school.Name,
+			ID:      school.ID,
+			Name:    school.Name,
+			Address: school.Address,
 		},
 		Subjects: subjectResults,
 		Summary: dto.TermlySummary{
@@ -5260,8 +5261,9 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
             Name: session.Name,
         },
         School: dto.SchoolInfo{
-            ID:   school.ID,
-            Name: school.Name,
+            ID:      school.ID,
+            Name:    school.Name,
+            Address: school.Address,
         },
         Subjects: subjectResults,
         Summary: dto.TermlySummary{
@@ -5342,6 +5344,7 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
             SubjectName:   subject.Subject.Name,
             SubjectCode:   subject.Subject.Code,
             TotalScore:    subject.TotalScore,
+            Percentage:    subject.Percentage,
             Grade:         subject.Grade,
             GradePoint:    subject.GradePoint,
             Position:      subject.Position,
@@ -5365,8 +5368,9 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
     // ✅ Return with class name properly populated
     return &dto.TermlyReportCardResponse{
         School: dto.SchoolInfo{
-            ID:   termlyResult.School.ID,
-            Name: termlyResult.School.Name,
+            ID:      termlyResult.School.ID,
+            Name:    termlyResult.School.Name,
+            Address: termlyResult.School.Address,
         },
         Student: dto.StudentInfo{
             ID:              student.ID,

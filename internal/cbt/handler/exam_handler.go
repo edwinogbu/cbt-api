@@ -2,11 +2,13 @@ package handler
 
 import (
 	// "context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"cbt-api/internal/cbt/dto"
+	"cbt-api/internal/cbt/pdf"
 	"cbt-api/internal/cbt/service"
 	"cbt-api/internal/middleware"
 
@@ -1040,6 +1042,62 @@ func (h *ExamHandler) GetTermlyReportCardForUser(c *gin.Context) {
 		"status": "success",
 		"data":   reportCard,
 	})
+}
+
+// DownloadTermlyReportCardForUser godoc
+// @Summary      Download the authenticated student's report card as a PDF
+// @Tags         Termly Results
+// @Produce      application/pdf
+// @Param        termId query string true "Term ID"
+// @Param        sessionId query string true "Session ID"
+// @Success      200 {file} binary
+// @Failure      400 {object} map[string]interface{}
+// @Failure      401 {object} map[string]interface{}
+// @Failure      404 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /student/exams/report-card/pdf [get]
+func (h *ExamHandler) DownloadTermlyReportCardForUser(c *gin.Context) {
+	termID := c.Query("termId")
+	if termID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "term id required"})
+		return
+	}
+	sessionID := c.Query("sessionId")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session id required"})
+		return
+	}
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	reportCard, err := h.examService.GetReportCardForUser(c.Request.Context(), termID, sessionID, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	pdfBytes, err := pdf.GenerateTermlyReportCard(reportCard)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate report card PDF"})
+		return
+	}
+
+	filename := fmt.Sprintf("report-card-%s-%s.pdf", reportCard.Term.Name, reportCard.Session.Name)
+	c.Header("Content-Disposition", "attachment; filename=\""+sanitizeFilename(filename)+"\"")
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
+// sanitizeFilename strips characters that would break a
+// Content-Disposition header or be rejected by a filesystem (notably
+// "/" from a term/session name) - the filename is built from real
+// school-entered term/session names, not a fixed string, so this isn't
+// just theoretical.
+func sanitizeFilename(name string) string {
+	replacer := strings.NewReplacer("/", "-", "\\", "-", "\"", "", "\n", " ", "\r", " ")
+	return replacer.Replace(name)
 }
 
 // StartPracticeForUser godoc
