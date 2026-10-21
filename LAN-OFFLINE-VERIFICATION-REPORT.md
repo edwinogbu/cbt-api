@@ -10,7 +10,9 @@ It supersedes nothing in `OFFLINE-FIRST-COMPLETION-REPORT.md` or
 `MASTER-PLAN-COMPLETION-REPORT.md` — both predate this round and cover
 different work (the TypeScript backlog, JWT fix, multi-role switching, the
 PWA registration/precaching bugs, Platform Owner tenant registry). This
-report only covers the five tasks below.
+report covers two rounds of work: the five initial tasks below (§1-§4),
+and a follow-up round (§5) that ran the remaining items from your
+Section 8 end-to-end checklist.
 
 ## 1. Repositories, branches, commits — all pushed, nothing uncommitted
 
@@ -29,6 +31,7 @@ Commits produced by this round of work, in order:
 | `26873f7` | elias-cbt-portal | Fix real cross-user/tenant data-leak: service worker cached backend API responses |
 | `6c1f141` | elias-cbt-portal | electron-builder GitHub Releases publish config (infrastructure only, unused — installer publish was explicitly paused per your instruction to prioritize offline/LAN work) |
 | `ae2853c` | elias-cbt-portal | Runtime server-address configuration for the Electron desktop app |
+| `30e459c` | cbt-api | **Round 3** — Fix `StartExam`: stored the wrong ID type, breaking every subsequent save/submit on attempts started through that route — see §5 |
 
 Two earlier commits this session (`ac0ff71`, `899aa3a` in cbt-api) were
 Platform Owner / tenant-branding backend work queued before your
@@ -238,15 +241,131 @@ window to the saved address and persists
    `electron-builder.yml`'s publish config exists (`6c1f141`) but no
    release has been created or uploaded.
 
-## 5. What to do next, in priority order
+## 5. Round 3 — the remaining Section 8 checklist items, actually run
 
-1. Run the remaining Section 8 checklist items (multi-student
-   concurrency, restart recovery, fresh install) against this same LAN
-   node setup.
-2. Get access to a real Windows machine to close the two Windows-specific
-   gaps (§4.3, §4.4) — nothing further can be verified for those from
-   this sandbox.
-3. Build the health-monitoring dashboard page against the existing
+This section covers the four checklist items §4 listed as "not yet done":
+a from-scratch install, multiple simultaneous students, restart/recovery,
+and cross-node isolation. All four were run live against a genuinely
+fresh container in this environment (it came up with no running services
+and no data at all — a real, not staged, blank slate) rather than reusing
+state from the earlier rounds.
+
+### 5a. Fresh from-scratch install, no prior state
+
+Started from an empty Postgres (two brand-new databases created,
+`cbt_lan_node1`/`cbt_lan_node2`) and a `cbt-api-server` binary built fresh
+from source (`go build ./cmd/server`). Booted with `AUTO_MIGRATE=true`
+against the empty database: the log shows every table being created from
+scratch (`CREATE TABLE "tenant_audit_logs"`, etc. — dozens of `CREATE
+TABLE`/`CREATE INDEX` statements, none pre-existing). `ADMIN_EMAIL`/
+`ADMIN_PASSWORD` auto-created the first admin account on that same boot,
+confirmed by logging in with it and getting a real, valid JWT back.
+**This is the closest this sandbox can get to a true "install on a blank
+machine" test** — the one piece it still can't cover is a real Windows
+install (§4.3/§4.4 still apply).
+
+### 5b. Multiple simultaneous students
+
+Built a full academic chain by hand through the real API (session, term,
+class level, class arm, class, subject), registered a teacher and three
+students, created and published 6 questions, created and published an
+exam, assigned it to all three students. Then ran all three students'
+**entire exam flow — login, start, answer, submit — concurrently** (three
+backgrounded shell processes, not sequential calls) against the one LAN
+node:
+
+| Student | Answers | Score | Passed |
+|---|---|---|---|
+| 1 | all correct | 60/60 | yes |
+| 2 | 3 correct, 3 wrong | 30/60 (exact pass-mark boundary) | yes |
+| 3 | all wrong | 0/60 | no |
+
+Each got a distinct attempt ID, the correct score for their own answers,
+and no cross-contamination between concurrent requests — grading held up
+correctly under real concurrent load, including the exact boundary case
+(pass mark 30, student 2 scored exactly 30).
+
+### 5c. Server restart mid-exam recovery
+
+Started a new attempt, saved 3 of 6 answers (confirmed via the API:
+`answered: 3, unanswered: 3, percentage: 50`), then `kill -9`'d the LAN
+node process outright and confirmed it was actually down (`curl`:
+connection refused). Restarted the same binary against the same
+database. Fetched the attempt's state back: **all 3 pre-crash answers
+were intact**, byte-for-byte (same selected options), the timer had
+continued correctly, and the attempt was still `in_progress`. Answered
+the remaining 3 questions and submitted: final score was **40/60** —
+exactly what the 6 answers (3 before the crash, 3 after) should produce,
+confirming zero data loss across a genuine process crash and restart.
+
+This is the closest proxy available in this sandbox for "the LAN server
+loses power/network mid-exam and comes back" — it exercises the real
+recovery path (database-backed attempt state surviving a process crash)
+but does not exercise what a student's own client does while the server
+is unreachable (that's a separate, already-covered concern — see the
+PWA offline-continuity testing referenced in
+`OFFLINE-FIRST-COMPLETION-REPORT.md`).
+
+### 5d. Cross-node isolation re-verification
+
+Stood up a second, fully independent LAN node (`cbt_lan_node2`, a
+different JWT secret, a different port) alongside the first. Confirmed,
+live:
+
+- A real JWT issued by Node 1 for a real logged-in student returned
+  **401 "Invalid or expired token"** when presented to Node 2 (different
+  `JWT_SECRET`s mean the signature simply doesn't verify) — while the
+  same token continued to work normally against Node 1 itself (control).
+- Node 1's school registration code was rejected by Node 2
+  (`"invalid school code"`), and a direct query against Node 2's own
+  database confirmed **zero rows** referencing Node 1's school or users —
+  not just an API-level rejection, but genuinely no shared data at any
+  level, as expected for two separate database instances.
+
+### 5e. A real bug found and fixed along the way
+
+Running 6b through the real HTTP API (rather than asserting it from
+reading code) surfaced a genuine defect: `POST /exams/start` — a
+secondary route, not the one the live frontend calls, but still real
+public API surface — stored a user's ID into the new exam attempt using
+the wrong ID type (the `User` table's ID instead of the separate
+`Student` table's own ID). Every subsequent save-answer/submit call on
+an attempt started this way then failed its ownership check
+("unauthorized"), always, since the two ID spaces never match. Confirmed
+live (reproduced the failure, applied the fix, re-ran the exact same
+flow, confirmed success), fixed in `30e459c`, `go build`/`go vet`/
+`go test ./internal/cbt/...` all pass. No handler-level test harness
+exists yet for this package to add an automated regression test against
+— noted as a real gap rather than skipped silently.
+
+### 5f. Updated limitations after Round 3
+
+Everything in §4 still applies except item 6, which is now done. Net
+new, carried forward:
+
+- No handler-level test coverage exists for `internal/cbt/handler` — the
+  bug in §5e was caught by live testing, not a regression test, and
+  nothing currently guards against it recurring.
+- The restart-recovery test (§5c) proves the *server-side* database
+  recovery path; it does not exercise what a real client (browser tab,
+  Electron window) does while the server is briefly unreachable, which
+  is a different, already-tested concern (see
+  `OFFLINE-FIRST-COMPLETION-REPORT.md` §3e/§6 for that side).
+- Two Section 8 items remain untested even after this round: a true
+  multi-device setup (two or more separate physical machines, one
+  running the LAN node and others as separate client devices on the same
+  LAN) and re-verification of the PWA/Electron client specifically with
+  its own network connection (not the server's) physically cut — both
+  need real hardware this sandbox doesn't have.
+
+## 6. What to do next, in priority order
+
+1. Get access to a real Windows machine to close the two Windows-specific
+   gaps (§4.3, §4.4) and the real multi-device/client-network-cut gaps
+   (§5f) — nothing further can be verified for those from this sandbox.
+2. Build the health-monitoring dashboard page against the existing
    backend endpoints.
+3. Add handler-level test coverage for `internal/cbt/handler` so a bug
+   like §5e's can't silently recur.
 4. Resume the Windows-installer GitHub Releases publish, once the above
    is closed out.
