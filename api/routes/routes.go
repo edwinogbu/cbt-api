@@ -158,7 +158,7 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 		// ==================== EXAM ROUTES ====================
 		// ALL 23 EXAM ENDPOINTS ORGANIZED UNDER /v1/exams
 		setupExamRoutes(v1, examH, studentRepo)
-		setupStudentExamRoutes(v1, examH, studentRepo)
+		setupStudentExamRoutes(v1, examH, questionH, studentRepo)
 
 		// ==================== QUESTION ROUTES ====================
 		setupCBTQuestionRoutes(v1, questionH)
@@ -275,7 +275,7 @@ func initOnboardingHandler() *onboardingHandler.OnboardingHandler {
 // ============================================
 // setupStudentExamRoutes - All student exam routes with automatic context
 // ============================================
-func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, studentRepo *academicRepo.StudentRepository) {
+func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, questionHandler *cbtQuestionHandler.QuestionHandler, studentRepo *academicRepo.StudentRepository) {
 	student := rg.Group("/student/exams")
 	student.Use(middleware.AuthMiddleware())
 	student.Use(middleware.StudentContextMiddleware(studentRepo))
@@ -296,6 +296,19 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 		student.GET("/termly-result", handler.GetStudentTermlyResultForUser)
 		student.GET("/report-card", handler.GetTermlyReportCardForUser)
 		student.POST("/practice", handler.StartPracticeForUser)
+		// Reuses the exact same handler/service/tenant-scoping as the
+		// teacher/admin-only GET /questions/academic/current (both end
+		// up calling QuestionService.GetCurrentAcademicContext with
+		// middleware.ResolveSchoolID's own school_id resolution, which
+		// is already safe for any authenticated role - it forces the
+		// caller's own school_id except for platform_owner, regardless
+		// of which route group reaches it). Added so a student-facing
+		// page (the termly report card) can resolve "my current
+		// session/term" without widening the /questions group's own
+		// role gate, which was deliberately tightened to exclude
+		// students in an earlier fix precisely because that group also
+		// bundles write/CRUD operations students must never reach.
+		student.GET("/academic/current", questionHandler.GetCurrentAcademicContext)
 	}
 }
 
