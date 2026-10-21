@@ -435,6 +435,36 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			promotionDecision := reportCardRemarks.Group("")
 			promotionDecision.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 			promotionDecision.POST("/promotion-decision", handler.RecordPromotionDecision)
+
+			// Approving/rejecting a report card is the same "principal"
+			// sign-off as the promotion decision above - not open to
+			// "teacher" for the same reason. Reading approval status/
+			// history is informational and open to teacher too, so
+			// staff preparing a class's results can see what is already
+			// approved without needing admin-tier access.
+			reportCardApproval := reportCardRemarks.Group("")
+			reportCardApproval.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			reportCardApproval.POST("/approve", handler.ApproveReportCard)
+			reportCardApproval.POST("/reject", handler.RejectReportCard)
+			reportCardApproval.POST("/batch-approve", handler.BatchApproveReportCards)
+
+			reportCardApprovalRead := reportCardRemarks.Group("")
+			reportCardApprovalRead.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			reportCardApprovalRead.GET("/approval-status", handler.GetReportCardApprovalStatus)
+			reportCardApprovalRead.GET("/approval-history", handler.GetReportCardApprovalHistory)
+		}
+
+		// Class-wide report-card batch review, bulk PDF, and
+		// spreadsheet export - same staff role gate as the rest of
+		// examsStaff above (teacher/admin/super_admin/platform_owner),
+		// with the class-level tenant boundary enforced inside
+		// ExamService.authorizeClassTenant, not just this role check.
+		reportCardBatch := exams.Group("/classes/:classId/report-cards")
+		reportCardBatch.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			reportCardBatch.GET("", handler.GetClassReportCardSummary)
+			reportCardBatch.GET("/batch-pdf", handler.DownloadClassReportCardsZIP)
+			reportCardBatch.GET("/export", handler.ExportClassReportCards)
 		}
 	}
 }

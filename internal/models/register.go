@@ -93,6 +93,8 @@ func init() {
 	Register(&ReportCardRemark{})
 	Register(&PromotionPolicy{})
 	Register(&PromotionDecision{})
+	Register(&ReportCardApproval{})
+	Register(&ReportCardAuditLog{})
 
 	// ============================================
 	// OFFLINE-FIRST SYNC MODELS

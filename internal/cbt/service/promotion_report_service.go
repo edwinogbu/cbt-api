@@ -41,7 +41,15 @@ func (s *ExamService) GetPromotionReportCardForUser(ctx context.Context, session
 	if err != nil {
 		return nil, errors.New("student not found")
 	}
+	return s.GetPromotionReportCard(ctx, student, sessionID)
+}
 
+// GetPromotionReportCard builds the Promotion Examination Report Card
+// for an already-resolved student - the shared builder behind
+// GetPromotionReportCardForUser (student-self) and the batch/admin
+// report-card paths (collectClassReportCards), the same split as
+// GetTermlyReportCard/GetReportCardForUser.
+func (s *ExamService) GetPromotionReportCard(ctx context.Context, student *models.Student, sessionID string) (*dto.PromotionReportCardResponse, error) {
 	term, err := s.resolveLastTermOfSession(ctx, sessionID)
 	if err != nil {
 		return nil, errors.New("no term found for this session")

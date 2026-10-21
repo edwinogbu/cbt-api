@@ -97,7 +97,15 @@ func (s *ExamService) GetMidTermProgressReportForUser(ctx context.Context, termI
 	if err != nil {
 		return nil, errors.New("student not found")
 	}
+	return s.GetMidTermProgressReport(ctx, student, termID, sessionID)
+}
 
+// GetMidTermProgressReport builds the Mid-Term Progress Report Card
+// for an already-resolved student - the shared builder behind
+// GetMidTermProgressReportForUser (student-self) and the batch/admin
+// report-card paths (collectClassReportCards), the same split as
+// GetTermlyReportCard/GetReportCardForUser.
+func (s *ExamService) GetMidTermProgressReport(ctx context.Context, student *models.Student, termID, sessionID string) (*dto.MidTermReportCardResponse, error) {
 	classDisplayName, classTeacherName, classLevelID := s.resolveClassWithTeacher(ctx, student.ClassID)
 
 	school, err := s.getSchoolByID(ctx, student.SchoolID)

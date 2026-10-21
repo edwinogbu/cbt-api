@@ -5355,26 +5355,27 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     }, nil
 }
 
-// // GetReportCardForUser gets report card for authenticated student
-// func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionID, userID string) (*dto.TermlyReportCardResponse, error) {
-//     student, err := s.examRepo.GetStudentByUserID(ctx, userID)
-//     if err != nil {
-//         return nil, errors.New("student not found")
-//     }
-//     return s.GetTermlyReportCard(ctx, student.ID, termID, sessionID)
-// }
-
-
 // ============================================
 // GetReportCardForUser gets report card for authenticated student
 // ============================================
 func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionID, userID string) (*dto.TermlyReportCardResponse, error) {
-    // Get student from user ID
     student, err := s.examRepo.GetStudentByUserID(ctx, userID)
     if err != nil {
         return nil, errors.New("student not found")
     }
+    return s.GetTermlyReportCardForStudent(ctx, student, termID, sessionID)
+}
 
+// GetTermlyReportCardForStudent builds the Main Termly Academic Report
+// Card for an already-resolved student - the shared builder behind
+// GetReportCardForUser (student-self, which resolves student from a
+// userID first) and the batch/admin report-card paths
+// (collectClassReportCards), which already have a *models.Student from
+// a class roster and have no userID to resolve one from at all. Named
+// distinctly from the pre-existing, unrouted GetTermlyReportCard(ctx,
+// studentID string, ...) above (dead code with no school/tenant check -
+// out of this change's scope to touch) to avoid colliding with it.
+func (s *ExamService) GetTermlyReportCardForStudent(ctx context.Context, student *models.Student, termID, sessionID string) (*dto.TermlyReportCardResponse, error) {
     // ✅ FIX: Get class display name with proper preload
     classDisplayName := ""
     classTeacherName := ""

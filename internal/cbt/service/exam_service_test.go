@@ -49,7 +49,7 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE students (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), user_id TEXT, school_id TEXT, class_id TEXT,
-			deleted_at DATETIME
+			admission_no TEXT DEFAULT '', is_active INTEGER DEFAULT 1, deleted_at DATETIME
 		)`,
 		`CREATE TABLE exam_attempts (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
@@ -147,6 +147,18 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			school_id TEXT, student_id TEXT, session_id TEXT,
 			proposed_class_level_id TEXT, decision TEXT, notes TEXT,
 			decided_by TEXT, decided_at DATETIME, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE report_card_approvals (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, student_id TEXT, report_type TEXT, term_id TEXT DEFAULT '', session_id TEXT,
+			status TEXT, version INTEGER DEFAULT 1, snapshot_json TEXT, notes TEXT,
+			actor_id TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE report_card_audit_logs (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, actor_id TEXT, action TEXT, report_type TEXT,
+			student_id TEXT, class_id TEXT, term_id TEXT, session_id TEXT, notes TEXT,
+			created_at DATETIME
 		)`,
 		`CREATE TABLE class_levels (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
