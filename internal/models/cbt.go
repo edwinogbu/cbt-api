@@ -454,9 +454,19 @@ func (s *StringArray) Scan(value interface{}) error {
         *s = StringArray{}
         return nil
     }
-    bytes, ok := value.([]byte)
-    if !ok {
-        return fmt.Errorf("failed to scan StringArray: expected []byte, got %T", value)
+    // Postgres's jsonb driver returns []byte; SQLite's (used by this
+    // repo's unit tests, e.g. internal/grading) returns string for the
+    // same TEXT-stored column - same fix already applied to
+    // CorrectOptionKeys.Scan above after it was found failing tests
+    // with "expected []byte, got string".
+    var bytes []byte
+    switch v := value.(type) {
+    case []byte:
+        bytes = v
+    case string:
+        bytes = []byte(v)
+    default:
+        return fmt.Errorf("failed to scan StringArray: expected []byte or string, got %T", value)
     }
     if len(bytes) == 0 || string(bytes) == "null" {
         *s = StringArray{}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"cbt-api/internal/grading"
 	"cbt-api/internal/models"
 
 	"github.com/google/uuid"
@@ -1210,21 +1211,13 @@ func (r *ExamRepository) GetSubjectsByClassAndTerm(ctx context.Context, classID,
 // HELPER - Grade Calculation
 // ============================================
 
+// getGradeFromPercentage: thin wrapper around grading.Builtin
+// (internal/grading) - previously hardcoded the exact same A>=70/
+// B>=60/.../F boundaries directly, now consolidated into one place.
+// Same transition rationale as dto.GetGrade (exam_dto.go).
 func getGradeFromPercentage(percentage float64) string {
-	switch {
-	case percentage >= 70:
-		return "A"
-	case percentage >= 60:
-		return "B"
-	case percentage >= 50:
-		return "C"
-	case percentage >= 45:
-		return "D"
-	case percentage >= 40:
-		return "E"
-	default:
-		return "F"
-	}
+	grade, _, _ := grading.Builtin(percentage)
+	return grade
 }
 // ============================================
 // HELPER - Grade Calculation

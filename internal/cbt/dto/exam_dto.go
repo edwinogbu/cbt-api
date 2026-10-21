@@ -2,6 +2,8 @@ package dto
 
 import (
 	"time"
+
+	"cbt-api/internal/grading"
 )
 
 // ============================================
@@ -1138,22 +1140,18 @@ type GradeScale struct {
 	Remark     string  `json:"remark"`
 }
 
-// GetGrade - Get grade based on percentage
+// GetGrade - Get grade based on percentage.
+//
+// This used to hardcode its own A>=70/B>=60/.../F boundaries directly -
+// now a thin wrapper around grading.Builtin (internal/grading), the
+// same exact boundaries, kept here so none of this function's ~15
+// existing call sites across exam_service.go need to change. A caller
+// with real school/class-level context should prefer calling
+// grading.Service.ComputeGrade directly instead, so a school's own
+// configured GradingScale (if any) is actually honored - this function
+// only ever applies the built-in default, by design.
 func GetGrade(percentage float64) (grade string, gradePoint float64, remark string) {
-	switch {
-	case percentage >= 70:
-		return "A", 5.0, "Excellent"
-	case percentage >= 60:
-		return "B", 4.0, "Very Good"
-	case percentage >= 50:
-		return "C", 3.0, "Good"
-	case percentage >= 45:
-		return "D", 2.0, "Fair"
-	case percentage >= 40:
-		return "E", 1.0, "Pass"
-	default:
-		return "F", 0.0, "Fail"
-	}
+	return grading.Builtin(percentage)
 }
 
 // CalculateGradeFromScore - Calculate grade from score and total marks

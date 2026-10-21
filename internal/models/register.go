@@ -83,6 +83,15 @@ func init() {
 	Register(&Result{})            // ✅ Results
 
 	// ============================================
+	// REPORT CARD / GRADING MODELS
+	// ============================================
+	Register(&GradingScale{})
+	Register(&GradingScaleBand{})
+	Register(&AssessmentScheme{})
+	Register(&AssessmentComponent{})
+	Register(&ClassLevelSubject{})
+
+	// ============================================
 	// OFFLINE-FIRST SYNC MODELS
 	// ============================================
 	Register(&SyncOperation{})
