@@ -682,9 +682,21 @@ func (c *CorrectOptionKeys) Scan(value interface{}) error {
         *c = CorrectOptionKeys{}
         return nil
     }
-    bytes, ok := value.([]byte)
-    if !ok {
-        return fmt.Errorf("failed to scan CorrectOptionKeys: expected []byte, got %T", value)
+    // Production (Postgres jsonb) returns []byte here, but not every
+    // driver does - SQLite's (used by this package's own test suite for
+    // a hand-written, SQLite-compatible schema) returns a plain string
+    // for a TEXT column. Accepting both is strictly more portable with
+    // no change to real Postgres behavior; found live when a new test
+    // for the CorrectOptionKeys grading path failed on this exact scan,
+    // not on the grading logic it was meant to test.
+    var bytes []byte
+    switch v := value.(type) {
+    case []byte:
+        bytes = v
+    case string:
+        bytes = []byte(v)
+    default:
+        return fmt.Errorf("failed to scan CorrectOptionKeys: expected []byte or string, got %T", value)
     }
     if len(bytes) == 0 || string(bytes) == "null" {
         *c = CorrectOptionKeys{}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,28 @@ func seedQuestion(t *testing.T, db *gorm.DB, correctAnswer string, marks int) (q
 	if err := db.Exec(
 		"INSERT INTO question_bank (id, correct_answer, marks, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
 		id, correctAnswer, marks, time.Now(), time.Now(),
+	).Error; err != nil {
+		t.Fatalf("failed to seed question: %v", err)
+	}
+	return id
+}
+
+// seedQuestionWithOptionKeys seeds a question using the MODERN
+// options+correct_option_keys format (CreateQuestionRequest's
+// Options/CorrectOptionKeys fields - what QuestionService actually
+// accepts and validates as an alternative to the legacy single-string
+// CorrectAnswer field), leaving correct_answer empty exactly as a real
+// question created that way does. See TestGradeAnswer_UsesCorrectOptionKeys.
+func seedQuestionWithOptionKeys(t *testing.T, db *gorm.DB, correctKeys []string, marks int) (questionID string) {
+	t.Helper()
+	id := uuid.NewString()
+	keysJSON, err := json.Marshal(correctKeys)
+	if err != nil {
+		t.Fatalf("failed to marshal correct_option_keys: %v", err)
+	}
+	if err := db.Exec(
+		"INSERT INTO question_bank (id, correct_option_keys, marks, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		id, string(keysJSON), marks, time.Now(), time.Now(),
 	).Error; err != nil {
 		t.Fatalf("failed to seed question: %v", err)
 	}
@@ -537,6 +560,54 @@ func TestAutoSave_SetsIsCorrect(t *testing.T) {
 	}
 	if wrongAnswer.IsCorrect {
 		t.Fatalf("expected the wrongly-answered question to have IsCorrect=false after AutoSave, got true")
+	}
+}
+
+// TestGradeAnswer_UsesCorrectOptionKeys is the regression test for a
+// third grading bug, found live by running a real seeded exam end to
+// end against a School CBT Node: gradeAnswer only ever compared the
+// submitted answer against the legacy single-string CorrectAnswer
+// field. A question created via the modern options+correct_option_keys
+// format (what CreateQuestionRequest's own validation treats as a fully
+// valid alternative - QuestionService requires only one of
+// CorrectOptionKeys or CorrectAnswer, never both) leaves CorrectAnswer
+// empty, so every answer to it was silently graded wrong regardless of
+// correctness. Confirmed live: 5/5 objectively-correct answers on a
+// real seeded exam all scored 0.
+func TestGradeAnswer_UsesCorrectOptionKeys(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedExam(t, db, 30)
+	attemptID := seedAttempt(t, db, 2)
+	correctQID := seedQuestionWithOptionKeys(t, db, []string{"A"}, 1)
+	wrongQID := seedQuestionWithOptionKeys(t, db, []string{"B"}, 1)
+
+	resp, err := svc.BulkSaveAnswers(context.Background(), &dto.BulkSaveAnswerRequest{
+		AttemptID: attemptID,
+		Answers: []dto.BulkAnswerItem{
+			{QuestionID: correctQID, SelectedAnswer: "A"}, // matches correct_option_keys
+			{QuestionID: wrongQID, SelectedAnswer: "A"},   // correct_option_keys is ["B"]
+		},
+	}, testStudentID)
+	if err != nil {
+		t.Fatalf("BulkSaveAnswers failed: %v", err)
+	}
+	if resp.SyncedCount != 2 {
+		t.Fatalf("expected 2 synced, got %d", resp.SyncedCount)
+	}
+
+	var correctAnswer, wrongAnswer models.StudentAnswer
+	if err := db.Where("attempt_id = ? AND question_id = ?", attemptID, correctQID).First(&correctAnswer).Error; err != nil {
+		t.Fatalf("failed to load correct answer: %v", err)
+	}
+	if err := db.Where("attempt_id = ? AND question_id = ?", attemptID, wrongQID).First(&wrongAnswer).Error; err != nil {
+		t.Fatalf("failed to load wrong answer: %v", err)
+	}
+	if !correctAnswer.IsCorrect {
+		t.Fatalf("expected the answer matching correct_option_keys to have IsCorrect=true, got false - the bug is present")
+	}
+	if wrongAnswer.IsCorrect {
+		t.Fatalf("expected the answer NOT matching correct_option_keys to have IsCorrect=false, got true")
 	}
 }
 

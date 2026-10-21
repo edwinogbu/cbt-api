@@ -1596,6 +1596,27 @@ func (s *ExamService) gradeAnswer(q *models.QuestionBank, submittedText string) 
 	if q.QuestionType == models.QuestionTypeEssay {
 		return false, submittedText
 	}
+	// Every caller passes SelectedAnswer, which SaveAnswerRequest/
+	// BulkAnswerItem constrain to exactly "A"/"B"/"C"/"D" (the option
+	// KEY, not its text) - the same thing CreateQuestionRequest's
+	// modern options+correct_option_keys format stores. A question
+	// created that way (QuestionService explicitly accepts and
+	// validates it as an alternative to the legacy single-string
+	// CorrectAnswer field - see question_service.go's "either
+	// CorrectOptionKeys or CorrectAnswer must be set" checks) left
+	// CorrectAnswer empty, so comparing only against CorrectAnswer here
+	// silently graded every such question's every answer as wrong -
+	// found live via a real seeded exam where 5/5 objectively-correct
+	// answers all scored 0. Check CorrectOptionKeys first; fall back to
+	// the legacy CorrectAnswer field for questions that only set that.
+	if len(q.CorrectOptionKeys) > 0 {
+		for _, key := range q.CorrectOptionKeys {
+			if submittedText == key {
+				return true, ""
+			}
+		}
+		return false, ""
+	}
 	return submittedText == q.CorrectAnswer, ""
 }
 
