@@ -10,11 +10,12 @@ It supersedes nothing in `OFFLINE-FIRST-COMPLETION-REPORT.md` or
 `MASTER-PLAN-COMPLETION-REPORT.md` — both predate this round and cover
 different work (the TypeScript backlog, JWT fix, multi-role switching, the
 PWA registration/precaching bugs, Platform Owner tenant registry). This
-report now covers four rounds of work: the five initial tasks (§1-§4),
+report now covers five rounds of work: the five initial tasks (§1-§4),
 a round (§5) that ran the remaining items from your Section 8
 end-to-end checklist, the health-monitoring dashboard (noted inline in
-§4 item 5), and a round (§6) that re-verified bulk question import
-against the real HTTP API.
+§4 item 5), a round (§6) that re-verified CSV/Excel/Word/TXT bulk
+question import against the real HTTP API, and a round (§7) that
+closed out the remaining JSON/RTF/PDF/XLS formats the same way.
 
 ## 1. Repositories, branches, commits — all pushed, nothing uncommitted
 
@@ -414,19 +415,60 @@ multiple-choice, true/false, and fill-in-the-blank questions bulk-import
 correctly in every format tested (they always did - only essay
 questions were broken).
 
-**Still not covered**: JSON, RTF, PDF, and legacy XLS formats were not
-re-verified live this round (existing unit tests for them still pass,
-but weren't re-checked against the real HTTP endpoint the way CSV/
-Excel/DOCX/TXT were).
+## 7. Round 5 — JSON, RTF, PDF, and legacy XLS bulk-import re-verification
 
-## 7. What to do next, in priority order
+Closes the gap §6 left open. No official downloadable template exists
+for these four formats (`GET /questions/templates/{format}` only
+supports csv/excel/docx/txt), so the method differed slightly per
+format, but every file used was genuine, not hand-faked bytes:
+
+- **XLS**: the real Excel template downloaded via the live API,
+  converted to true legacy Excel 97 binary format with
+  `soffice --headless --convert-to xls` (confirmed via `file`: a real
+  "Composite Document File V2... MS Excel 97" binary).
+- **RTF**: the real DOCX template converted the same way
+  (`--convert-to rtf`), confirmed a real "Rich Text Format data" file.
+- **PDF**: the real DOCX template converted to a genuine text-based PDF
+  (`--convert-to pdf`), confirmed a real "PDF document, version 1.7".
+- **JSON**: hand-written against `JSONQuestion`'s real field names in
+  `question_dto.go` (no generator exists for this format), with one MCQ
+  and one essay question.
+
+All four uploaded through the real `POST /questions/bulk-upload`
+against a live LAN node, no code changes needed or made this round:
+
+| Format | Result |
+|---|---|
+| XLS | 2/2 rows succeeded (MCQ + essay), confirmed via DB query |
+| RTF | Both real sample questions succeeded; 2 of 4 total rows failed, but those were fragments of the template's own instructions paragraph (RTF's paragraph-break conversion split it differently than DOCX's), honestly rejected with a clear message - not silent data loss, and not a new bug |
+| PDF | 2/2 real questions succeeded (MCQ + essay); the usual single instructions-paragraph pseudo-row was honestly rejected, matching DOCX/TXT's existing documented behavior |
+| JSON | 2/2 succeeded (MCQ + essay) cleanly, no failures at all |
+
+Every essay question in every format landed with its full, correct
+model-answer text as both `explanation` and a real synthesized rubric
+criterion - confirmed by querying the resulting rows directly, not
+just reading the API response.
+
+**Why no code change was needed**: reading the parsers first (rather
+than guessing) showed RTF and PDF both parse by extracting plain text
+and handing it to the exact same `TXTParser.parseQuestionsFromText`
+already fixed in §6, and XLS parses by handing its rows to the exact
+same `ExcelParser.parseRow` Excel already uses - so all three inherited
+the fix automatically. JSON was never susceptible to the type-detection
+bug in the first place (its question type is an explicit input field,
+never auto-detected), and already benefits from the service-layer
+rubric-synthesis fix since its schema always had an `explanation`
+field. This was confirmed by live-testing each format rather than
+trusting that code-reading conclusion alone.
+
+**Still not covered**: none of the nine supported bulk-import formats
+remain unverified against the real HTTP endpoint as of this round.
+
+## 8. What to do next, in priority order
 
 1. Get access to a real Windows machine to close the two Windows-specific
    gaps (§4.3, §4.4) and the real multi-device/client-network-cut gaps
    (§5f) — nothing further can be verified for those from this sandbox.
 2. Add handler-level test coverage for `internal/cbt/handler` so a bug
    like §5e's can't silently recur.
-3. Re-verify JSON/RTF/PDF/XLS bulk-import live, the same way CSV/Excel/
-   DOCX/TXT were re-verified in §6.
-4. Resume the Windows-installer GitHub Releases publish, once the above
-   is closed out.
+3. Resume the Windows-installer GitHub Releases publish.
