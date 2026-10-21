@@ -10,9 +10,11 @@ It supersedes nothing in `OFFLINE-FIRST-COMPLETION-REPORT.md` or
 `MASTER-PLAN-COMPLETION-REPORT.md` — both predate this round and cover
 different work (the TypeScript backlog, JWT fix, multi-role switching, the
 PWA registration/precaching bugs, Platform Owner tenant registry). This
-report covers two rounds of work: the five initial tasks below (§1-§4),
-and a follow-up round (§5) that ran the remaining items from your
-Section 8 end-to-end checklist.
+report now covers four rounds of work: the five initial tasks (§1-§4),
+a round (§5) that ran the remaining items from your Section 8
+end-to-end checklist, the health-monitoring dashboard (noted inline in
+§4 item 5), and a round (§6) that re-verified bulk question import
+against the real HTTP API.
 
 ## 1. Repositories, branches, commits — all pushed, nothing uncommitted
 
@@ -32,6 +34,9 @@ Commits produced by this round of work, in order:
 | `6c1f141` | elias-cbt-portal | electron-builder GitHub Releases publish config (infrastructure only, unused — installer publish was explicitly paused per your instruction to prioritize offline/LAN work) |
 | `ae2853c` | elias-cbt-portal | Runtime server-address configuration for the Electron desktop app |
 | `30e459c` | cbt-api | **Round 3** — Fix `StartExam`: stored the wrong ID type, breaking every subsequent save/submit on attempts started through that route — see §5 |
+| `512b839` | cbt-api | `GET /admin/system/health` — backend for the node health-monitoring dashboard |
+| `df40426` | elias-cbt-portal | Node Health dashboard page (`/dashboard/admin/node-health`) |
+| `7e73c32` | cbt-api | **Round 4** — Fix bulk-import: essay questions failed in every format (CSV/Excel/Word/TXT), every time — see §6 |
 
 Two earlier commits this session (`ac0ff71`, `899aa3a` in cbt-api) were
 Platform Owner / tenant-branding backend work queued before your
@@ -225,9 +230,13 @@ window to the saved address and persists
    Playwright driving the real Electron runtime in this Linux sandbox,
    which exercises the same application code but not the real installer
    package or a real Windows OS.
-5. **No dedicated health-monitoring dashboard UI was built this round.**
-   The backend `GET /admin/backups` endpoint exists; there is no page
-   showing LAN-node uptime, connected-client count, or live health status.
+5. ~~No dedicated health-monitoring dashboard UI was built this round.~~
+   **Done in a later round** — see `/dashboard/admin/node-health`
+   (`elias-cbt-portal` `df40426`) and `GET /admin/system/health`
+   (`cbt-api` `512b839`). Connected-client count and disk/storage usage
+   are still not tracked — no session-tracking infrastructure exists to
+   back a real client count, and this page says so explicitly rather
+   than fabricating one.
 6. **The full Section 8 end-to-end checklist from your spec is only
    partially exercised.** Covered this round: question creation, bulk
    publish, student exam access, answer submission, auto-grading
@@ -358,14 +367,66 @@ new, carried forward:
   its own network connection (not the server's) physically cut — both
   need real hardware this sandbox doesn't have.
 
-## 6. What to do next, in priority order
+## 6. Round 4 — bulk-import re-verification (CSV/Excel/Word/TXT)
+
+A later round re-verified bulk question import against the real HTTP
+API rather than trusting the existing unit tests alone, per your
+instruction to re-check this specifically.
+
+**Method**: for each of the four formats the spec names (CSV, Excel,
+Word/DOCX, plus TXT, which the system also supports), downloaded the
+system's own official template via the real endpoint
+(`GET /questions/templates/{csv,excel,docx,txt}`) and re-uploaded it,
+**unmodified**, through the real `POST /questions/bulk-upload` endpoint
+against a live LAN node - the strongest test available, since a human
+teacher following the documented workflow would do exactly this.
+
+**Result**: every format's own official sample essay question was
+rejected, 100% of the time, for two compounding reasons:
+
+1. No import format (CSV, Excel, DOCX, TXT) ever populates a structured
+   rubric, but essay questions were hard-required to have one, with no
+   fallback.
+2. `DOCXParser`/`TXTParser`'s type-detection logic had no path that
+   ever produced "essay" - any question with no detected A-D options
+   fell through to "single choice" with zero options, which then failed
+   for lacking options.
+
+**Fixed** (`cbt-api` `7e73c32`): essay rows now get a real default
+rubric synthesized from their own explanation/model-answer text (never
+fabricated), and the DOCX/TXT parsers correctly classify an option-less
+question as an essay. A third, subtler bug found while building that
+fix - the model-answer text was being mangled down to a single stray
+letter before it could be used - was fixed in the same commit.
+
+**Verified with the standard red/green discipline**: reverted the
+parser fix, confirmed two new regression tests fail for the exact
+stated reasons (wrong type, then wrong/empty explanation), restored the
+fix, confirmed both pass. Then re-verified live end-to-end on the real
+LAN node a second time: all four official templates now import their
+essay questions correctly, confirmed by querying the resulting database
+rows directly - the full model-answer text appears as both the
+question's explanation and a real rubric criterion, not a stray letter
+or an empty field.
+
+**Also confirmed working, unaffected by this bug**: single-choice,
+multiple-choice, true/false, and fill-in-the-blank questions bulk-import
+correctly in every format tested (they always did - only essay
+questions were broken).
+
+**Still not covered**: JSON, RTF, PDF, and legacy XLS formats were not
+re-verified live this round (existing unit tests for them still pass,
+but weren't re-checked against the real HTTP endpoint the way CSV/
+Excel/DOCX/TXT were).
+
+## 7. What to do next, in priority order
 
 1. Get access to a real Windows machine to close the two Windows-specific
    gaps (§4.3, §4.4) and the real multi-device/client-network-cut gaps
    (§5f) — nothing further can be verified for those from this sandbox.
-2. Build the health-monitoring dashboard page against the existing
-   backend endpoints.
-3. Add handler-level test coverage for `internal/cbt/handler` so a bug
+2. Add handler-level test coverage for `internal/cbt/handler` so a bug
    like §5e's can't silently recur.
+3. Re-verify JSON/RTF/PDF/XLS bulk-import live, the same way CSV/Excel/
+   DOCX/TXT were re-verified in §6.
 4. Resume the Windows-installer GitHub Releases publish, once the above
    is closed out.
