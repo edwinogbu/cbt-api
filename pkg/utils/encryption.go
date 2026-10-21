@@ -8,10 +8,48 @@ import (
     "fmt"
     "io"
     "log"
+    "os"
 )
 
-// ⭐ FIXED: Use a consistent 32-byte key
-var masterKey = []byte("01234567890123456789012345678901") // 32 bytes exactly
+// masterKey is the actual AES-256-GCM key used to encrypt/decrypt every
+// user's recoverable password (plain_password_encrypted - see
+// user_repo.go's SavePlainPassword/GetPlainPassword). This was previously
+// hardcoded to the literal 32-byte string below, checked into this public
+// source file - anyone who can read this repository (now pushed to
+// GitHub) could decrypt every stored password with it, making the
+// "encryption" purely cosmetic. This is the exact same bug class
+// pkg/utils/utils.go's jwtSecret was already fixed for: an env-var-backed
+// secret silently replaced by a hardcoded one. ENCRYPTION_MASTER_KEY must
+// be exactly 32 bytes (AES-256); fails fast at startup if it isn't, or if
+// still on the insecure default in production, rather than failing later
+// inside every encrypt/decrypt call.
+const insecureDefaultMasterKey = "01234567890123456789012345678901"
+
+// resolveMasterKey is the pure decision logic behind the masterKey
+// package var, pulled out so it can be unit tested directly - a
+// log.Fatal-calling init-time closure can't be exercised in-process
+// without killing the test binary.
+func resolveMasterKey(envKey, environment string) ([]byte, error) {
+    key := envKey
+    if key == "" {
+        key = insecureDefaultMasterKey
+    }
+    if environment == "production" && key == insecureDefaultMasterKey {
+        return nil, fmt.Errorf("ENCRYPTION_MASTER_KEY must be set to a real, per-deployment secret in production (ENVIRONMENT=production); refusing to start with the insecure default")
+    }
+    if len(key) != 32 {
+        return nil, fmt.Errorf("ENCRYPTION_MASTER_KEY must be exactly 32 bytes for AES-256 (got %d)", len(key))
+    }
+    return []byte(key), nil
+}
+
+var masterKey = func() []byte {
+    key, err := resolveMasterKey(os.Getenv("ENCRYPTION_MASTER_KEY"), os.Getenv("ENVIRONMENT"))
+    if err != nil {
+        log.Fatal("FATAL: " + err.Error())
+    }
+    return key
+}()
 
 func EncryptPlainPassword(plainText string) (string, error) {
     log.Printf("🔐 [Encrypt] Starting encryption...")

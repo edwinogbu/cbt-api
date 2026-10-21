@@ -30,8 +30,9 @@ your own machine or the Render/Neon web dashboards.
    below) - fill those in, then click **Deploy Blueprint**
 
 `render.yaml` deliberately leaves `DATABASE_URL`, `REDIS_URL`,
-`JWT_SECRET`, and `JWT_REFRESH_SECRET` as `sync: false` - Render makes
-you type them in by hand rather than storing them in the repo.
+`JWT_SECRET`, `JWT_REFRESH_SECRET`, and `ENCRYPTION_MASTER_KEY` as
+`sync: false` - Render makes you type them in by hand rather than
+storing them in the repo.
 
 ## Secrets
 
@@ -41,6 +42,21 @@ you type them in by hand rather than storing them in the repo.
 | `REDIS_URL` | Upstash dashboard → your database → connection string (starts `rediss://`) |
 | `JWT_SECRET` | Any long random string, e.g. `openssl rand -hex 32` |
 | `JWT_REFRESH_SECRET` | A **different** long random string, same way |
+| `ENCRYPTION_MASTER_KEY` | Exactly 32 bytes/characters (AES-256), e.g. `openssl rand -base64 24 \| cut -c1-32` - must be **exactly** 32 characters long or the server refuses to start |
+
+**`ENCRYPTION_MASTER_KEY` migration note**: this key encrypts the
+`users.plain_password_encrypted` column (used so an admin/teacher can
+show a student their password - see `GetPlainPassword` in
+`internal/academic/repository/user_repo.go`). It was previously
+hardcoded in source rather than read from this env var. If this
+service has already been deployed with real user data, any row
+encrypted under the old hardcoded key will fail to decrypt once a new
+`ENCRYPTION_MASTER_KEY` is set (AES-GCM decryption fails with a
+different key) - `GetPlainPassword` will return an error for those
+users until their password is next reset (which re-encrypts it under
+the new key via `SavePlainPassword`). Plan for that - e.g. a bulk
+password reset for existing students - rather than being surprised by
+it after rotating this secret.
 
 Optional (only if you want AI question-generation features working -
 the server falls back gracefully without them): `OPENAI_API_KEY`,
