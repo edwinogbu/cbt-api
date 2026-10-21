@@ -877,8 +877,11 @@ func (s *AuthService) GetAuthStatus(userID string) (*dto.AuthStatusResponse, err
             response.SchoolName = school.Name
         }
 
-        // ✅ ONLY ADMIN sees subscription
-        if user.Role == models.RoleAdmin {
+        // School-level admins see subscription status: both admin and
+        // super_admin manage their own school's subscription (same
+        // schoolID-scoped access this codebase grants them everywhere
+        // else - see the /admin route group's RoleMiddleware list).
+        if user.Role == models.RoleAdmin || user.Role == models.RoleSuperAdmin {
             sub, err := s.subscriptionRepo.FindCurrentBySchool(*user.SchoolID)
             if err == nil && sub != nil {
                 response.HasSubscription = true
@@ -901,7 +904,10 @@ func (s *AuthService) GetAuthStatus(userID string) (*dto.AuthStatusResponse, err
 func (s *AuthService) getDashboardRoute(role string) string {
     switch role {
     case "super_admin":
-        return "/dashboard/super-admin"
+        // Shares the admin dashboard page - there is no separate
+        // /dashboard/super_admin or /dashboard/super-admin route in the
+        // frontend (see src/app/dashboard/ directory listing).
+        return "/dashboard/admin"
     case "admin":
         return "/dashboard/admin"
     case "teacher":
