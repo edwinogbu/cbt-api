@@ -506,13 +506,21 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			assessmentSettings.DELETE("/teacher-subject-assignments/:id", handler.DeleteTeacherSubjectAssignment)
 		}
 
-		// A teacher's own "my subjects" landing view - open to every
-		// staff role that might BE an assigned subject teacher or need
-		// to see one's own assignments, same role set as the score
-		// register below.
-		mySubjects := exams.Group("")
-		mySubjects.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
-		mySubjects.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
+		// A teacher's own "my subjects" landing view, and the Student
+		// Score Register itself - open to every staff role that might
+		// BE an assigned subject teacher or need oversight read access
+		// (HOD/Examination Officer/VP Academics); ExamService.
+		// SaveScoreRegister/authorizeClassTenant enforce the actual
+		// class-tenant boundary, the same pattern reportCardBatch/
+		// attendance above already use rather than narrowing this role
+		// gate further.
+		scoreRegister := exams.Group("")
+		scoreRegister.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
+		{
+			scoreRegister.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
+			scoreRegister.GET("/score-register", handler.GetScoreRegister)
+			scoreRegister.POST("/score-register/save", handler.SaveScoreRegister)
+		}
 	}
 }
 
