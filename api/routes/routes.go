@@ -547,6 +547,24 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		subjectResultApproval := exams.Group("/score-register")
 		subjectResultApproval.Use(middleware.RoleMiddleware("admin", "super_admin", "vp_academics", "platform_owner"))
 		subjectResultApproval.POST("/approve", handler.ApproveSubjectResults)
+
+		// Broad sheets: the Class Teacher view is open to the same
+		// staff roles as the score register itself (a class's own
+		// teacher, or any oversight role); the Subject (HOD/Examination
+		// Officer) and School-wide (VP Academics) views are oversight-
+		// only, same gate as the review/approval groups above - a plain
+		// "teacher" has no business pulling another teacher's subject
+		// standing across classes, or the whole school's monitor.
+		classBroadSheet := exams.Group("/broadsheet")
+		classBroadSheet.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
+		classBroadSheet.GET("/class", handler.GetClassBroadSheet)
+
+		oversightBroadSheet := exams.Group("/broadsheet")
+		oversightBroadSheet.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "vp_academics", "platform_owner"))
+		{
+			oversightBroadSheet.GET("/subject", handler.GetSubjectBroadSheet)
+			oversightBroadSheet.GET("/school", handler.GetSchoolBroadSheet)
+		}
 	}
 }
 

@@ -263,11 +263,15 @@ type SubjectResultSubmissionResponse struct {
 // GetStudentTermlyResult/buildSubjectTermlyResult pipeline the report
 // card uses.
 type ClassBroadSheetSubjectCell struct {
-	SubjectID  string   `json:"subject_id"`
-	Score      *int     `json:"score"`
-	MaxMarks   int      `json:"max_marks"`
-	Grade      string   `json:"grade,omitempty"`
-	IsComplete bool     `json:"is_complete"`
+	// SubjectCode (not an ID - the report-card payloads this is built
+	// from only carry Name/Code, and Subject.Code is already globally
+	// unique) keys this cell to ClassBroadSheetResponse's own
+	// SubjectCodes/SubjectNames column headers.
+	SubjectCode string  `json:"subject_code"`
+	Score       *int    `json:"score"`
+	MaxMarks    int     `json:"max_marks"`
+	Grade       string  `json:"grade,omitempty"`
+	IsComplete  bool    `json:"is_complete"`
 }
 
 type ClassBroadSheetRow struct {
@@ -289,7 +293,7 @@ type ClassBroadSheetResponse struct {
 	TermID           string               `json:"term_id"`
 	SessionID        string               `json:"session_id"`
 	ReportType       string               `json:"report_type"`
-	SubjectIDs       []string             `json:"subject_ids"`
+	SubjectCodes     []string             `json:"subject_codes"`
 	SubjectNames     []string             `json:"subject_names"`
 	Rows             []ClassBroadSheetRow `json:"rows"`
 	StudentCount     int                  `json:"student_count"`
