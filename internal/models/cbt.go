@@ -126,6 +126,16 @@ const (
 	ExamTypePromotional          ExamType = "promotional"
 	ExamTypeFinalExam            ExamType = "final_exam"
 	ExamTypeCustom               ExamType = "custom"
+	// ExamTypeTest/Practical/Oral back the Student Score Register's own
+	// CA/Assignment/Test/Practical/Oral columns (the broad-sheet
+	// template's columns) - each is an ordinary manually-scored Exam
+	// (no CBT questions, no ExamAttempt; see models.Result.AttemptID)
+	// a school's AssessmentComponent.ExamTypes maps to a weighted
+	// component, same mechanism ExamTypeContinuousAssessment/Assignment
+	// already use.
+	ExamTypeTest      ExamType = "test"
+	ExamTypePractical ExamType = "practical"
+	ExamTypeOral      ExamType = "oral"
 
 	ExamStatusDraft     ExamStatus = "draft"
 	ExamStatusPublished ExamStatus = "published"
@@ -346,6 +356,16 @@ type Exam struct {
 	DurationMinutes  int                 `gorm:"type:integer;not null" json:"duration_minutes"`
 	TotalMarks       int                 `gorm:"type:integer;not null" json:"total_marks"`
 	PassMark         int                 `gorm:"type:integer" json:"pass_mark"`
+	// TheoryMaxMarks is nil for every ordinary exam (CBT-only, or a pure
+	// manual component like CA/Assignment/Test/Practical/Oral - those
+	// use TotalMarks alone, no theory concept applies). Set only on a
+	// main exam that combines an objective/CBT portion (TotalMarks) with
+	// a separate paper-based theory portion marked by the teacher via
+	// the Student Score Register (models.Result.TheoryScore) - e.g.
+	// TotalMarks=40 (CBT) + TheoryMaxMarks=30 (theory) = an exam total
+	// out of 70, combined per the school's configured assessment scheme
+	// rather than a hardcoded ratio.
+	TheoryMaxMarks   *int                `gorm:"type:integer" json:"theory_max_marks,omitempty"`
 	Instructions     string              `gorm:"type:text" json:"instructions"`
 	StartTime        *time.Time          `json:"start_time"`
 	EndTime          *time.Time          `json:"end_time"`
@@ -513,15 +533,30 @@ type StudentAnswer struct {
 }
 
 type Result struct {
-	ID          string         `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	StudentID   string         `gorm:"type:uuid;not null;index" json:"student_id"`
-	ExamID      string         `gorm:"type:uuid;not null;index" json:"exam_id"`
-	AttemptID   string         `gorm:"type:uuid;not null;index" json:"attempt_id"`
-	TotalScore  int            `gorm:"type:integer" json:"total_score"`
-	Percentage  float64        `gorm:"type:numeric(5,2)" json:"percentage"`
-	Grade       string         `gorm:"type:varchar(10)" json:"grade"`
-	Remarks     string         `gorm:"type:text" json:"remarks"`
-	Passed      bool       `gorm:"index"` // ✅ Make sure this field exists
+	ID        string `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	StudentID string `gorm:"type:uuid;not null;index" json:"student_id"`
+	ExamID    string `gorm:"type:uuid;not null;index" json:"exam_id"`
+	// AttemptID is nil for a Result created by the Student Score Register
+	// (a teacher-entered CA/Assignment/Test/Practical/Oral mark, or a
+	// paper-based main-exam score with no online attempt at all) - only
+	// a real CBT ExamAttempt sets this. Was a non-nullable string; every
+	// existing construction site (a graded CBT attempt) always has a
+	// real attempt ID to put here, so this is purely additive.
+	AttemptID  *string `gorm:"type:uuid;index" json:"attempt_id,omitempty"`
+	TotalScore int     `gorm:"type:integer" json:"total_score"`
+	Percentage float64 `gorm:"type:numeric(5,2)" json:"percentage"`
+	Grade      string  `gorm:"type:varchar(10)" json:"grade"`
+	Remarks    string  `gorm:"type:text" json:"remarks"`
+	Passed     bool    `gorm:"index"` // ✅ Make sure this field exists
+	// TheoryScore is a teacher-entered paper-theory mark that combines
+	// with this same Exam's objective/CBT TotalScore into one exam
+	// total, only when Exam.TheoryMaxMarks is set (nil otherwise - every
+	// non-theory exam, which is most of them, never touches this field).
+	// Nil means "theory not yet marked", distinct from a genuine 0 -
+	// buildSubjectTermlyResult treats a theory-required exam with a nil
+	// TheoryScore as not yet available at all (HasResults false), never
+	// as a partial/zero score. See models.Exam.TheoryMaxMarks.
+	TheoryScore *int `gorm:"type:integer" json:"theory_score,omitempty"`
 	// FullyGraded is false for a Result created while the exam still had
 	// essay/descriptive answers awaiting a manual score - TotalScore/
 	// Percentage/Grade/Passed in that state reflect objective questions

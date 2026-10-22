@@ -56,8 +56,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE results (
 			id TEXT PRIMARY KEY, student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL, total_score INTEGER, percentage REAL, grade TEXT,
-			remarks TEXT, passed INTEGER DEFAULT 0, fully_graded INTEGER DEFAULT 1, published_at DATETIME,
+			attempt_id TEXT, total_score INTEGER, percentage REAL, grade TEXT,
+			remarks TEXT, passed INTEGER DEFAULT 0, theory_score INTEGER, fully_graded INTEGER DEFAULT 1, published_at DATETIME,
 			synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE exam_event_logs (

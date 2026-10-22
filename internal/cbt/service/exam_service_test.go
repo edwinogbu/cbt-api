@@ -34,6 +34,7 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			title TEXT, subject_id TEXT, class_id TEXT, session_id TEXT, term_id TEXT,
 			exam_type TEXT DEFAULT 'main_exam', status TEXT DEFAULT 'draft',
 			duration_minutes INTEGER NOT NULL, total_marks INTEGER NOT NULL, pass_mark INTEGER,
+			theory_max_marks INTEGER,
 			instructions TEXT, start_time DATETIME, end_time DATETIME,
 			shuffle_questions INTEGER DEFAULT 0, shuffle_options INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
 			review_policy TEXT,
@@ -80,7 +81,7 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE results (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL, total_score INTEGER, percentage REAL, grade TEXT, remarks TEXT, fully_graded INTEGER DEFAULT 1,
+			attempt_id TEXT, total_score INTEGER, percentage REAL, grade TEXT, remarks TEXT, theory_score INTEGER, fully_graded INTEGER DEFAULT 1,
 			passed INTEGER DEFAULT 0, published_at DATETIME, synced_to_cloud_at DATETIME,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,

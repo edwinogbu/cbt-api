@@ -127,7 +127,11 @@ type ResultPush struct {
 	ID          string     `json:"id" binding:"required,uuid"`
 	StudentID   string     `json:"student_id" binding:"required,uuid"`
 	ExamID      string     `json:"exam_id" binding:"required,uuid"`
-	AttemptID   string     `json:"attempt_id" binding:"required,uuid"`
+	// AttemptID is empty for a Result with no backing CBT ExamAttempt
+	// (a Student Score Register entry - see models.Result.AttemptID) -
+	// "uuid" without "required" still validates it when present, same
+	// as every real CBT-attempt-backed push today.
+	AttemptID   string     `json:"attempt_id" binding:"omitempty,uuid"`
 	TotalScore  int        `json:"total_score"`
 	Percentage  float64    `json:"percentage"`
 	Grade       string     `json:"grade"`

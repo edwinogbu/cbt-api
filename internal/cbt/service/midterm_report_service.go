@@ -49,14 +49,27 @@ func (s *ExamService) buildMidTermSubjectResult(ctx context.Context, subjectID, 
 		if midTermExcludedExamTypes[exam.ExamType] {
 			continue
 		}
+		// Theory combining (Exam.TheoryMaxMarks/Result.TheoryScore) is a
+		// main-exam concept in practice - main_exam is already excluded
+		// above - but handled defensively here too, same rule as
+		// buildSubjectTermlyResult, in case a school ever configures it
+		// on an included exam type.
+		examScore, examMarks := result.TotalScore, exam.TotalMarks
+		if exam.TheoryMaxMarks != nil {
+			if result.TheoryScore == nil {
+				continue
+			}
+			examScore += *result.TheoryScore
+			examMarks += *exam.TheoryMaxMarks
+		}
 		scoredExams = append(scoredExams, grading.ScoredExam{
 			ExamType:    exam.ExamType,
-			TotalMarks:  exam.TotalMarks,
-			TotalScore:  result.TotalScore,
+			TotalMarks:  examMarks,
+			TotalScore:  examScore,
 			FullyGraded: result.FullyGraded,
 		})
-		totalScore += result.TotalScore
-		totalMarks += exam.TotalMarks
+		totalScore += examScore
+		totalMarks += examMarks
 	}
 
 	scheme := s.gradingSvc.ResolveScheme(ctx, schoolID, classLevelID, subjectID)

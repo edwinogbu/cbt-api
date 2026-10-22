@@ -61,8 +61,9 @@ func seedReportCardExam(t *testing.T, db *gorm.DB, id, subjectID, classID, termI
 
 func seedReportCardResult(t *testing.T, db *gorm.DB, studentID, examID string, totalScore int, fullyGraded bool) {
 	t.Helper()
+	attemptID := uuid.NewString()
 	if err := db.Create(&models.Result{
-		ID: uuid.NewString(), StudentID: studentID, ExamID: examID, AttemptID: uuid.NewString(),
+		ID: uuid.NewString(), StudentID: studentID, ExamID: examID, AttemptID: &attemptID,
 		TotalScore: totalScore, FullyGraded: fullyGraded,
 	}).Error; err != nil {
 		t.Fatalf("failed to seed result: %v", err)

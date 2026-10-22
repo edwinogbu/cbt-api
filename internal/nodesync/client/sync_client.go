@@ -131,7 +131,7 @@ func (c *SyncClient) push(ctx context.Context) error {
 	}
 	for _, r := range results {
 		req.Results = append(req.Results, dto.ResultPush{
-			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID, AttemptID: r.AttemptID,
+			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID, AttemptID: strDeref(r.AttemptID),
 			TotalScore: r.TotalScore, Percentage: r.Percentage, Grade: r.Grade,
 			Remarks: r.Remarks, Passed: r.Passed, PublishedAt: r.PublishedAt,
 		})

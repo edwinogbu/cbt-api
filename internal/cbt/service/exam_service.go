@@ -2367,7 +2367,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         ID:          models.GenerateID(),
         ExamID:      lockedAttempt.ExamID,
         StudentID:   lockedAttempt.StudentID,
-        AttemptID:   lockedAttempt.ID,
+        AttemptID:   &lockedAttempt.ID,
         TotalScore:  totalScore,
         Percentage:  percentage,
         Grade:       grade,
@@ -2716,7 +2716,7 @@ func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswe
             ID:          models.GenerateID(),
             ExamID:      attempt.ExamID,
             StudentID:   attempt.StudentID,
-            AttemptID:   attempt.ID,
+            AttemptID:   &attempt.ID,
             TotalScore:  totalScore,
             Percentage:  percentage,
             Grade:       grade,
@@ -3190,24 +3190,52 @@ func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, s
 			continue
 		}
 
+		// examScore/examMarks combine the objective/CBT score with a
+		// paper-theory score when this exam has one configured
+		// (Exam.TheoryMaxMarks). A theory-required exam whose
+		// TheoryScore hasn't been entered yet is skipped entirely (not
+		// appended below) - per spec, "the combined examination result
+		// must remain incomplete when theory is required" until the
+		// teacher enters it, never shown as a partial/zero score.
+		examScore, examMarks := result.TotalScore, exam.TotalMarks
+		examPercentage, examGrade := result.Percentage, result.Grade
+		if exam.TheoryMaxMarks != nil {
+			if result.TheoryScore == nil {
+				continue
+			}
+			examScore += *result.TheoryScore
+			examMarks += *exam.TheoryMaxMarks
+			// result.Percentage/Grade were computed (at CBT-submission
+			// time) from the objective score alone - stale once theory
+			// is added, so recompute through the same authoritative
+			// engine every other grade in this function uses, rather
+			// than a second ad-hoc formula.
+			if examMarks > 0 {
+				examPercentage = float64(examScore) / float64(examMarks) * 100
+			} else {
+				examPercentage = 0
+			}
+			examGrade = s.gradingSvc.ComputeGrade(ctx, schoolID, classLevelID, examPercentage).Grade
+		}
+
 		subjectResults = append(subjectResults, dto.ExamResultItem{
 			ExamID:     result.ExamID,
 			ExamTitle:  exam.Title,
 			ExamType:   exam.ExamType,
-			Score:      result.TotalScore,
-			TotalMarks: exam.TotalMarks,
-			Percentage: result.Percentage,
-			Grade:      result.Grade,
+			Score:      examScore,
+			TotalMarks: examMarks,
+			Percentage: examPercentage,
+			Grade:      examGrade,
 			Date:       result.CreatedAt,
 		})
 		scoredExams = append(scoredExams, grading.ScoredExam{
 			ExamType:    exam.ExamType,
-			TotalMarks:  exam.TotalMarks,
-			TotalScore:  result.TotalScore,
+			TotalMarks:  examMarks,
+			TotalScore:  examScore,
 			FullyGraded: result.FullyGraded,
 		})
-		totalScore += result.TotalScore
-		totalMarks += exam.TotalMarks
+		totalScore += examScore
+		totalMarks += examMarks
 	}
 
 	scheme := s.gradingSvc.ResolveScheme(ctx, schoolID, classLevelID, subjectID)
