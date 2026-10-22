@@ -548,9 +548,21 @@ func (g *FlutterwaveGateway) GetSubscription(ctx context.Context, subscriptionID
 
 // ParseWebhook for Flutterwave
 func (g *FlutterwaveGateway) ParseWebhook(ctx context.Context, payload []byte, signature string) (*WebhookEvent, error) {
+    if signature == "" {
+        return nil, fmt.Errorf("missing signature")
+    }
+    // An unset FLUTTERWAVE_SECRET_KEY makes the HMAC below computable by
+    // anyone (HMAC with an empty key is just a deterministic function of
+    // the payload) - a misconfigured deployment would otherwise treat any
+    // self-forged "charge.completed" webhook as authentic and activate
+    // someone else's pending onboarding subscription for free. Fail
+    // closed instead of silently verifying against a forgeable key.
+    if g.secretKey == "" {
+        return nil, fmt.Errorf("flutterwave webhook signature verification failed: FLUTTERWAVE_SECRET_KEY is not configured")
+    }
     // Flutterwave sends a 'verif-hash' header
     expected := computeHMAC256(payload, g.secretKey)
-    if expected != signature {
+    if !hmac.Equal([]byte(expected), []byte(signature)) {
         return nil, fmt.Errorf("invalid signature")
     }
 

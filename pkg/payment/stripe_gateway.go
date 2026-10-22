@@ -229,6 +229,16 @@ func (g *StripeGateway) GetSubscription(ctx context.Context, subscriptionID stri
 // ============================================
 
 func (g *StripeGateway) ParseWebhook(ctx context.Context, payload []byte, signature string) (*WebhookEvent, error) {
+    // An unset STRIPE_WEBHOOK_SECRET makes the HMAC below computable by
+    // anyone (HMAC with an empty key is just a deterministic function of
+    // the payload) - a misconfigured deployment would otherwise treat any
+    // self-forged "payment succeeded" webhook as authentic and activate
+    // someone else's pending onboarding subscription for free. Fail
+    // closed instead of silently verifying against a forgeable key.
+    if g.webhookSecret == "" {
+        return nil, fmt.Errorf("stripe webhook signature verification failed: STRIPE_WEBHOOK_SECRET is not configured")
+    }
+
     // Use the webhook package for signature verification
     event, err := webhook.ConstructEvent(payload, signature, g.webhookSecret)
     if err != nil {

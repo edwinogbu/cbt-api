@@ -18,8 +18,8 @@ file from one school's node to another's.
 scripts/generate-school-node-secrets.sh
 ```
 
-This prints a fresh `DB_PASSWORD`, `JWT_SECRET`, and `JWT_REFRESH_SECRET`.
-Copy the template and paste them in:
+This prints a fresh `DB_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and
+`ENCRYPTION_MASTER_KEY`. Copy the template and paste them in:
 
 ```bash
 cp .env.school-node.example .env.school-node
@@ -42,11 +42,12 @@ This builds the `cbt-api` image from the `Dockerfile` in this repo (multi-stage,
 `CGO_ENABLED=0`, runs as a non-root user) and starts three containers on an
 isolated network: `postgres`, `redis`, and `cbt-api`. The compose file
 deliberately refuses to start (`required variable ... is missing`) if
-`DB_PASSWORD`, `JWT_SECRET`, or `JWT_REFRESH_SECRET` aren't set - there is no
-insecure fallback baked into the deployment config, and the binary itself
-now refuses to boot in `ENVIRONMENT=production` with the placeholder JWT
-secret checked into the repo (see `config/config.go`), so a node can't come
-up silently misconfigured either way.
+`DB_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, or `ENCRYPTION_MASTER_KEY`
+aren't set - there is no insecure fallback baked into the deployment config,
+and the binary itself now refuses to boot in `ENVIRONMENT=production` with
+the placeholder JWT secret or encryption key checked into the repo (see
+`config/config.go` and `pkg/utils/encryption.go`), so a node can't come up
+silently misconfigured either way.
 
 On first boot, `AUTO_MIGRATE=true` runs the schema migration against the
 fresh local Postgres, and if `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set, the
@@ -70,12 +71,86 @@ it to this node's LAN address so students, teachers, and admins on this
 school's network reach this node instead of the cloud, with the cloud
 address kept as the fallback if the node ever goes down.
 
+## 5. Backups and restore
+
+This node is the authoritative copy of this school's exams, students,
+and results - back it up regularly, before every upgrade, and before
+any manual database change.
+
+**Manual backup:**
+
+```bash
+scripts/backup-school-node.sh
+# or with an explicit directory/retention:
+scripts/backup-school-node.sh ./backups 14
+```
+
+Writes a compressed, timestamped `pg_dump --clean --if-exists` to
+`./backups/cbt-node-<db>-<timestamp>.sql.gz` (directory and files
+created `chmod 700`/`600` - this dump contains every student's and
+teacher's data for the school, so it's restricted immediately, not
+after the fact). Keeps the most recent 14 backups by default and
+deletes older ones; pass `0` as the second argument to keep all of
+them. A partial/failed dump is never left under its final filename, so
+a backup directory listing only ever shows complete, restorable
+backups.
+
+**Scheduled backups** (cron, run as whatever user owns this
+deployment directory):
+
+```cron
+# Daily at 2am server time
+0 2 * * * cd /path/to/cbt-api && scripts/backup-school-node.sh >> backups/backup.log 2>&1
+```
+
+**Restore** (DESTRUCTIVE - replaces the node's current database):
+
+```bash
+scripts/restore-school-node.sh backups/cbt-node-cbt_db-20260101T020000Z.sql.gz
+```
+
+Prompts for a typed `yes` confirmation, stops `cbt-api` so nothing
+writes to the database mid-restore, restores the dump (self-contained
+via `--clean --if-exists`, so it works whether the target database is
+empty or already has data), then starts `cbt-api` back up.
+
+**Tested restoration, not just a script that was written**: the
+pg_dump → gzip → restore → verify pipeline these scripts wrap was run
+for real against a seeded node database (1 school, a published exam, 2
+completed attempts, 10 graded answers) - the database was then
+*completely dropped and recreated empty* and restored from that backup
+alone, with the exact same row counts and data (down to the school's
+name) coming back, zero errors. What was **not** testable in the
+sandbox this was verified in: the `docker compose exec` wrapper these
+scripts actually use - that sandbox's Docker daemon can't run in an
+unprivileged container (`dial unix /var/run/docker.sock: connect: no
+such file or directory`), a sandbox limitation, not a defect in the
+scripts. Run a full dry run (backup, then restore into a disposable
+test database) against this node's real `docker compose` stack before
+relying on it operationally - the underlying `pg_dump`/`psql` commands
+are identical, just invoked through `docker compose exec` instead of
+directly against a local Postgres.
+
 ## What this does NOT cover yet
 
-- **School ↔ Cloud sync**: this node runs standalone. Pushing its
-  sessions/submissions/results up to the central cloud instance, and pulling
-  down schools/teachers/students/exams/schedules, is separate work (tracked
-  as its own phase).
+- ~~School ↔ Cloud sync: separate work~~ - **this was stale; sync is
+  real and already built.** `internal/nodesync` runs a background push-
+  then-pull loop (`internal/nodesync/client/sync_client.go`'s
+  `RunSyncLoop`) against the cloud instance's `POST/GET /nodesync/push|pull`
+  endpoints, authenticated with this node's own API key (not a human
+  JWT), with lifecycle-rank conflict resolution rather than trusting
+  wall-clock timestamps across machines. It's gated behind three env
+  vars, none of which are in `.env.school-node.example` yet since
+  standalone-with-no-cloud is this guide's documented default:
+  `CLOUD_SYNC_ENABLED=true`, `CLOUD_API_URL` (the cloud instance's base
+  URL), and `NODE_API_KEY` (issued for this node via an admin's
+  `POST /admin/school-nodes/credentials` call against the cloud
+  instance - see `internal/nodesync/handler`). Optional:
+  `CLOUD_SYNC_INTERVAL_SECONDS`. Set all three once this node has both a
+  stable LAN deployment and real connectivity back to the cloud
+  instance; leave them unset for a fully standalone/offline node - the
+  server logs a clear warning and simply doesn't start the sync loop if
+  `CLOUD_SYNC_ENABLED=true` is set without the other two.
 - **TLS**: this compose file serves plain HTTP on the LAN, matching a
   school's internal network. Put a reverse proxy in front of it (with a
   real or self-signed certificate) if the network isn't trusted, or if the
@@ -131,8 +206,6 @@ address kept as the fallback if the node ever goes down.
   certificate silently reproduces the exact "LAN sync falls back to
   Cloud" behavior the plain-HTTP case does, just later and without the
   original misconfiguration being the obvious first guess.
-- **Backups**: `cbt_node_pgdata` is a named Docker volume. Set up your own
-  periodic `pg_dump` (or volume snapshot) - nothing here backs it up for you.
 - **Multi-node**: this guide is for one node. Repeat steps 1-3 per school,
   each with its own generated secrets and its own Postgres/Redis - nodes do
   not share a database.
@@ -140,10 +213,12 @@ address kept as the fallback if the node ever goes down.
 ## Troubleshooting
 
 - **Container `cbt-api` restarts in a loop, logs show
-  `FATAL: JWT_SECRET must be set...`**: step 1 wasn't completed, or
-  `.env.school-node` still has the placeholder `CHANGE_ME...` value. Re-run
-  the generator script and check the file was actually passed via
-  `--env-file`.
+  `FATAL: JWT_SECRET must be set...`** (or `ENCRYPTION_MASTER_KEY must be
+  set...` / `...must be exactly 32 bytes...`): step 1 wasn't completed, or
+  `.env.school-node` still has the placeholder `CHANGE_ME...` value, or
+  `ENCRYPTION_MASTER_KEY` was edited to something other than exactly 32
+  characters. Re-run the generator script and check the file was actually
+  passed via `--env-file`.
 - **`docker compose ... config` errors with
   `required variable DB_PASSWORD is missing a value`**: same as above - a
   required secret isn't set. This is the compose file's env-var guard

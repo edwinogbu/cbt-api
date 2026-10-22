@@ -83,6 +83,30 @@ func init() {
 	Register(&Result{})            // ✅ Results
 
 	// ============================================
+	// REPORT CARD / GRADING MODELS
+	// ============================================
+	Register(&GradingScale{})
+	Register(&GradingScaleBand{})
+	Register(&AssessmentScheme{})
+	Register(&AssessmentComponent{})
+	Register(&ClassLevelSubject{})
+	Register(&ReportCardRemark{})
+	Register(&PromotionPolicy{})
+	Register(&PromotionDecision{})
+	Register(&ReportCardApproval{})
+	Register(&ReportCardAuditLog{})
+	Register(&AttendanceRecord{})
+
+	// ============================================
+	// ACADEMIC BROAD SHEET MODELS
+	// ============================================
+	Register(&TeacherSubjectAssignment{})
+	Register(&SubjectResultSubmission{})
+	Register(&SubjectResultAuditLog{})
+	Register(&ScoreRegisterRemark{})
+	Register(&ClassBroadSheetReview{})
+
+	// ============================================
 	// OFFLINE-FIRST SYNC MODELS
 	// ============================================
 	Register(&SyncOperation{})

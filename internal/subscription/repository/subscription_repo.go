@@ -188,6 +188,32 @@ func (r *SubscriptionRepository) UpdatePaymentIntentStatus(id string, status mod
         }).Error
 }
 
+// ClaimPaymentIntentFinalization atomically marks a payment intent as
+// finalized, succeeding only if it is not already finalized. The
+// WHERE is_finalized = false condition and the SET are resolved by
+// Postgres as a single atomic statement, so of two concurrent callers
+// racing to finalize the same intent (e.g. a gateway retrying a
+// webhook delivery, or a captured valid signature replayed later),
+// only one can ever have RowsAffected > 0 - the other observes the
+// row already finalized and must treat that as a no-op rather than
+// re-running every side effect of activation. A read-then-write check
+// of IsFinalized in application code cannot give this guarantee.
+func (r *SubscriptionRepository) ClaimPaymentIntentFinalization(id string, paidAt time.Time, gatewayResponse models.JSONMap) (bool, error) {
+    result := r.db.Model(&models.PaymentIntent{}).
+        Where("id = ? AND is_finalized = ?", id, false).
+        Updates(map[string]interface{}{
+            "status":           models.IntentSucceeded,
+            "paid_at":          paidAt,
+            "is_finalized":     true,
+            "gateway_response": gatewayResponse,
+            "updated_at":       time.Now(),
+        })
+    if result.Error != nil {
+        return false, result.Error
+    }
+    return result.RowsAffected > 0, nil
+}
+
 // ============================================
 // PAYMENT TRANSACTION OPERATIONS
 // ============================================
@@ -208,6 +234,44 @@ func (r *SubscriptionRepository) FindPaymentTransactionsBySubscription(subscript
         Order("created_at DESC").
         Find(&pts).Error
     return pts, err
+}
+
+// ============================================
+// SUBSCRIPTION USAGE OPERATIONS
+//
+// These count against the academic and cbt modules' own tables rather
+// than going through those modules' repositories, the same way
+// ExamRepository.ExamBelongsToSchool already joins directly into
+// classes - everything lives in one database, so a direct scoped COUNT
+// is simpler and no less correct than adding cross-module repository
+// dependencies just to re-wrap it.
+// ============================================
+
+func (r *SubscriptionRepository) CountStudentsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.Student{}).Where("school_id = ?", schoolID).Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountTeachersBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.User{}).Where("school_id = ? AND role = ?", schoolID, models.RoleTeacher).Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountExamsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Table("exams").
+        Joins("JOIN classes ON classes.id = exams.class_id").
+        Where("classes.school_id = ? AND exams.deleted_at IS NULL", schoolID).
+        Count(&count).Error
+    return count, err
+}
+
+func (r *SubscriptionRepository) CountQuestionsBySchool(schoolID string) (int64, error) {
+    var count int64
+    err := r.db.Model(&models.QuestionBank{}).Where("school_id = ?", schoolID).Count(&count).Error
+    return count, err
 }
 
 // ============================================

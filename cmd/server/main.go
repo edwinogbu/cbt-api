@@ -27,6 +27,26 @@ import (
 	_ "cbt-api/api/docs"
 )
 
+// newRouter builds the app's gin.Engine with trusted-proxy handling
+// locked down. Gin's default (when SetTrustedProxies is never called)
+// trusts 0.0.0.0/0 and ::/0 as proxies with ForwardedByClientIP: true -
+// meaning c.ClientIP() blindly honors a client-supplied
+// X-Forwarded-For/X-Real-IP header from ANY remote address. Any caller
+// could set that header to whatever IP they want, spoofing the value
+// this app records as the "real" client IP in session audit logs
+// (internal/models/session.go) and exam attempt tracking
+// (exam_handler.go's IPAddress), and would defeat any IP-based rate
+// limiting built on top of it. Trusting no proxies makes ClientIP()
+// always return the actual TCP peer address instead, which the caller
+// cannot forge.
+func newRouter() (*gin.Engine, error) {
+	r := gin.Default()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 func main() {
 	// ✅ LOAD .env FIRST - BEFORE ANYTHING ELSE
 	if err := godotenv.Load(); err != nil {
@@ -122,7 +142,10 @@ func main() {
 	// ============================================
 
 	// Setup router
-	r := gin.Default()
+	r, err := newRouter()
+	if err != nil {
+		log.Fatalf("FATAL: failed to configure router: %v", err)
+	}
 
 	// Global middleware
 	r.Use(cors.New(corsConfig()))

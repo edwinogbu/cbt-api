@@ -510,6 +510,10 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 	sessionID := c.Param("sessionId")
 
 	if err := h.service.RevokeSession(userID, sessionID); err != nil {
+		if err.Error() == "session not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not revoke session. Please try again."})
 		return
 	}
@@ -590,7 +594,7 @@ func (h *AuthHandler) GrantRole(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.GrantRole(targetUserID, req.Role, grantedBy); err != nil {
+	if err := h.service.GrantRole(targetUserID, req.Role, grantedBy, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -604,7 +608,7 @@ func (h *AuthHandler) RevokeRole(c *gin.Context) {
 	targetUserID := c.Param("id")
 	role := c.Param("role")
 
-	if err := h.service.RevokeRole(targetUserID, role); err != nil {
+	if err := h.service.RevokeRole(targetUserID, role, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

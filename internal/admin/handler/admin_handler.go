@@ -6,6 +6,7 @@ import (
 
 	"cbt-api/internal/admin/dto"
 	"cbt-api/internal/admin/service"
+	"cbt-api/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,7 +37,7 @@ func (h *AdminHandler) AssignTeacher(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.AssignTeacher(&req); err != nil {
+	if err := h.service.AssignTeacher(&req, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -60,7 +61,7 @@ func (h *AdminHandler) UnassignTeacher(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.UnassignTeacher(classID); err != nil {
+	if err := h.service.UnassignTeacher(classID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -92,7 +93,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 		query.Limit = 20
 	}
 
-	users, total, err := h.service.ListUsersByRole(query)
+	users, total, err := h.service.ListUsersByRole(query, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -130,7 +131,7 @@ func (h *AdminHandler) ListStudents(c *gin.Context) {
 		limit = 20
 	}
 
-	students, total, err := h.service.ListAllStudents(page, limit, search)
+	students, total, err := h.service.ListAllStudents(page, limit, search, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -163,7 +164,7 @@ func (h *AdminHandler) HardDeleteStudent(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.HardDeleteStudent(studentID); err != nil {
+	if err := h.service.HardDeleteStudent(studentID, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c)); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -194,7 +195,7 @@ func (h *AdminHandler) ListClasses(c *gin.Context) {
         limit = 20
     }
 
-    classes, total, err := h.service.ListAllClasses(page, limit, search)
+    classes, total, err := h.service.ListAllClasses(page, limit, search, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return
@@ -233,7 +234,7 @@ func (h *AdminHandler) ListTeachers(c *gin.Context) {
         limit = 20
     }
 
-    teachers, total, err := h.service.ListAllTeachers(page, limit, search)
+    teachers, total, err := h.service.ListAllTeachers(page, limit, search, middleware.GetSchoolID(c), middleware.IsPlatformOwner(c))
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
         return

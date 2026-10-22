@@ -68,6 +68,14 @@ func (r *AuthRepository) CreateOTP(otp *models.OTP) error {
 	return r.db.Create(otp).Error
 }
 
+// maxOTPAttempts bounds how many wrong codes a single OTP tolerates
+// before it is treated as exhausted. A 6-digit OTP has only 1,000,000
+// possible values and no separate rate limiter exists anywhere in this
+// app, so without this cap an attacker who knows a victim's email could
+// brute-force the code within its 10-minute validity window and take
+// over any account, including an admin's, via /auth/reset-password.
+const maxOTPAttempts = 5
+
 func (r *AuthRepository) FindValidOTP(email, code, otpType string) (*models.OTP, error) {
 	var user models.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
@@ -79,7 +87,11 @@ func (r *AuthRepository) FindValidOTP(email, code, otpType string) (*models.OTP,
 	if err != nil {
 		return nil, err
 	}
+	if otp.Attempts >= maxOTPAttempts {
+		return nil, gorm.ErrRecordNotFound
+	}
 	if !utils.CheckPasswordHash(code, otp.Code) {
+		r.db.Model(&models.OTP{}).Where("id = ?", otp.ID).Update("attempts", otp.Attempts+1)
 		return nil, gorm.ErrRecordNotFound
 	}
 	return &otp, nil
@@ -115,8 +127,13 @@ func (r *AuthRepository) FindSessionsByUserID(userID string) ([]models.UserSessi
 	return sessions, err
 }
 
-func (r *AuthRepository) DeleteSession(sessionID string) error {
-	return r.db.Delete(&models.UserSession{}, "id = ?", sessionID).Error
+// DeleteSessionForUser deletes a session only if it belongs to userID,
+// returning how many rows were actually removed. sessionID alone must
+// never be enough to delete a session - see RevokeSession's doc comment
+// for why.
+func (r *AuthRepository) DeleteSessionForUser(sessionID, userID string) (int64, error) {
+	result := r.db.Where("id = ? AND user_id = ?", sessionID, userID).Delete(&models.UserSession{})
+	return result.RowsAffected, result.Error
 }
 
 func (r *AuthRepository) DeleteAllUserSessions(userID string, exceptSessionID string) error {

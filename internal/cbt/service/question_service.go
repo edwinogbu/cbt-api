@@ -48,10 +48,23 @@ func NewQuestionService(qRepo *repository.QuestionRepository, subRepo *repositor
 // ============================================
 
 // CreateQuestion creates a new question with full validation
-func (s *QuestionService) CreateQuestion(ctx context.Context, req *dto.CreateQuestionRequest, userID string) (*dto.QuestionBankResponse, error) {
+// CreateQuestion creates a question scoped to schoolID (the caller's own
+// school, forced server-side - see effectiveSchoolID in
+// internal/academic/service/tenant.go; req.SchoolID is honored only for
+// an authenticated platform_owner). Before this fix, authorizeQuestionWrite
+// gave admin/super_admin an unconditional bypass with no tenant check at
+// all, so any admin could create a question under ANY school's
+// school_id just by naming it in the request body.
+func (s *QuestionService) CreateQuestion(ctx context.Context, req *dto.CreateQuestionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.QuestionBankResponse, error) {
 	if err := s.validateCreateQuestionRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
+
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
 
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
@@ -112,20 +125,35 @@ func (s *QuestionService) CreateQuestion(ctx context.Context, req *dto.CreateQue
 	return s.toResponseWithSubject(ctx, q), nil
 }
 
-// GetQuestion retrieves a single question by ID
-func (s *QuestionService) GetQuestion(ctx context.Context, id string) (*dto.QuestionBankResponse, error) {
+// GetQuestion retrieves a single question by ID, scoped to the caller's
+// own school (see questionAuthorizeSchoolOwnership). Previously took no
+// school parameter at all - any authenticated role could read any
+// school's question (question text, correct answer, explanation) just
+// by knowing or enumerating its ID.
+func (s *QuestionService) GetQuestion(ctx context.Context, id, schoolID string, isPlatformOwner bool) (*dto.QuestionBankResponse, error) {
 	q, err := s.qRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get question: %w", err)
 	}
+	if err := questionAuthorizeSchoolOwnership(q.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, fmt.Errorf("failed to get question: %w", errors.New("question not found"))
+	}
 	return s.toResponseWithSubject(ctx, q), nil
 }
 
-// UpdateQuestion updates an existing question with version control
-func (s *QuestionService) UpdateQuestion(ctx context.Context, id string, req *dto.UpdateQuestionRequest, userID string) (*dto.QuestionBankResponse, error) {
+// UpdateQuestion updates an existing question with version control,
+// scoped to the caller's own school (see questionAuthorizeSchoolOwnership).
+// req.SchoolID is no longer honored at all - letting a caller move a
+// question to a different school_id via update was itself a tenant-
+// isolation violation regardless of who was asking (see CreateQuestion).
+func (s *QuestionService) UpdateQuestion(ctx context.Context, id string, req *dto.UpdateQuestionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.QuestionBankResponse, error) {
 	q, err := s.qRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find question: %w", err)
+	}
+
+	if err := questionAuthorizeSchoolOwnership(q.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, fmt.Errorf("failed to find question: %w", errors.New("question not found"))
 	}
 
 	if err := s.checkQuestionOwnership(q, userID); err != nil {
@@ -134,9 +162,6 @@ func (s *QuestionService) UpdateQuestion(ctx context.Context, id string, req *dt
 
 	updates := make(map[string]interface{})
 
-	if req.SchoolID != nil {
-		updates["school_id"] = *req.SchoolID
-	}
 	if req.SessionID != nil {
 		updates["session_id"] = *req.SessionID
 	}
@@ -246,11 +271,16 @@ func (s *QuestionService) UpdateQuestion(ctx context.Context, id string, req *dt
 	return s.toResponseWithSubject(ctx, newQ), nil
 }
 
-// DeleteQuestion soft-deletes a question with cascading
-func (s *QuestionService) DeleteQuestion(ctx context.Context, id string, userID string) error {
+// DeleteQuestion soft-deletes a question with cascading, scoped to the
+// caller's own school (see questionAuthorizeSchoolOwnership).
+func (s *QuestionService) DeleteQuestion(ctx context.Context, id string, userID, schoolID string, isPlatformOwner bool) error {
 	q, err := s.qRepo.FindByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to find question: %w", err)
+	}
+
+	if err := questionAuthorizeSchoolOwnership(q.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return fmt.Errorf("failed to find question: %w", errors.New("question not found"))
 	}
 
 	if err := s.checkQuestionOwnership(q, userID); err != nil {
@@ -268,8 +298,8 @@ func (s *QuestionService) DeleteQuestion(ctx context.Context, id string, userID 
 // LISTING & FILTERING OPERATIONS
 // ============================================
 
-func (s *QuestionService) ListQuestions(ctx context.Context, subjectID string, page, limit int) ([]dto.QuestionBankResponse, int64, error) {
-	qs, total, err := s.qRepo.ListBySubject(ctx, subjectID, page, limit)
+func (s *QuestionService) ListQuestions(ctx context.Context, subjectID, schoolID string, page, limit int) ([]dto.QuestionBankResponse, int64, error) {
+	qs, total, err := s.qRepo.ListBySubject(ctx, subjectID, schoolID, page, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list questions: %w", err)
 	}
@@ -312,8 +342,8 @@ func (s *QuestionService) FilterQuestions(ctx context.Context, req *dto.FilterQu
 	return resp, total, nil
 }
 
-func (s *QuestionService) GetStatistics(ctx context.Context, subjectID string) (map[string]interface{}, error) {
-	stats, err := s.qRepo.GetStatistics(ctx, subjectID)
+func (s *QuestionService) GetStatistics(ctx context.Context, subjectID, schoolID string) (map[string]interface{}, error) {
+	stats, err := s.qRepo.GetStatistics(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statistics: %w", err)
 	}
@@ -324,16 +354,34 @@ func (s *QuestionService) GetStatistics(ctx context.Context, subjectID string) (
 // BULK OPERATIONS
 // ============================================
 
-func (s *QuestionService) BulkCreateQuestionsFromJSON(ctx context.Context, req *dto.BulkCreateQuestionRequest, userID string) ([]dto.QuestionBankResponse, error) {
+// BulkCreateQuestionsFromJSON creates a batch of questions, each forced
+// to schoolID (the caller's own school - see questionEffectiveSchoolID;
+// a per-item SchoolID in the request body is honored only for an
+// authenticated platform_owner). Before this fix, each item's raw
+// qReq.SchoolID went straight into authorizeQuestionWrite, which trusted
+// admin/super_admin platform-wide - so an admin could import a batch
+// under any other school's school_id just by naming it in the body.
+func (s *QuestionService) BulkCreateQuestionsFromJSON(ctx context.Context, req *dto.BulkCreateQuestionRequest, userID, schoolID string, isPlatformOwner bool) ([]dto.QuestionBankResponse, error) {
 	if len(req.Questions) == 0 {
 		return nil, errors.New("no questions provided")
+	}
+
+	effectiveID := questionEffectiveSchoolID("", schoolID, isPlatformOwner)
+	if !isPlatformOwner && effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
 	}
 
 	// Authorize each distinct (school, class) pair referenced in this batch up
 	// front, before opening the write transaction, so a batch spanning a class
 	// the caller doesn't own fails fast without partially authorizing others.
 	authorizedClasses := make(map[string]bool)
-	for idx, qReq := range req.Questions {
+	for idx := range req.Questions {
+		if !isPlatformOwner {
+			req.Questions[idx].SchoolID = effectiveID
+		} else if req.Questions[idx].SchoolID == "" {
+			req.Questions[idx].SchoolID = effectiveID
+		}
+		qReq := req.Questions[idx]
 		key := qReq.SchoolID + "|" + qReq.ClassID
 		if authorizedClasses[key] {
 			continue
@@ -429,30 +477,75 @@ func (s *QuestionService) BulkCreateQuestionsFromJSON(ctx context.Context, req *
 	return responses, nil
 }
 
-func (s *QuestionService) BulkDelete(ctx context.Context, req *dto.BulkDeleteRequest) error {
-	if len(req.QuestionIDs) == 0 {
-		return errors.New("no question IDs provided")
+// allowedQuestionIDs filters ids down to the ones the caller may act on:
+// the same per-question checks DeleteQuestion/UpdateQuestion already
+// apply (school ownership, then creator ownership), applied one ID at a
+// time so a caller can't bulk-mutate another school's (or another
+// teacher's) questions just by listing their UUIDs. IDs that fail either
+// check, or don't exist, are silently dropped rather than erroring the
+// whole batch - the same policy BulkDeleteClasses uses - so the caller's
+// own valid IDs still go through.
+func (s *QuestionService) allowedQuestionIDs(ctx context.Context, ids []string, userID, schoolID string, isPlatformOwner bool) []string {
+	allowed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		q, err := s.qRepo.FindByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		if err := questionAuthorizeSchoolOwnership(q.SchoolID, schoolID, isPlatformOwner); err != nil {
+			continue
+		}
+		if err := s.checkQuestionOwnership(q, userID); err != nil {
+			continue
+		}
+		allowed = append(allowed, id)
 	}
-
-	if err := s.qRepo.BulkDelete(ctx, req.QuestionIDs); err != nil {
-		return fmt.Errorf("failed to delete questions: %w", err)
-	}
-	return nil
+	return allowed
 }
 
-func (s *QuestionService) BulkUpdateStatus(ctx context.Context, ids []string, status string) error {
+// BulkDelete was previously unscoped: it deleted every ID in the request
+// with no school or ownership check at all, letting any authenticated
+// teacher/admin delete another school's (or another teacher's) questions
+// just by supplying their UUIDs. Now mirrors DeleteQuestion's per-question
+// checks before deleting, and reports back how many were actually
+// deleted rather than a flat success regardless of what was dropped.
+func (s *QuestionService) BulkDelete(ctx context.Context, req *dto.BulkDeleteRequest, userID, schoolID string, isPlatformOwner bool) (int64, error) {
+	if len(req.QuestionIDs) == 0 {
+		return 0, errors.New("no question IDs provided")
+	}
+
+	allowed := s.allowedQuestionIDs(ctx, req.QuestionIDs, userID, schoolID, isPlatformOwner)
+	if len(allowed) == 0 {
+		return 0, nil
+	}
+
+	if err := s.qRepo.BulkDelete(ctx, allowed); err != nil {
+		return 0, fmt.Errorf("failed to delete questions: %w", err)
+	}
+	return int64(len(allowed)), nil
+}
+
+// BulkUpdateStatus had the same gap as BulkDelete - no school or
+// ownership check at all. Now mirrors UpdateQuestion's per-question
+// checks and reports back how many were actually updated.
+func (s *QuestionService) BulkUpdateStatus(ctx context.Context, ids []string, status, userID, schoolID string, isPlatformOwner bool) (int64, error) {
 	if len(ids) == 0 {
-		return errors.New("no question IDs provided")
+		return 0, errors.New("no question IDs provided")
 	}
 
 	if err := s.validateStatus(status); err != nil {
-		return err
+		return 0, err
 	}
 
-	if err := s.qRepo.BulkUpdateStatus(ctx, ids, status); err != nil {
-		return fmt.Errorf("failed to update statuses: %w", err)
+	allowed := s.allowedQuestionIDs(ctx, ids, userID, schoolID, isPlatformOwner)
+	if len(allowed) == 0 {
+		return 0, nil
 	}
-	return nil
+
+	if err := s.qRepo.BulkUpdateStatus(ctx, allowed, status); err != nil {
+		return 0, fmt.Errorf("failed to update statuses: %w", err)
+	}
+	return int64(len(allowed)), nil
 }
 
 // ============================================
@@ -516,11 +609,17 @@ func (s *QuestionService) ListTags(ctx context.Context, page, limit int) ([]dto.
 // BULK UPLOAD FROM FILE - UPDATED WITH DTO PARSERS
 // ============================================
 
-func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader, format string, req *dto.BulkUploadRequest, userID string) (*dto.BulkUploadResponse, error) {
+func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader, format string, req *dto.BulkUploadRequest, userID, schoolID string, isPlatformOwner bool) (*dto.BulkUploadResponse, error) {
 	// Validate request
 	if err := s.validateBulkUploadRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
+
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
 
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
@@ -649,10 +748,15 @@ func (s *QuestionService) BulkUploadFromFile(ctx context.Context, file io.Reader
 // the database - it returns the candidate rows (each mapped to the exact
 // shape POST /questions/bulk expects) for the teacher to review, edit, or
 // exclude before explicitly confirming the save via that endpoint.
-func (s *QuestionService) PreviewBulkUpload(ctx context.Context, file io.Reader, format string, req *dto.BulkUploadRequest, userID string) (*dto.BulkUploadPreviewResponse, error) {
+func (s *QuestionService) PreviewBulkUpload(ctx context.Context, file io.Reader, format string, req *dto.BulkUploadRequest, userID, schoolID string, isPlatformOwner bool) (*dto.BulkUploadPreviewResponse, error) {
 	if err := s.validateBulkUploadRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
 	}
@@ -800,7 +904,27 @@ func (s *QuestionService) validateImportItem(item *dto.QuestionImportItem) error
 		}
 	case dto.QuestionTypeEssay:
 		if len(item.Rubric) == 0 {
-			return errors.New("rubric is required for essay questions")
+			// None of the bulk-import parsers (CSV, Excel, DOCX, TXT,
+			// JSON) ever populate a structured Rubric - no import format
+			// has a column/field for it. Every essay row in every
+			// format's own official downloadable template therefore
+			// failed this exact check, 100% of the time, for every
+			// school: confirmed live by uploading GET
+			// /questions/templates/csv's own unmodified output back
+			// through this endpoint. Every bulk-import format's
+			// Explanation column is already documented and used as the
+			// essay's model answer (see the CSV template's own sample
+			// row), so reusing it as a single default rubric criterion
+			// unblocks essay questions in bulk import entirely, using
+			// only data the teacher already provided - never a
+			// fabricated grading criterion. A teacher can still add more
+			// criteria or edit this one afterward via the question edit
+			// screen.
+			if item.Explanation != "" {
+				item.Rubric = []dto.RubricCriteria{{Criteria: item.Explanation, Marks: item.Marks}}
+			} else {
+				return errors.New("rubric is required for essay questions - add a model-answer/explanation to the imported row, or add a rubric after import")
+			}
 		}
 		if len(item.Options) > 0 {
 			return errors.New("essay questions cannot have options")
@@ -910,10 +1034,16 @@ func (s *QuestionService) parseInt(str string) int {
 // AI METHODS
 // ============================================
 
-func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.AIGenerateQuestionsRequest, userID string) (*dto.AIQuestionGenerationResponse, error) {
+func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.AIGenerateQuestionsRequest, userID, schoolID string, isPlatformOwner bool) (*dto.AIQuestionGenerationResponse, error) {
 	if err := s.validateAIGenerateRequest(req); err != nil {
 		return nil, err
 	}
+
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
 
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
@@ -957,10 +1087,16 @@ func (s *QuestionService) GenerateQuestionsWithAI(ctx context.Context, req *dto.
 	}, nil
 }
 
-func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto.ExtractTextQuestionsRequest, userID string) (*dto.AIQuestionGenerationResponse, error) {
+func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto.ExtractTextQuestionsRequest, userID, schoolID string, isPlatformOwner bool) (*dto.AIQuestionGenerationResponse, error) {
 	if err := s.validateExtractRequest(req); err != nil {
 		return nil, err
 	}
+
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
 
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
@@ -1007,13 +1143,25 @@ func (s *QuestionService) ExtractQuestionsFromText(ctx context.Context, req *dto
 	}, nil
 }
 
-func (s *QuestionService) GetJobStatus(ctx context.Context, jobID string) (*dto.AIJobStatusResponse, error) {
+// GetJobStatus is scoped to the job's own creator - AIQuestionGenerationJob
+// has no school_id column at all (it predates the multi-tenant isolation
+// work), so the caller's own user_id is the only ownership check
+// available here. Before this fix, any authenticated caller could poll
+// ANY job's status/error message by guessing its UUID, with no check of
+// any kind - a cross-tenant IDOR, same shape as the question-bank ones
+// fixed earlier, just keyed on user rather than school. platform_owner
+// still bypasses it, matching every other ownership check in this file.
+func (s *QuestionService) GetJobStatus(ctx context.Context, jobID, userID string, isPlatformOwner bool) (*dto.AIJobStatusResponse, error) {
 	var job models.AIQuestionGenerationJob
 	if err := s.db.WithContext(ctx).First(&job, "id = ?", jobID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("job not found")
 		}
 		return nil, fmt.Errorf("failed to get job: %w", err)
+	}
+
+	if !isPlatformOwner && job.UserID != userID {
+		return nil, errors.New("job not found")
 	}
 
 	return &dto.AIJobStatusResponse{
@@ -1077,7 +1225,13 @@ func (s *QuestionService) ExtractLessonStructure(ctx context.Context, req *dto.E
 // teacher-approved lesson content, for teacher review (Stage D). It never
 // persists anything - the teacher must save approved drafts separately via
 // POST /questions/bulk.
-func (s *QuestionService) GenerateGroundedQuestions(ctx context.Context, req *dto.GenerateGroundedQuestionsRequest, userID string) (*dto.GenerateGroundedQuestionsResponse, error) {
+func (s *QuestionService) GenerateGroundedQuestions(ctx context.Context, req *dto.GenerateGroundedQuestionsRequest, userID, schoolID string, isPlatformOwner bool) (*dto.GenerateGroundedQuestionsResponse, error) {
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
+
 	if err := s.authorizeQuestionWrite(userID, req.SchoolID, req.ClassID); err != nil {
 		return nil, err
 	}
@@ -1187,9 +1341,12 @@ func (s *QuestionService) GenerateGroundedQuestions(ctx context.Context, req *dt
 	return resp, nil
 }
 
-// authorizeRoleOnly checks that the caller is a teacher/admin/super_admin
-// without requiring a specific class (used at workflow stages before a
-// class has been selected yet).
+// authorizeRoleOnly checks that the caller is a teacher/admin/super_admin/
+// platform_owner without requiring a specific class (used at workflow
+// stages before a class has been selected yet). platform_owner is
+// included here for the same reason every other ownership check in this
+// file exempts it: it is the one role deliberately meant to act across
+// every tenant rather than being confined to one school's staff.
 func (s *QuestionService) authorizeRoleOnly(userID string) error {
 	if userID == "" {
 		return errors.New("unauthorized: user not authenticated")
@@ -1199,7 +1356,7 @@ func (s *QuestionService) authorizeRoleOnly(userID string) error {
 		return errors.New("unauthorized: user not found")
 	}
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin, models.RoleTeacher:
+	case models.RoleAdmin, models.RoleSuperAdmin, models.RoleTeacher, models.RolePlatformOwner:
 		return nil
 	default:
 		return errors.New("unauthorized: only teachers and admins may use the question-generation workflow")
@@ -1281,8 +1438,14 @@ func (s *QuestionService) GetCurrentAcademicContext(ctx context.Context, schoolI
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, termID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID)
+// GetQuestionsByTerm is scoped to schoolID - it previously called
+// FindByTerm with no school check at all, so any authenticated caller
+// could read any other school's questions for a term_id it doesn't own.
+func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, termID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1299,8 +1462,13 @@ func (s *QuestionService) GetQuestionsByTerm(ctx context.Context, subjectID, ter
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, sessionID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID)
+// GetQuestionsBySession is scoped to schoolID - same fix as
+// GetQuestionsByTerm.
+func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, sessionID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1317,8 +1485,13 @@ func (s *QuestionService) GetQuestionsBySession(ctx context.Context, subjectID, 
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID string) ([]dto.QuestionContextResponse, error) {
-	questions, err := s.qRepo.FindByClass(ctx, classID)
+// GetQuestionsByClass is scoped to schoolID - same fix as
+// GetQuestionsByTerm.
+func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID, schoolID string, isPlatformOwner bool) ([]dto.QuestionContextResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	questions, err := s.qRepo.FindByClass(ctx, classID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1335,13 +1508,22 @@ func (s *QuestionService) GetQuestionsByClass(ctx context.Context, classID strin
 	return responses, nil
 }
 
-func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subjectID string) (*dto.QuestionContextSummaryResponse, error) {
+// GetQuestionContextSummary is scoped to schoolID - subject is a global
+// table shared by every school, so subjectID alone previously let any
+// authenticated caller see every school's term-by-term question counts
+// (and the questions themselves, via the unscoped FindByTerm below) for
+// it.
+func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subjectID, schoolID string, isPlatformOwner bool) (*dto.QuestionContextSummaryResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	subject, err := s.subRepo.FindByID(subjectID)
 	if err != nil {
 		return nil, fmt.Errorf("subject not found: %w", err)
 	}
 
-	summaries, err := s.qRepo.GetQuestionContextSummary(ctx, subjectID)
+	summaries, err := s.qRepo.GetQuestionContextSummary(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -1354,7 +1536,7 @@ func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subject
 	practiceCount := 0
 
 	for _, summary := range summaries {
-		questions, err := s.qRepo.FindByTerm(ctx, subjectID, summary.TermID)
+		questions, err := s.qRepo.FindByTerm(ctx, subjectID, summary.TermID, schoolID)
 		if err != nil {
 			continue
 		}
@@ -1403,7 +1585,17 @@ func (s *QuestionService) GetQuestionContextSummary(ctx context.Context, subject
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.FilterQuestionsWithContextRequest) (*dto.QuestionListWithContextResponse, error) {
+// GetQuestionsWithContext is scoped to schoolID - req.SchoolID previously
+// came straight from the client with no override, so any authenticated
+// caller could read another school's question bank just by naming its
+// school_id in the request body.
+func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.FilterQuestionsWithContextRequest, schoolID string, isPlatformOwner bool) (*dto.QuestionListWithContextResponse, error) {
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
+
 	params := map[string]interface{}{
 		"subject_id": req.SubjectID,
 		"school_id":  req.SchoolID,
@@ -1497,13 +1689,23 @@ func (s *QuestionService) GetQuestionsWithContext(ctx context.Context, req *dto.
 	}, nil
 }
 
-func (s *QuestionService) GetQuestionsForExam(ctx context.Context, subjectID, termID, sessionID string) ([]dto.QuestionBankResponse, error) {
+// GetQuestionsForExam is scoped to schoolID - it previously queried with
+// no school filter at all, so any authenticated caller could pull another
+// school's questions for exam creation just by naming its term_id/
+// session_id.
+func (s *QuestionService) GetQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, schoolID string, isPlatformOwner bool) ([]dto.QuestionBankResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	var questions []models.QuestionBank
-	err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx).
 		Where("subject_id = ? AND term_id = ? AND session_id = ? AND deleted_at IS NULL",
-			subjectID, termID, sessionID).
-		Order("created_at DESC").
-		Find(&questions).Error
+			subjectID, termID, sessionID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1701,12 +1903,48 @@ func (s *QuestionService) validateExtractRequest(req *dto.ExtractTextQuestionsRe
 // PERMISSION FUNCTIONS
 // ============================================
 
+// errQuestionSchoolScopeRequired mirrors
+// internal/academic/service.ErrSchoolScopeRequired: a non-platform-owner
+// caller with no school_id of their own (e.g. a legacy account seeded
+// with none) has no school to scope a question-bank write to.
+var errQuestionSchoolScopeRequired = errors.New("no school scope for this account")
+
+// questionEffectiveSchoolID mirrors
+// internal/academic/service.effectiveSchoolID (duplicated locally since
+// that helper is unexported in a different package, same as
+// ExamService's own authorizeExamTenant not reusing it either): an
+// authenticated platform_owner's client-supplied schoolID is honored as
+// given; every other caller's is always forced to ctxSchoolID, so a
+// client-supplied school_id can never by itself grant write access to
+// another school's question bank.
+func questionEffectiveSchoolID(clientSuppliedSchoolID, ctxSchoolID string, isPlatformOwner bool) string {
+	if isPlatformOwner {
+		return clientSuppliedSchoolID
+	}
+	return ctxSchoolID
+}
+
+// questionAuthorizeSchoolOwnership mirrors
+// internal/academic/service.authorizeSchoolOwnership for QuestionBank's
+// own direct SchoolID column.
+func questionAuthorizeSchoolOwnership(recordSchoolID, ctxSchoolID string, isPlatformOwner bool) error {
+	if isPlatformOwner {
+		return nil
+	}
+	if ctxSchoolID == "" || recordSchoolID != ctxSchoolID {
+		return errors.New("not found")
+	}
+	return nil
+}
+
 // authorizeQuestionWrite verifies the authenticated caller is actually allowed
 // to create/import a question under the given school/class, instead of trusting
-// the school_id/class_id supplied in the request body. Admins and super admins
-// are trusted platform-wide (matching the admin posture already used elsewhere
-// in this codebase, e.g. admin_service.go, which has no per-school scoping);
-// teachers must be the assigned teacher of the class (the same ownership check
+// the school_id/class_id supplied in the request body. schoolID here must
+// already be the caller's own resolved school (questionEffectiveSchoolID),
+// never a raw client-supplied value - admins and super admins are trusted
+// for THAT school, not platform-wide (matching the Phase 1/2 multi-tenant
+// model: only platform_owner is meant to act across every school); teachers
+// must be the assigned teacher of the class (the same ownership check
 // already used throughout teacher_service.go via Class.TeacherID).
 func (s *QuestionService) authorizeQuestionWrite(userID, schoolID, classID string) error {
 	if userID == "" {
@@ -1719,7 +1957,7 @@ func (s *QuestionService) authorizeQuestionWrite(userID, schoolID, classID strin
 	}
 
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin:
+	case models.RolePlatformOwner, models.RoleAdmin, models.RoleSuperAdmin:
 		return nil
 	case models.RoleTeacher:
 		// fall through to the class-ownership check below
@@ -2059,7 +2297,19 @@ func (s *QuestionService) attachTagsByNamesInTx(ctx context.Context, tx *gorm.DB
 // ============================================================
 
 // GetQuestionsGrouped returns questions organized by exam_type -> question_type
-func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.FilterQuestionsGroupedRequest) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsGrouped is scoped to schoolID - req.SchoolID previously came
+// straight from the client with no override, so any authenticated user
+// could read another school's entire question bank by passing its
+// school_id. The caller's own resolved schoolID (questionEffectiveSchoolID)
+// always replaces whatever req.SchoolID held before it reaches the filter
+// or the response context.
+func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.FilterQuestionsGroupedRequest, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	effectiveID := questionEffectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+	if effectiveID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+	req.SchoolID = effectiveID
+
 	// 1. Fetch questions with full context
 	params := map[string]interface{}{
 		"subject_id": req.SubjectID,
@@ -2362,15 +2612,30 @@ func (s *QuestionService) GetQuestionsGrouped(ctx context.Context, req *dto.Filt
 
 // GetAllQuestionsGrouped returns ALL questions organized by exam_type -> question_type
 // This method does NOT require any parameters - it fetches ALL questions from the database
-func (s *QuestionService) GetAllQuestionsGrouped(ctx context.Context) (*dto.QuestionGroupsResponse, error) {
+// GetAllQuestionsGrouped is scoped to schoolID - it previously ran
+// s.db.Find(&questions) with no filter of any kind, so GET
+// /questions/all-grouped returned literally every school's entire
+// question bank (draft, published, and archived alike) to any
+// authenticated caller. An empty schoolID is only honored for an
+// authenticated platform_owner explicitly requesting every school;
+// everyone else is forced to their own school and rejected outright if
+// they have none.
+func (s *QuestionService) GetAllQuestionsGrouped(ctx context.Context, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errQuestionSchoolScopeRequired
+	}
+
 	// 1. Fetch ALL questions - NO status filter, NO deleted filter
 	var questions []models.QuestionBank
-	
+
+	query := s.db.WithContext(ctx).Order("created_at DESC")
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+
 	// Get ALL questions directly from database (including draft, published, archived)
-	err := s.db.WithContext(ctx).
-		Order("created_at DESC").
-		Find(&questions).Error
-	
+	err := query.Find(&questions).Error
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch questions: %w", err)
 	}
@@ -2574,13 +2839,32 @@ func (s *QuestionService) getSubject(ctx context.Context, id string) (*models.Su
 }
 
 // GetQuestionsByTermWithGrouping returns questions for a term grouped by exam type
-func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, subjectID, termID string) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsByTermWithGrouping is scoped to schoolID - it previously
+// called FindByTerm with no school check at all, then derived req.SchoolID
+// from the first matching question's OWN school (never verified against
+// the caller), so a valid termID belonging to a different school leaked
+// straight through. The term's own school (via its academic session) must
+// match the caller's school before any question for it is returned.
+func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, subjectID, termID, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	var term models.Term
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", termID).First(&term).Error; err != nil {
+		return nil, errors.New("term not found")
+	}
+	var session models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", term.SessionID).First(&session).Error; err != nil {
+		return nil, errors.New("term not found")
+	}
+	if err := questionAuthorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	req := &dto.FilterQuestionsGroupedRequest{
 		SubjectID: subjectID,
 		TermID:    termID,
+		SchoolID:  session.SchoolID,
 	}
 
-	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID)
+	questions, err := s.qRepo.FindByTerm(ctx, subjectID, termID, session.SchoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -2594,21 +2878,32 @@ func (s *QuestionService) GetQuestionsByTermWithGrouping(ctx context.Context, su
 	}
 
 	firstQ := questions[0]
-	req.SchoolID = firstQ.SchoolID
 	req.ClassID = firstQ.ClassID
 	req.SessionID = firstQ.SessionID
 
-	return s.GetQuestionsGrouped(ctx, req)
+	return s.GetQuestionsGrouped(ctx, req, schoolID, isPlatformOwner)
 }
 
-// GetQuestionsBySessionWithGrouping returns questions for a session grouped by exam type
-func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context, subjectID, sessionID string) (*dto.QuestionGroupsResponse, error) {
+// GetQuestionsBySessionWithGrouping is scoped to schoolID - same fix as
+// GetQuestionsByTermWithGrouping: the session's own school must match the
+// caller's before any question for it is returned, instead of trusting
+// the first matching question's own (unverified) school.
+func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context, subjectID, sessionID, schoolID string, isPlatformOwner bool) (*dto.QuestionGroupsResponse, error) {
+	var session models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", sessionID).First(&session).Error; err != nil {
+		return nil, errors.New("session not found")
+	}
+	if err := questionAuthorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	req := &dto.FilterQuestionsGroupedRequest{
 		SubjectID: subjectID,
 		SessionID: sessionID,
+		SchoolID:  session.SchoolID,
 	}
 
-	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID)
+	questions, err := s.qRepo.FindBySession(ctx, subjectID, sessionID, session.SchoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -2622,11 +2917,10 @@ func (s *QuestionService) GetQuestionsBySessionWithGrouping(ctx context.Context,
 	}
 
 	firstQ := questions[0]
-	req.SchoolID = firstQ.SchoolID
 	req.ClassID = firstQ.ClassID
 	req.TermID = firstQ.TermID
 
-	return s.GetQuestionsGrouped(ctx, req)
+	return s.GetQuestionsGrouped(ctx, req, schoolID, isPlatformOwner)
 }
 
 

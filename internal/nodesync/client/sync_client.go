@@ -23,6 +23,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// strDeref converts models.ReportCardAuditLog's *string scope fields
+// (StudentID/ClassID, nil when "not applicable to this action" - see
+// that field's own doc comment) into the plain string the wire-format
+// dto.ReportCardAuditLogPush uses.
+func strDeref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 type SyncClient struct {
 	repo         *repository.NodeSyncRepository
 	cloudBaseURL string
@@ -87,8 +98,21 @@ func (c *SyncClient) push(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load unsynced events: %w", err)
 	}
+	reportCardApprovals, err := c.repo.UnsyncedReportCardApprovals(ctx)
+	if err != nil {
+		return fmt.Errorf("load unsynced report-card approvals: %w", err)
+	}
+	reportCardAuditLogs, err := c.repo.UnsyncedReportCardAuditLogs(ctx)
+	if err != nil {
+		return fmt.Errorf("load unsynced report-card audit logs: %w", err)
+	}
+	attendanceRecords, err := c.repo.UnsyncedAttendanceRecords(ctx)
+	if err != nil {
+		return fmt.Errorf("load unsynced attendance records: %w", err)
+	}
 
-	if len(sessions) == 0 && len(answers) == 0 && len(results) == 0 && len(events) == 0 {
+	if len(sessions) == 0 && len(answers) == 0 && len(results) == 0 && len(events) == 0 &&
+		len(reportCardApprovals) == 0 && len(reportCardAuditLogs) == 0 && len(attendanceRecords) == 0 {
 		return nil
 	}
 
@@ -107,7 +131,7 @@ func (c *SyncClient) push(ctx context.Context) error {
 	}
 	for _, r := range results {
 		req.Results = append(req.Results, dto.ResultPush{
-			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID, AttemptID: r.AttemptID,
+			ID: r.ID, StudentID: r.StudentID, ExamID: r.ExamID, AttemptID: strDeref(r.AttemptID),
 			TotalScore: r.TotalScore, Percentage: r.Percentage, Grade: r.Grade,
 			Remarks: r.Remarks, Passed: r.Passed, PublishedAt: r.PublishedAt,
 		})
@@ -116,6 +140,27 @@ func (c *SyncClient) push(ctx context.Context) error {
 		req.Events = append(req.Events, dto.EventPush{
 			ID: e.ID, AttemptID: e.AttemptID, StudentID: e.StudentID, EventType: e.EventType,
 			ClientSequence: e.ClientSequence, PayloadJSON: e.PayloadJSON, ClientTimestamp: e.ClientTimestamp,
+		})
+	}
+	for _, a := range reportCardApprovals {
+		req.ReportCardApprovals = append(req.ReportCardApprovals, dto.ReportCardApprovalPush{
+			ID: a.ID, SchoolID: a.SchoolID, StudentID: a.StudentID, ReportType: a.ReportType,
+			TermID: a.TermID, SessionID: a.SessionID, Status: a.Status, Version: a.Version,
+			SnapshotJSON: a.SnapshotJSON, Notes: a.Notes, ActorID: a.ActorID,
+		})
+	}
+	for _, l := range reportCardAuditLogs {
+		req.ReportCardAuditLogs = append(req.ReportCardAuditLogs, dto.ReportCardAuditLogPush{
+			ID: l.ID, SchoolID: l.SchoolID, ActorID: l.ActorID, Action: l.Action, ReportType: l.ReportType,
+			StudentID: strDeref(l.StudentID), ClassID: strDeref(l.ClassID), TermID: l.TermID, SessionID: l.SessionID,
+			Notes: l.Notes, ContentHash: l.ContentHash, CreatedAt: l.CreatedAt,
+		})
+	}
+	for _, a := range attendanceRecords {
+		req.AttendanceRecords = append(req.AttendanceRecords, dto.AttendanceRecordPush{
+			ID: a.ID, SchoolID: a.SchoolID, StudentID: a.StudentID, ClassID: a.ClassID,
+			TermID: a.TermID, SessionID: a.SessionID, Date: a.Date, Status: a.Status,
+			MarkedBy: a.MarkedBy, Notes: a.Notes,
 		})
 	}
 
@@ -157,6 +202,14 @@ func (c *SyncClient) push(ctx context.Context) error {
 	for i, e := range events {
 		eventIDs[i] = e.ID
 	}
+	reportCardApprovalIDs := make([]string, len(reportCardApprovals))
+	for i, a := range reportCardApprovals {
+		reportCardApprovalIDs[i] = a.ID
+	}
+	reportCardAuditLogIDs := make([]string, len(reportCardAuditLogs))
+	for i, l := range reportCardAuditLogs {
+		reportCardAuditLogIDs[i] = l.ID
+	}
 	if err := c.repo.MarkSessionsSynced(ctx, synced(sessionIDs)); err != nil {
 		return err
 	}
@@ -169,12 +222,28 @@ func (c *SyncClient) push(ctx context.Context) error {
 	if err := c.repo.MarkEventsSynced(ctx, synced(eventIDs)); err != nil {
 		return err
 	}
+	if err := c.repo.MarkReportCardApprovalsSynced(ctx, synced(reportCardApprovalIDs)); err != nil {
+		return err
+	}
+	if err := c.repo.MarkReportCardAuditLogsSynced(ctx, synced(reportCardAuditLogIDs)); err != nil {
+		return err
+	}
+	attendanceRecordIDs := make([]string, len(attendanceRecords))
+	for i, a := range attendanceRecords {
+		attendanceRecordIDs[i] = a.ID
+	}
+	if err := c.repo.MarkAttendanceRecordsSynced(ctx, synced(attendanceRecordIDs)); err != nil {
+		return err
+	}
 
 	zap.L().Info("nodesync push complete",
 		zap.Int("sessions_accepted", pushResp.Data.SessionsAccepted),
 		zap.Int("answers_accepted", pushResp.Data.AnswersAccepted),
 		zap.Int("results_accepted", pushResp.Data.ResultsAccepted),
 		zap.Int("events_accepted", pushResp.Data.EventsAccepted),
+		zap.Int("report_card_approvals_accepted", pushResp.Data.ReportCardApprovalsAccepted),
+		zap.Int("report_card_audit_logs_accepted", pushResp.Data.ReportCardAuditLogsAccepted),
+		zap.Int("attendance_records_accepted", pushResp.Data.AttendanceRecordsAccepted),
 		zap.Int("rejected", len(pushResp.Data.Rejected)),
 	)
 	return nil

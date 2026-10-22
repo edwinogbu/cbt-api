@@ -956,6 +956,34 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
         s.logger.Printf("[WARN] GatewayData was nil, initialized empty map")
     }
 
+    now := time.Now()
+
+    // Atomically claim this payment intent for finalization. The
+    // earlier `pi.IsFinalized` check above is a read-then-write race:
+    // two near-simultaneous webhook deliveries (gateways retry on
+    // timeout, and a captured valid signature can be replayed) can
+    // both read IsFinalized=false before either commits, and both
+    // would then re-run every side effect below - activating the
+    // subscription/school/user twice, inserting a second
+    // PaymentTransaction row, and emailing the customer twice. The
+    // conditional UPDATE here (WHERE is_finalized = false) is resolved
+    // atomically by Postgres, so only one concurrent caller can ever
+    // win the claim; the loser treats it exactly like an
+    // already-finalized intent and returns without side effects.
+    claimed, err := s.subscriptionRepo.ClaimPaymentIntentFinalization(pi.ID, now, verification.GatewayData)
+    if err != nil {
+        s.logger.Printf("[ERROR] Failed to claim payment intent for finalization: %v", err)
+        return fmt.Errorf("failed to finalize payment intent: %w", err)
+    }
+    if !claimed {
+        s.logger.Printf("[INFO] Payment intent already finalized by a concurrent request: %s", pi.ID)
+        return nil
+    }
+    pi.Status = models.IntentSucceeded
+    pi.PaidAt = &now
+    pi.IsFinalized = true
+    pi.GatewayResponse = verification.GatewayData
+
     // Get subscription
     sub, err := s.subscriptionRepo.FindByID(pi.SubscriptionID)
     if err != nil {
@@ -966,8 +994,6 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
     // Get session
     sessionID, _ := sub.Metadata["session_id"].(string)
     session, _ := s.sessionStore.Get(ctx, sessionID)
-
-    now := time.Now()
 
     // Update subscription
     sub.Status = models.SubStatusActive
@@ -1020,16 +1046,8 @@ func (s *OnboardingService) ActivateOnboarding(ctx context.Context, reference st
         return fmt.Errorf("failed to mark invoice as paid: %w", err)
     }
 
-    // Update payment intent
-    pi.Status = models.IntentSucceeded
-    pi.PaidAt = &now
-    pi.IsFinalized = true
-    pi.GatewayResponse = verification.GatewayData
-    pi.UpdatedAt = now
-    if err := s.subscriptionRepo.UpdatePaymentIntent(pi); err != nil {
-        s.logger.Printf("[ERROR] Failed to update payment intent: %v", err)
-        return fmt.Errorf("failed to update payment intent: %w", err)
-    }
+    // Payment intent was already finalized atomically above, via
+    // ClaimPaymentIntentFinalization.
 
     // ✅ FIX: Create transaction with safe gateway transaction ID
     transactionID := getTransactionIDFromVerification(verification, gateway)
@@ -1155,7 +1173,6 @@ func (s *OnboardingService) GetSessionByEmail(ctx context.Context, email string)
 	}
 
 	return &dto.GetSessionByEmailResponse{
-		SessionID: session.ID,
 		Email:     session.Email,
 		Status:    session.Status,
 		ExpiresAt: session.ExpiresAt,
@@ -1306,13 +1323,32 @@ func (s *OnboardingService) ResendPaymentLink(ctx context.Context, sessionID str
 // 		RedirectURL:    fmt.Sprintf("%s/dashboard", s.config.AppURL),
 // 	}, nil
 // }
-func (s *OnboardingService) CompleteOnboarding(ctx context.Context, sessionID string) (*dto.ActivationResponse, error) {
+// CompleteOnboarding manually finalizes a pending onboarding session -
+// verifying payment and activating the new school/admin account on the
+// caller's behalf. callerUserID/isPlatformOwner come only from the
+// verified JWT (middleware.GetUserID/IsPlatformOwner), never a
+// client-supplied value.
+//
+// Before this fix there was no check of any kind: any authenticated
+// admin/super_admin could name ANY pending session - belonging to a
+// completely unrelated prospective customer - and force it through
+// payment verification and account activation, or learn its status via
+// the "already completed" response. The caller must now be the
+// session's own user (session.UserID) or platform_owner; a mismatch is
+// reported as "session not found" (not a distinct "forbidden") so a
+// caller can't use this to probe which session IDs exist.
+func (s *OnboardingService) CompleteOnboarding(ctx context.Context, sessionID, callerUserID string, isPlatformOwner bool) (*dto.ActivationResponse, error) {
     s.logger.Printf("[INFO] Admin completing onboarding - session=%s", sessionID)
 
     session, err := s.getValidSession(ctx, sessionID)
     if err != nil {
         s.logger.Printf("[ERROR] Invalid session: %v", err)
         return nil, err
+    }
+
+    if !isPlatformOwner && session.UserID != callerUserID {
+        s.logger.Printf("[ERROR] Caller does not own session=%s", sessionID)
+        return nil, errors.New("session not found")
     }
 
     // Check if already completed
@@ -1401,13 +1437,41 @@ func (s *OnboardingService) CleanupExpiredSessions(ctx context.Context) error {
 // GET ONBOARDING STATISTICS
 // ============================================
 
+// GetOnboardingStats reports real, platform-wide onboarding-funnel
+// counts from the DB-backed onboardingRepo (not s.sessionStore, the
+// separate, unrelated in-memory session cache CompleteOnboarding/
+// CleanupExpiredSessions use - this call previously returned a
+// hardcoded map of zeros regardless of the real data, which is exactly
+// the kind of misleading "looks like live data" response the
+// multi-tenant plan's honesty rules rule out).
 func (s *OnboardingService) GetOnboardingStats(ctx context.Context) (map[string]int64, error) {
+	counts, err := s.onboardingRepo.CountSessionsByStatus()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load onboarding stats: %w", err)
+	}
+
+	var total, pending, paymentPending, completed, expired int64
+	for status, count := range counts {
+		total += count
+		switch models.OnboardingStatus(status) {
+		case models.OnboardingStatusPaymentPending:
+			paymentPending += count
+		case models.OnboardingStatusComplete:
+			completed += count
+		case models.OnboardingStatusExpired:
+			expired += count
+		case models.OnboardingStatusPlanSelected, models.OnboardingStatusAccountCreated,
+			models.OnboardingStatusEmailVerified, models.OnboardingStatusSchoolCreated:
+			pending += count
+		}
+	}
+
 	return map[string]int64{
-		"total_sessions":     0,
-		"pending":            0,
-		"payment_pending":    0,
-		"completed":          0,
-		"expired":            0,
+		"total_sessions":  total,
+		"pending":         pending,
+		"payment_pending": paymentPending,
+		"completed":       completed,
+		"expired":         expired,
 	}, nil
 }
 
@@ -1492,7 +1556,7 @@ func (s *OnboardingService) sendVerificationOTPWithTracking(email, firstName, us
 		return
 	}
 
-	s.logger.Printf("[INFO] Sending verification OTP to: %s with code: %s", email, code)
+	s.logger.Printf("[INFO] Sending verification OTP to: %s", email)
 
 	err = s.emailService.SendAdminVerifyEmail(email, firstName, code)
 	if err != nil {
@@ -1500,7 +1564,7 @@ func (s *OnboardingService) sendVerificationOTPWithTracking(email, firstName, us
 		return
 	}
 
-	s.logger.Printf("[SUCCESS] Admin verify email sent to %s with OTP: %s", email, code)
+	s.logger.Printf("[SUCCESS] Admin verify email sent to %s", email)
 }
 
 func (s *OnboardingService) sendPaymentLinkEmailWithTracking(user *models.User, school *models.School, sub *models.Subscription, inv *models.Invoice, pi *models.PaymentIntent, gateway models.PaymentGateway) {

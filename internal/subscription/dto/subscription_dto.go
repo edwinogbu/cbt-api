@@ -156,6 +156,10 @@ type SubscriptionUsageResponse struct {
     CurrentTeachers  int     `json:"current_teachers"`
     CurrentExams     int     `json:"current_exams"`
     CurrentQuestions int     `json:"current_questions"`
+    // StorageUsedMB is always 0: this codebase has no comprehensive
+    // per-school storage accounting yet, only a partial source that
+    // would undercount if reported as a total. See
+    // SubscriptionService.GetSubscriptionUsage.
     StorageUsedMB    int     `json:"storage_used_mb"`
     MaxStudents      int     `json:"max_students"`
     MaxTeachers      int     `json:"max_teachers"`

@@ -79,6 +79,17 @@ func TestAuthorizeQuestionWrite_SuperAdminBypassesClassOwnership(t *testing.T) {
 	}
 }
 
+func TestAuthorizeQuestionWrite_PlatformOwnerBypassesClassOwnership(t *testing.T) {
+	db := setupAuthTestDB(t)
+	s := newTestQuestionService(db)
+	seedUser(t, db, "owner-1", "platform_owner", "")
+	// No class row at all - platform_owner must not need one, same as
+	// admin/super_admin.
+	if err := s.authorizeQuestionWrite("owner-1", "school-1", "nonexistent-class"); err != nil {
+		t.Fatalf("expected platform_owner to bypass class ownership check, got error: %v", err)
+	}
+}
+
 func TestAuthorizeQuestionWrite_TeacherOwnsClass_Allowed(t *testing.T) {
 	db := setupAuthTestDB(t)
 	s := newTestQuestionService(db)
@@ -164,6 +175,15 @@ func TestAuthorizeRoleOnly_TeacherAllowed(t *testing.T) {
 	seedUser(t, db, "teacher-1", "teacher", "school-1")
 	if err := s.authorizeRoleOnly("teacher-1"); err != nil {
 		t.Fatalf("expected teacher to be allowed, got error: %v", err)
+	}
+}
+
+func TestAuthorizeRoleOnly_PlatformOwnerAllowed(t *testing.T) {
+	db := setupAuthTestDB(t)
+	s := newTestQuestionService(db)
+	seedUser(t, db, "owner-1", "platform_owner", "")
+	if err := s.authorizeRoleOnly("owner-1"); err != nil {
+		t.Fatalf("expected platform_owner to be allowed, got error: %v", err)
 	}
 }
 

@@ -69,7 +69,24 @@ func (s *AuthService) generateUniqueUsername(base string) string {
 }
 
 // Register with role, username, parent linking, and school code validation
+// Register self-registers a new account. Before this fix, role=admin
+// was accepted here same as teacher/parent: anyone who obtained an
+// EXISTING school's school_code (itself leaked to any authenticated
+// teacher via GET /schools, which returns every school's code - see
+// that handler's own fix) could self-register as that school's admin
+// and log in immediately (Login never checks Status, and IsActive is
+// unconditionally true here) - full administrative control over a
+// real, already-operating tenant with zero human approval step. This
+// is categorically different from the onboarding flow's admin
+// creation, which always provisions a brand-new school for that admin
+// rather than attaching to an existing one. Admin accounts for an
+// existing school must now come only from onboarding (new school) or
+// GrantRole (an existing admin/platform_owner explicitly elevating a
+// user they already vetted) - both already properly scoped.
 func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.LoginResponse, error) {
+	if req.Role == "admin" {
+		return nil, errors.New("self-registration as admin is not permitted; use the onboarding flow to create a new school, or ask an existing admin to grant you the role")
+	}
 	// Validate school code for non-student roles
 	var schoolID *string
 	if req.Role != "student" {
@@ -149,13 +166,13 @@ func (s *AuthService) Register(req *dto.RegisterRequest) (*dto.LoginResponse, er
 	if req.Email != "" {
 		go s.SendVerificationOTP(req.Email, "email_verification")
 	}
-	if role == models.RoleParent && s.parentService != nil && req.AdmissionNumber != "" {
-		if err := s.parentService.AutoLinkParentOnRegister(user.ID, req.AdmissionNumber); err != nil {
+	if role == models.RoleParent && s.parentService != nil && req.AdmissionNumber != "" && schoolID != nil {
+		if err := s.parentService.AutoLinkParentOnRegister(user.ID, req.AdmissionNumber, *schoolID); err != nil {
 			s.logger.Error("parent auto‑link failed", zap.String("parent_id", user.ID), zap.Error(err))
 		}
 	}
 
-	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role))
+	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role), schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +266,7 @@ func (s *AuthService) completeLoginWithRole(user *models.User, activeRole, clien
 	if user.Email != nil {
 		emailStr = *user.Email
 	}
-	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, activeRole)
+	accessToken, refreshToken, err := s.generateTokens(user.ID, user.Username, activeRole, schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -346,9 +363,38 @@ func (s *AuthService) SwitchRole(userID, targetRole, clientIP, userAgent string)
 }
 
 // GrantRole gives an additional role to a user. grantedBy is the admin
-// user ID performing the grant, recorded for audit purposes.
-func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
-	if _, err := s.repo.FindUserByID(targetUserID); err != nil {
+// user ID performing the grant, recorded for audit purposes. schoolID is
+// the caller's own verified school (never a client-supplied value) and
+// isPlatformOwner marks the one role meant to act across every tenant;
+// every other caller may only grant a role to a user in their own
+// school - a role grant never changes which school the target user's
+// JWT claims (completeLoginWithRole always uses the target's own
+// user.SchoolID), so without this check a School A admin could elevate
+// a School B user's privileges within School B without ever being
+// School B staff themselves. Before this fix there was no school check
+// of any kind - FindUserByID looks up any user by raw ID regardless of
+// school.
+//
+// platform_owner is deliberately never grantable here, however trusted
+// the caller - this is the platform/school authority boundary from the
+// multi-tenancy plan's Phase 1.3 ("do not trust... a user-controlled
+// role value as proof of [platform] ownership"). An admin or super_admin
+// calling this endpoint is always acting within their own school; it can
+// never be used to mint platform-wide authority, for that admin or
+// anyone else. The only path to platform_owner is the server-side
+// bootstrap in pkg/database/postgres.go's seedPlatformOwner().
+func (s *AuthService) GrantRole(targetUserID, role, grantedBy, schoolID string, isPlatformOwner bool) error {
+	if models.UserRole(role) == models.RolePlatformOwner {
+		return errors.New("platform_owner cannot be granted through this endpoint")
+	}
+	if schoolID == "" && !isPlatformOwner {
+		return errors.New("no school scope for this account")
+	}
+	targetUser, err := s.repo.FindUserByID(targetUserID)
+	if err != nil {
+		return errors.New("user not found")
+	}
+	if !isPlatformOwner && schoolIDClaim(targetUser) != schoolID {
 		return errors.New("user not found")
 	}
 	grant := &models.UserRoleGrant{
@@ -361,8 +407,21 @@ func (s *AuthService) GrantRole(targetUserID, role, grantedBy string) error {
 }
 
 // RevokeRole removes a previously granted role. It never removes a
-// user's primary Role - only additional grants.
-func (s *AuthService) RevokeRole(targetUserID, role string) error {
+// user's primary Role - only additional grants. Scoped to schoolID for
+// the same reason as GrantRole: without a target-user ownership check
+// (absent before this fix, along with any user lookup at all), a School
+// A admin could revoke a School B user's additional role.
+func (s *AuthService) RevokeRole(targetUserID, role, schoolID string, isPlatformOwner bool) error {
+	if schoolID == "" && !isPlatformOwner {
+		return errors.New("no school scope for this account")
+	}
+	targetUser, err := s.repo.FindUserByID(targetUserID)
+	if err != nil {
+		return errors.New("user not found")
+	}
+	if !isPlatformOwner && schoolIDClaim(targetUser) != schoolID {
+		return errors.New("user not found")
+	}
 	return s.repo.DeleteRoleGrant(targetUserID, models.UserRole(role))
 }
 
@@ -389,7 +448,7 @@ func (s *AuthService) RefreshToken(refreshToken string) (*dto.TokenResponse, err
 	if err != nil {
 		return nil, errors.New("user not found")
 	}
-	accessToken, newRefreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role))
+	accessToken, newRefreshToken, err := s.generateTokens(user.ID, user.Username, string(user.Role), schoolIDClaim(user))
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +464,13 @@ func (s *AuthService) RefreshToken(refreshToken string) (*dto.TokenResponse, err
 }
 
 func (s *AuthService) Logout(userID, sessionID string) error {
-	return s.repo.DeleteSession(sessionID)
+	// sessionID here is always server-derived (middleware.GetSessionID,
+	// from the caller's own JWT), never client input, so this is scoped
+	// defensively rather than to close a live exploit. Zero rows affected
+	// (session already gone, e.g. a double logout) is not an error -
+	// logout must stay idempotent.
+	_, err := s.repo.DeleteSessionForUser(sessionID, userID)
+	return err
 }
 
 func (s *AuthService) LogoutAllDevices(userID, currentSessionID string) error {
@@ -567,8 +632,22 @@ func (s *AuthService) GetUserSessions(userID, currentSessionID string) ([]dto.Se
 	return sessionDTOs, nil
 }
 
+// RevokeSession deletes one of the CALLER's own sessions. sessionID
+// comes straight from the URL path (c.Param("sessionId")) - client
+// input - so without the userID ownership check below, any
+// authenticated user could force-logout any OTHER user's session by ID,
+// regardless of whose account it belongs to. A mismatch reports the
+// same generic error as a nonexistent session, so a caller can't use
+// this to probe which session IDs are real.
 func (s *AuthService) RevokeSession(userID, sessionID string) error {
-	return s.repo.DeleteSession(sessionID)
+	rows, err := s.repo.DeleteSessionForUser(sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("session not found")
+	}
+	return nil
 }
 
 func (s *AuthService) GetProfile(userID string) (*dto.UserDTO, error) {
@@ -618,16 +697,26 @@ func (s *AuthService) DeleteAccount(userID string) error {
 	return s.repo.SoftDeleteUser(userID)
 }
 
-func (s *AuthService) generateTokens(userID, identifier, role string) (string, string, error) {
-	accessToken, err := utils.GenerateJWT(userID, identifier, role, 24*time.Hour)
+func (s *AuthService) generateTokens(userID, identifier, role, schoolID string) (string, string, error) {
+	accessToken, err := utils.GenerateJWT(userID, identifier, role, schoolID, 24*time.Hour)
 	if err != nil {
 		return "", "", err
 	}
-	refreshToken, err := utils.GenerateJWT(userID, identifier, role, 7*24*time.Hour)
+	refreshToken, err := utils.GenerateJWT(userID, identifier, role, schoolID, 7*24*time.Hour)
 	if err != nil {
 		return "", "", err
 	}
 	return accessToken, refreshToken, nil
+}
+
+// schoolIDClaim converts a user's possibly-nil SchoolID into the plain
+// string GenerateJWT signs as the "school_id" claim ("" means no school -
+// e.g. models.RolePlatformOwner).
+func schoolIDClaim(user *models.User) string {
+	if user == nil || user.SchoolID == nil {
+		return ""
+	}
+	return *user.SchoolID
 }
 
 func (s *AuthService) sendOTPEmail(emailAddr, code, otpType string) {
@@ -653,7 +742,17 @@ func (s *AuthService) sendOTPEmail(emailAddr, code, otpType string) {
 // SUBSCRIPTION CHECK METHOD
 // ============================================
 
-// CheckSubscription checks the subscription status for a user's school
+// CheckSubscription checks the subscription status for a user's school.
+// schoolID is always derived server-side from the caller's own record
+// (never a client-supplied value, and there is no such parameter on
+// this endpoint to begin with) - a student's own student record, a
+// teacher/admin/super_admin's own user.SchoolID, or a parent's own
+// children's school. super_admin was missing from that resolution
+// (grouped with teacher/admin, both of which set user.SchoolID the
+// same way) even though it is - like them - a school-level role, not
+// platform_owner's cross-tenant tier; that gap failed closed
+// ("unsupported user role") rather than leaking anything, but meant a
+// super_admin couldn't check their own school's subscription at all.
 func (s *AuthService) CheckSubscription(userID string) (*dto.SubscriptionCheckResponse, error) {
 	// Get user
 	user, err := s.repo.FindUserByID(userID)
@@ -672,7 +771,7 @@ func (s *AuthService) CheckSubscription(userID string) (*dto.SubscriptionCheckRe
 		}
 		schoolID = student.SchoolID
 
-	case models.RoleTeacher, models.RoleAdmin:
+	case models.RoleTeacher, models.RoleAdmin, models.RoleSuperAdmin:
 		if user.SchoolID == nil {
 			return nil, errors.New("user not associated with any school")
 		}
@@ -776,10 +875,17 @@ func (s *AuthService) GetAuthStatus(userID string) (*dto.AuthStatusResponse, err
             response.SchoolID = &school.ID
             response.SchoolStatus = string(school.Status)
             response.SchoolName = school.Name
+            response.ApplicationName = school.ApplicationName
+            response.PrimaryColor = school.PrimaryColor
+            response.SecondaryColor = school.SecondaryColor
+            response.Logo = school.Logo
         }
 
-        // ✅ ONLY ADMIN sees subscription
-        if user.Role == models.RoleAdmin {
+        // School-level admins see subscription status: both admin and
+        // super_admin manage their own school's subscription (same
+        // schoolID-scoped access this codebase grants them everywhere
+        // else - see the /admin route group's RoleMiddleware list).
+        if user.Role == models.RoleAdmin || user.Role == models.RoleSuperAdmin {
             sub, err := s.subscriptionRepo.FindCurrentBySchool(*user.SchoolID)
             if err == nil && sub != nil {
                 response.HasSubscription = true
@@ -802,7 +908,10 @@ func (s *AuthService) GetAuthStatus(userID string) (*dto.AuthStatusResponse, err
 func (s *AuthService) getDashboardRoute(role string) string {
     switch role {
     case "super_admin":
-        return "/dashboard/super-admin"
+        // Shares the admin dashboard page - there is no separate
+        // /dashboard/super_admin or /dashboard/super-admin route in the
+        // frontend (see src/app/dashboard/ directory listing).
+        return "/dashboard/admin"
     case "admin":
         return "/dashboard/admin"
     case "teacher":

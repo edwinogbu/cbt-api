@@ -14,6 +14,7 @@ import (
 
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/cbt/repository"
+	"cbt-api/internal/grading"
 	"cbt-api/internal/models"
 
 	"github.com/xuri/excelize/v2"
@@ -30,6 +31,7 @@ type ExamService struct {
 	examRepo     *repository.ExamRepository
 	questionRepo *repository.QuestionRepository
 	db           *gorm.DB
+	gradingSvc   *grading.Service
 }
 
 func NewExamService(examRepo *repository.ExamRepository, questionRepo *repository.QuestionRepository, db *gorm.DB) *ExamService {
@@ -37,6 +39,7 @@ func NewExamService(examRepo *repository.ExamRepository, questionRepo *repositor
 		examRepo:     examRepo,
 		questionRepo: questionRepo,
 		db:           db,
+		gradingSvc:   grading.NewService(db),
 	}
 }
 
@@ -48,7 +51,15 @@ func NewExamService(examRepo *repository.ExamRepository, questionRepo *repositor
 // ============================================
 
 // CreateExamWithContext creates an exam with full academic context
-func (s *ExamService) CreateExamWithContext(ctx context.Context, req *dto.CreateExamWithContextRequest) (*dto.ExamWithContextResponse, error) {
+// CreateExamWithContext creates an exam under req.ClassID, which must
+// belong to the caller's own school (see authorizeClassTenant) - without
+// this check, any caller able to reach this endpoint could create an
+// exam under ANY school's class platform-wide, injecting content into a
+// tenant they have no relationship with.
+func (s *ExamService) CreateExamWithContext(ctx context.Context, req *dto.CreateExamWithContextRequest, schoolID string, isPlatformOwner bool) (*dto.ExamWithContextResponse, error) {
+	if err := s.authorizeClassTenant(ctx, req.ClassID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam := &models.Exam{
 		ID:               models.GenerateID(),
 		Title:            req.Title,
@@ -210,7 +221,13 @@ func (s *ExamService) toExamWithContextResponse(ctx context.Context, exam *model
 // BulkAddQuestionsToExam - PRODUCTION READY
 // ============================================
 
-func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string, req *dto.BulkAddQuestionsToExamRequest) error {
+// BulkAddQuestionsToExam has the same pre-existing gap as
+// AddQuestionsToExam - see its doc comment - and the same fix.
+func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string, req *dto.BulkAddQuestionsToExamRequest, schoolID string, isPlatformOwner bool) error {
+    if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+        return err
+    }
+
     // 1. Get the exam with full context
     exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
     if err != nil {
@@ -345,7 +362,16 @@ func (s *ExamService) BulkAddQuestionsToExam(ctx context.Context, examID string,
 
 
 // PreviewExam previews an exam with all questions and statistics
-func (s *ExamService) PreviewExam(ctx context.Context, examID string) (*dto.ExamPreviewResponse, error) {
+// PreviewExam previews an exam with its full question text and options,
+// scoped to the caller's own school (see authorizeExamTenant). Before
+// this fix it had no school check at all, and the route backing it has
+// no role gate beyond AuthMiddleware - any authenticated user, any
+// role, any school, could read the full question content of any exam
+// on the entire platform ahead of it being taken.
+func (s *ExamService) PreviewExam(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (*dto.ExamPreviewResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, questions, err := s.examRepo.FindExamWithQuestionsWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -845,7 +871,12 @@ func (s *ExamService) GetTermlyReportCard(ctx context.Context, studentID, termID
 // ============================================
 
 // CreateExam creates a new exam
-func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest) (*dto.ExamResponse, error) {
+// CreateExam creates an exam under req.ClassID, which must belong to
+// the caller's own school - see CreateExamWithContext's doc comment.
+func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeClassTenant(ctx, req.ClassID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam := &models.Exam{
 		ID:               models.GenerateID(),
 		Title:            req.Title,
@@ -872,8 +903,75 @@ func (s *ExamService) CreateExam(ctx context.Context, req *dto.CreateExamRequest
 	return s.toExamResponse(ctx, exam)
 }
 
-// GetExam gets an exam by ID
-func (s *ExamService) GetExam(ctx context.Context, id string) (*dto.ExamResponse, error) {
+// authorizeExamTenant is the server-side tenant boundary for every
+// single-exam operation reachable by ID from a handler (GetExam,
+// UpdateExam, DeleteExam, PublishExam): it refuses access unless the
+// exam's class belongs to schoolID, EXCEPT for an authenticated
+// platform_owner, who is deliberately not confined to one tenant. Returns
+// a generic "exam not found" on any mismatch - never a distinct
+// "forbidden" - so a user cannot use this to probe whether an exam ID
+// exists in another school.
+//
+// schoolID comes only from middleware.GetSchoolID(c) (the verified JWT
+// claim); isPlatformOwner only from middleware.IsPlatformOwner(c). An
+// empty schoolID on a non-platform-owner caller (e.g. a legacy account
+// seeded with no school) is NOT treated as "unscoped" - it simply never
+// matches any real exam's school and is correctly denied.
+func (s *ExamService) authorizeExamTenant(ctx context.Context, examID, schoolID string, isPlatformOwner bool) error {
+	if isPlatformOwner {
+		return nil
+	}
+	ok, err := s.examRepo.ExamBelongsToSchool(ctx, examID, schoolID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("exam not found")
+	}
+	return nil
+}
+
+// authorizeClassTenant is authorizeExamTenant's counterpart for the
+// teacher-results endpoints (GetTeacherSubjectResults/GetTeacherClassResults/
+// GetSubjectQuestionsForExam), which take a class ID rather than an exam
+// ID and had no school check of any kind - any authenticated caller who
+// knew (or guessed) another school's class ID could pull that class's
+// full student results, or that class's subject question bank.
+func (s *ExamService) authorizeClassTenant(ctx context.Context, classID, schoolID string, isPlatformOwner bool) error {
+	if isPlatformOwner {
+		return nil
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Table("classes").
+		Where("id = ? AND school_id = ? AND deleted_at IS NULL", classID, schoolID).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.New("class not found")
+	}
+	return nil
+}
+
+// examEffectiveSchoolID mirrors questionEffectiveSchoolID: a
+// client-supplied school ID must never independently establish access -
+// only platform_owner's explicit target school is honored; every other
+// caller is always resolved to their own verified JWT school, regardless
+// of what they submit.
+func examEffectiveSchoolID(clientSuppliedSchoolID, ctxSchoolID string, isPlatformOwner bool) string {
+	if isPlatformOwner {
+		return clientSuppliedSchoolID
+	}
+	return ctxSchoolID
+}
+
+// GetExam gets an exam by ID, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) GetExam(ctx context.Context, id, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, id)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -882,8 +980,12 @@ func (s *ExamService) GetExam(ctx context.Context, id string) (*dto.ExamResponse
 	return s.toExamResponse(ctx, exam)
 }
 
-// ListExams lists all exams with pagination
-func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.ExamListResponse, error) {
+// ListExams lists all exams with pagination, scoped to the caller's own
+// school. Before this fix: no school parameter at all, and the route
+// backing this has no role gate beyond AuthMiddleware - any
+// authenticated user of any role, in any school, could list every exam
+// on the entire platform (titles, subjects, schedules, instructions).
+func (s *ExamService) ListExams(ctx context.Context, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -891,7 +993,7 @@ func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.Exam
 		limit = 20
 	}
 
-	exams, total, err := s.examRepo.ListExams(ctx, page, limit)
+	exams, total, err := s.examRepo.ListExams(ctx, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -914,9 +1016,10 @@ func (s *ExamService) ListExams(ctx context.Context, page, limit int) (*dto.Exam
 	}, nil
 }
 
-// ListExamsBySubject lists exams by subject
-func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsBySubject(ctx, subjectID, page, limit)
+// ListExamsBySubject lists exams by subject, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsBySubject(ctx, subjectID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -939,9 +1042,10 @@ func (s *ExamService) ListExamsBySubject(ctx context.Context, subjectID string, 
 	}, nil
 }
 
-// ListExamsByTerm lists exams by term
-func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsByTerm(ctx, termID, page, limit)
+// ListExamsByTerm lists exams by term, scoped to the caller's own school
+// (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsByTerm(ctx, termID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -964,9 +1068,10 @@ func (s *ExamService) ListExamsByTerm(ctx context.Context, termID string, page, 
 	}, nil
 }
 
-// ListExamsBySession lists exams by session
-func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsBySession(ctx, sessionID, page, limit)
+// ListExamsBySession lists exams by session, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsBySession(ctx, sessionID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -989,9 +1094,10 @@ func (s *ExamService) ListExamsBySession(ctx context.Context, sessionID string, 
 	}, nil
 }
 
-// ListExamsByClass lists exams by class
-func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page, limit int) (*dto.ExamListResponse, error) {
-	exams, total, err := s.examRepo.ListExamsByClass(ctx, classID, page, limit)
+// ListExamsByClass lists exams by class, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamListResponse, error) {
+	exams, total, err := s.examRepo.ListExamsByClass(ctx, classID, page, limit, schoolID, isPlatformOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -1014,8 +1120,13 @@ func (s *ExamService) ListExamsByClass(ctx context.Context, classID string, page
 	}, nil
 }
 
-// UpdateExam updates an exam
-func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.UpdateExamRequest) (*dto.ExamResponse, error) {
+// UpdateExam updates an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.UpdateExamRequest, schoolID string, isPlatformOwner bool) (*dto.ExamResponse, error) {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, id)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -1077,8 +1188,12 @@ func (s *ExamService) UpdateExam(ctx context.Context, id string, req *dto.Update
 	return s.toExamResponse(ctx, exam)
 }
 
-// DeleteExam deletes an exam
-func (s *ExamService) DeleteExam(ctx context.Context, id string) error {
+// DeleteExam deletes an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) DeleteExam(ctx context.Context, id, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, id, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	return s.examRepo.DeleteExamWithContext(ctx, id)
 }
 
@@ -1092,7 +1207,18 @@ func (s *ExamService) DeleteExam(ctx context.Context, id string) error {
 // 	return s.examRepo.AddQuestionsToExam(ctx, examID, questionIDs)
 // }
 
-func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, questionIDs []string) error {
+// AddQuestionsToExam adds questions to an exam, scoped to the caller's
+// own school (see authorizeExamTenant). Before this fix it took no
+// school parameter at all - any authenticated caller who knew (or
+// guessed) another school's exam ID could mutate it, provided they also
+// knew a question ID belonging to that exam's own class
+// (ValidateQuestionsForExam already rejects a question from any other
+// class/school).
+func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, questionIDs []string, schoolID string, isPlatformOwner bool) error {
+    if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+        return err
+    }
+
     // Get exam with full context
     exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
     if err != nil {
@@ -1132,13 +1258,27 @@ func (s *ExamService) AddQuestionsToExam(ctx context.Context, examID string, que
     })
 }
 
-// RemoveQuestionFromExam removes a question from an exam
-func (s *ExamService) RemoveQuestionFromExam(ctx context.Context, examID, questionID string) error {
+// RemoveQuestionFromExam removes a question from an exam, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no check of any kind - not even a class/school match on the question
+// itself - so any authenticated caller who knew (or guessed) another
+// school's exam ID and a question ID attached to it could remove it,
+// pure sabotage with no data leak needed to pull off.
+func (s *ExamService) RemoveQuestionFromExam(ctx context.Context, examID, questionID string, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	return s.examRepo.RemoveQuestionFromExamWithContext(ctx, examID, questionID)
 }
 
-// AssignExam assigns an exam to students or a class
-func (s *ExamService) AssignExam(ctx context.Context, examID string, req *dto.AssignExamRequest) error {
+// AssignExam assigns an exam to students or a class, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no school check at all - any authenticated caller could assign
+// another school's exam to arbitrary class/student IDs.
+func (s *ExamService) AssignExam(ctx context.Context, examID string, req *dto.AssignExamRequest, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
 	_, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return errors.New("exam not found")
@@ -1459,6 +1599,27 @@ func (s *ExamService) gradeAnswer(q *models.QuestionBank, submittedText string) 
 	if q.QuestionType == models.QuestionTypeEssay {
 		return false, submittedText
 	}
+	// Every caller passes SelectedAnswer, which SaveAnswerRequest/
+	// BulkAnswerItem constrain to exactly "A"/"B"/"C"/"D" (the option
+	// KEY, not its text) - the same thing CreateQuestionRequest's
+	// modern options+correct_option_keys format stores. A question
+	// created that way (QuestionService explicitly accepts and
+	// validates it as an alternative to the legacy single-string
+	// CorrectAnswer field - see question_service.go's "either
+	// CorrectOptionKeys or CorrectAnswer must be set" checks) left
+	// CorrectAnswer empty, so comparing only against CorrectAnswer here
+	// silently graded every such question's every answer as wrong -
+	// found live via a real seeded exam where 5/5 objectively-correct
+	// answers all scored 0. Check CorrectOptionKeys first; fall back to
+	// the legacy CorrectAnswer field for questions that only set that.
+	if len(q.CorrectOptionKeys) > 0 {
+		for _, key := range q.CorrectOptionKeys {
+			if submittedText == key {
+				return true, ""
+			}
+		}
+		return false, ""
+	}
 	return submittedText == q.CorrectAnswer, ""
 }
 
@@ -1467,12 +1628,18 @@ func (s *ExamService) gradeAnswer(q *models.QuestionBank, submittedText string) 
 // ============================================
 
 // authorizeMarking mirrors QuestionService.authorizeQuestionWrite's
-// class-ownership pattern (admin/super_admin bypass; a teacher must be
-// the assigned teacher of the class the exam belongs to) rather than
-// introducing a separate authorization scheme for marking. ExamService
-// has no injected userRepo/classRepo, so this queries s.db directly,
-// same as several existing methods in this file (e.g.
-// buildStartExamResponse's subject lookup).
+// class-ownership pattern (admin/super_admin/platform_owner bypass; a
+// teacher must be the assigned teacher of the class the exam belongs
+// to) rather than introducing a separate authorization scheme for
+// marking. ExamService has no injected userRepo/classRepo, so this
+// queries s.db directly, same as several existing methods in this file
+// (e.g. buildStartExamResponse's subject lookup).
+//
+// This function only decides role eligibility, never the school
+// boundary - MarkDescriptiveAnswer calls authorizeExamTenant first (the
+// same tenant check GetExam/UpdateExam/DeleteExam use) so admin/
+// super_admin's bypass here is only reached once the exam is already
+// confirmed to belong to the caller's own school.
 func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classID string) error {
 	if markerUserID == "" {
 		return errors.New("unauthorized: user not authenticated")
@@ -1482,7 +1649,7 @@ func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classI
 		return errors.New("unauthorized: user not found")
 	}
 	switch user.Role {
-	case models.RoleAdmin, models.RoleSuperAdmin:
+	case models.RolePlatformOwner, models.RoleAdmin, models.RoleSuperAdmin:
 		return nil
 	case models.RoleTeacher:
 		// fall through to the class-ownership check below
@@ -1503,14 +1670,25 @@ func (s *ExamService) authorizeMarking(ctx context.Context, markerUserID, classI
 }
 
 // GetPendingManualMarking lists essay/descriptive answers awaiting a
-// score, scoped to exams the marker is authorized for: every exam for
-// an admin/super_admin, only exams whose class this teacher owns for a
+// score, scoped to exams the marker is authorized for: every exam in the
+// caller's own school for an admin/super_admin, every school's for an
+// authenticated platform_owner (the one role deliberately not confined
+// to one tenant), only exams whose class this teacher owns for a
 // teacher. A student or any other role gets an authorization error, not
 // an empty list - an empty list would look like "nothing pending"
 // rather than "you can't do this."
-func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID string) (*dto.ListPendingMarkingResponse, error) {
+//
+// Before this fix, admin/super_admin had NO school filter at all here -
+// any school's admin could see every other school's pending essay
+// answers, student names included. schoolID comes only from
+// middleware.GetSchoolID(c); isPlatformOwner only from
+// middleware.IsPlatformOwner(c).
+func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID, schoolID string, isPlatformOwner bool) (*dto.ListPendingMarkingResponse, error) {
 	if markerUserID == "" {
 		return nil, errors.New("unauthorized: user not authenticated")
+	}
+	if schoolID == "" && !isPlatformOwner {
+		return nil, errors.New("unauthorized: no school scope for this account")
 	}
 	var user models.User
 	if err := s.db.WithContext(ctx).Where("id = ?", markerUserID).First(&user).Error; err != nil {
@@ -1540,6 +1718,7 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 			question_bank.marks AS max_marks, exam_attempts.end_time AS submitted_at`).
 		Joins("JOIN exam_attempts ON exam_attempts.id = student_answers.attempt_id").
 		Joins("JOIN exams ON exams.id = exam_attempts.exam_id").
+		Joins("JOIN classes ON classes.id = exams.class_id").
 		Joins("JOIN question_bank ON question_bank.id = student_answers.question_id").
 		Joins("JOIN students ON students.id = exam_attempts.student_id").
 		Joins("JOIN users ON users.id = students.user_id").
@@ -1549,11 +1728,12 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 		Where("exam_attempts.status = ?", string(models.AttemptStatusPendingManualMarking))
 
 	switch user.Role {
+	case models.RolePlatformOwner:
+		// no further scoping - platform_owner sees every school
 	case models.RoleAdmin, models.RoleSuperAdmin:
-		// no further scoping - every school's pending marking is visible
+		q = q.Where("classes.school_id = ?", schoolID)
 	case models.RoleTeacher:
-		q = q.Joins("JOIN classes ON classes.id = exams.class_id").
-			Where("classes.teacher_id = ?", markerUserID)
+		q = q.Where("classes.teacher_id = ?", markerUserID)
 	default:
 		return nil, errors.New("unauthorized: only teachers and admins may view pending marking")
 	}
@@ -1589,7 +1769,7 @@ func (s *ExamService) GetPendingManualMarking(ctx context.Context, markerUserID 
 // after the fact): it always overwrites in place and always recomputes
 // from the authoritative StudentAnswer rows, so there is no
 // incremental/delta math that could double-count or drift.
-func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAnswerRequest, markerUserID string) (*dto.MarkAnswerResponse, error) {
+func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAnswerRequest, markerUserID, schoolID string, isPlatformOwner bool) (*dto.MarkAnswerResponse, error) {
 	answer, err := s.examRepo.FindAnswer(req.AttemptID, req.QuestionID)
 	if err != nil || answer == nil {
 		return nil, errors.New("answer not found")
@@ -1603,6 +1783,17 @@ func (s *ExamService) MarkDescriptiveAnswer(ctx context.Context, req *dto.MarkAn
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, attempt.ExamID)
 	if err != nil {
 		return nil, errors.New("exam not found")
+	}
+
+	// Before authorizeMarking's role check, confirm the exam itself
+	// belongs to the caller's own school (platform_owner exempt) - the
+	// same tenant boundary GetExam/UpdateExam/DeleteExam use. Before
+	// this fix there was no school check anywhere in this call chain, so
+	// any admin/super_admin could mark - and so alter the recorded score
+	// of - another school's exam attempts just by naming their
+	// attempt_id/question_id.
+	if err := s.authorizeExamTenant(ctx, exam.ID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
 	}
 
 	// Unauthorized users cannot mark another school's exams or alter
@@ -2176,7 +2367,7 @@ func (s *ExamService) SubmitExam(ctx context.Context, req *dto.SubmitExamRequest
         ID:          models.GenerateID(),
         ExamID:      lockedAttempt.ExamID,
         StudentID:   lockedAttempt.StudentID,
-        AttemptID:   lockedAttempt.ID,
+        AttemptID:   &lockedAttempt.ID,
         TotalScore:  totalScore,
         Percentage:  percentage,
         Grade:       grade,
@@ -2525,7 +2716,7 @@ func (s *ExamService) SyncOfflineAnswers(ctx context.Context, req *dto.SyncAnswe
             ID:          models.GenerateID(),
             ExamID:      attempt.ExamID,
             StudentID:   attempt.StudentID,
-            AttemptID:   attempt.ID,
+            AttemptID:   &attempt.ID,
             TotalScore:  totalScore,
             Percentage:  percentage,
             Grade:       grade,
@@ -2650,7 +2841,14 @@ func (s *ExamService) GetStudentExamResult(ctx context.Context, studentID, examI
 }
 
 // GetClassResults gets class results for an exam
-func (s *ExamService) GetClassResults(ctx context.Context, examID, classID string, page, limit int) (*dto.ClassResultResponse, error) {
+// GetClassResults reads a class's results for an exam, scoped to the
+// caller's own school (see authorizeExamTenant). Before this fix it had
+// no school check at all - a real student-privacy leak (names, scores,
+// pass/fail) across tenants, not just metadata.
+func (s *ExamService) GetClassResults(ctx context.Context, examID, classID string, page, limit int, schoolID string, isPlatformOwner bool) (*dto.ClassResultResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -2719,7 +2917,12 @@ func (s *ExamService) GetClassResults(ctx context.Context, examID, classID strin
 }
 
 // GetExamRankings gets exam rankings
-func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit int) (*dto.ExamRankingResponse, error) {
+// GetExamRankings has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit int, schoolID string, isPlatformOwner bool) (*dto.ExamRankingResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, errors.New("exam not found")
@@ -2759,7 +2962,12 @@ func (s *ExamService) GetExamRankings(ctx context.Context, examID string, limit 
 }
 
 // GetExamStatistics gets exam statistics
-func (s *ExamService) GetExamStatistics(ctx context.Context, examID string) (*dto.ExamStatisticsResponse, error) {
+// GetExamStatistics has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamStatistics(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (*dto.ExamStatisticsResponse, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	stats, err := s.examRepo.GetExamStatistics(ctx, examID)
 	if err != nil {
 		return nil, err
@@ -2873,8 +3081,17 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	totalMarks := 0
 	passed := 0
 
+	school, err := s.getSchoolByID(ctx, student.SchoolID)
+	if err != nil {
+		return nil, err
+	}
+	class, err := s.getClassByID(ctx, student.ClassID)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, subject := range subjects {
-		subjectResult, err := s.buildSubjectTermlyResult(ctx, studentID, subject.ID, results)
+		subjectResult, err := s.buildSubjectTermlyResult(ctx, studentID, subject.ID, student.SchoolID, class.ClassLevelID, results)
 		if err != nil {
 			continue
 		}
@@ -2890,7 +3107,8 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	if totalMarks > 0 {
 		overallPercentage = float64(totalScore) / float64(totalMarks) * 100
 	}
-	overallGrade, overallGP, _ := dto.GetGrade(overallPercentage)
+	overallGradeResult := s.gradingSvc.ComputeGrade(ctx, student.SchoolID, class.ClassLevelID, overallPercentage)
+	overallGrade, overallGP := overallGradeResult.Grade, overallGradeResult.GradePoint
 
 	// Get term and session info
 	term, err := s.getTermByID(ctx, termID)
@@ -2898,14 +3116,6 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 		return nil, err
 	}
 	session, err := s.getSessionByID(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	school, err := s.getSchoolByID(ctx, student.SchoolID)
-	if err != nil {
-		return nil, err
-	}
-	class, err := s.getClassByID(ctx, student.ClassID)
 	if err != nil {
 		return nil, err
 	}
@@ -2934,8 +3144,11 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 			Name: session.Name,
 		},
 		School: dto.SchoolInfo{
-			ID:   school.ID,
-			Name: school.Name,
+			ID:           school.ID,
+			Name:         school.Name,
+			Address:      school.Address,
+			Logo:         school.Logo,
+			PrimaryColor: school.PrimaryColor,
 		},
 		Subjects: subjectResults,
 		Summary: dto.TermlySummary{
@@ -2956,9 +3169,15 @@ func (s *ExamService) GetStudentTermlyResult(ctx context.Context, studentID, ter
 	}, nil
 }
 
-// buildSubjectTermlyResult builds a subject's termly result
-func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, subjectID string, allResults []models.Result) (dto.SubjectTermlyResult, error) {
+// buildSubjectTermlyResult builds a subject's termly result. Percentage
+// and grade are resolved through the shared grading/assessment engine
+// (internal/grading): a school/class-level with no configured
+// AssessmentScheme or GradingScale gets the exact pre-existing behavior
+// (plain pooled score/marks sum, builtin grade boundaries) - these calls
+// only change output for a school that has explicitly configured one.
+func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, subjectID, schoolID, classLevelID string, allResults []models.Result) (dto.SubjectTermlyResult, error) {
 	var subjectResults []dto.ExamResultItem
+	var scoredExams []grading.ScoredExam
 	totalScore := 0
 	totalMarks := 0
 
@@ -2971,30 +3190,71 @@ func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, s
 			continue
 		}
 
+		// examScore/examMarks combine the objective/CBT score with a
+		// paper-theory score when this exam has one configured
+		// (Exam.TheoryMaxMarks). A theory-required exam whose
+		// TheoryScore hasn't been entered yet is skipped entirely (not
+		// appended below) - per spec, "the combined examination result
+		// must remain incomplete when theory is required" until the
+		// teacher enters it, never shown as a partial/zero score.
+		examScore, examMarks := result.TotalScore, exam.TotalMarks
+		examPercentage, examGrade := result.Percentage, result.Grade
+		if exam.TheoryMaxMarks != nil {
+			if result.TheoryScore == nil {
+				continue
+			}
+			examScore += *result.TheoryScore
+			examMarks += *exam.TheoryMaxMarks
+			// result.Percentage/Grade were computed (at CBT-submission
+			// time) from the objective score alone - stale once theory
+			// is added, so recompute through the same authoritative
+			// engine every other grade in this function uses, rather
+			// than a second ad-hoc formula.
+			if examMarks > 0 {
+				examPercentage = float64(examScore) / float64(examMarks) * 100
+			} else {
+				examPercentage = 0
+			}
+			examGrade = s.gradingSvc.ComputeGrade(ctx, schoolID, classLevelID, examPercentage).Grade
+		}
+
 		subjectResults = append(subjectResults, dto.ExamResultItem{
 			ExamID:     result.ExamID,
 			ExamTitle:  exam.Title,
 			ExamType:   exam.ExamType,
-			Score:      result.TotalScore,
-			TotalMarks: exam.TotalMarks,
-			Percentage: result.Percentage,
-			Grade:      result.Grade,
+			Score:      examScore,
+			TotalMarks: examMarks,
+			Percentage: examPercentage,
+			Grade:      examGrade,
 			Date:       result.CreatedAt,
 		})
-		totalScore += result.TotalScore
-		totalMarks += exam.TotalMarks
+		scoredExams = append(scoredExams, grading.ScoredExam{
+			ExamType:    exam.ExamType,
+			TotalMarks:  examMarks,
+			TotalScore:  examScore,
+			FullyGraded: result.FullyGraded,
+		})
+		totalScore += examScore
+		totalMarks += examMarks
 	}
 
-	percentage := 0.0
-	if totalMarks > 0 {
-		percentage = float64(totalScore) / float64(totalMarks) * 100
-	}
-	grade, gp, remark := dto.GetGrade(percentage)
+	scheme := s.gradingSvc.ResolveScheme(ctx, schoolID, classLevelID, subjectID)
+	assessment := grading.ComputeSubjectAssessment(scheme, scoredExams)
+	gradeResult := s.gradingSvc.ComputeGrade(ctx, schoolID, classLevelID, assessment.TotalPercent)
+	percentage, grade, gp, remark := assessment.TotalPercent, gradeResult.Grade, gradeResult.GradePoint, gradeResult.Remark
 
 	// Get subject info
 	subject, err := s.questionRepo.GetSubjectByID(ctx, subjectID)
 	if err != nil {
 		return dto.SubjectTermlyResult{}, err
+	}
+
+	components := make([]dto.SubjectComponentResult, len(assessment.Components))
+	for i, c := range assessment.Components {
+		components[i] = dto.SubjectComponentResult{
+			Code: c.Code, Name: c.Name, Weight: c.Weight,
+			Percentage: c.Percentage, HasResults: c.HasResults,
+		}
 	}
 
 	return dto.SubjectTermlyResult{
@@ -3003,13 +3263,16 @@ func (s *ExamService) buildSubjectTermlyResult(ctx context.Context, studentID, s
 			Name: subject.Name,
 			Code: subject.Code,
 		},
-		Exams:       subjectResults,
-		TotalScore:  totalScore,
-		TotalMarks:  totalMarks,
-		Percentage:  percentage,
-		Grade:       grade,
-		GradePoint:  gp,
-		Remarks:     remark,
+		Exams:         subjectResults,
+		TotalScore:    totalScore,
+		TotalMarks:    totalMarks,
+		Percentage:    percentage,
+		Grade:         grade,
+		GradePoint:    gp,
+		Remarks:       remark,
+		Components:    components,
+		IsComplete:    assessment.IsComplete,
+		IsProvisional: assessment.IsProvisional,
 	}, nil
 }
 
@@ -3200,6 +3463,147 @@ func (s *ExamService) getSessionByID(ctx context.Context, id string) (*models.Ac
 	return &session, err
 }
 
+// findNextTermStart resolves a real "next term begins" date for a
+// report card's footer - the term after currentTerm within the same
+// session, or term 1 of the next academic session (by StartDate, same
+// school) if currentTerm is that session's last term. Returns nil
+// rather than guessing when no such term/session has been created yet;
+// a report card must show "not yet scheduled", never a fabricated date.
+func (s *ExamService) findNextTermStart(ctx context.Context, currentTerm *models.Term) *time.Time {
+	var nextTerm models.Term
+	if err := s.db.WithContext(ctx).
+		Where("session_id = ? AND term_number = ?", currentTerm.SessionID, currentTerm.TermNumber+1).
+		First(&nextTerm).Error; err == nil {
+		return &nextTerm.StartDate
+	}
+
+	var currentSession models.AcademicSession
+	if err := s.db.WithContext(ctx).Where("id = ?", currentTerm.SessionID).First(&currentSession).Error; err != nil {
+		return nil
+	}
+	var nextSession models.AcademicSession
+	if err := s.db.WithContext(ctx).
+		Where("school_id = ? AND start_date > ?", currentSession.SchoolID, currentSession.StartDate).
+		Order("start_date ASC").
+		First(&nextSession).Error; err != nil {
+		return nil
+	}
+	if err := s.db.WithContext(ctx).
+		Where("session_id = ? AND term_number = ?", nextSession.ID, 1).
+		First(&nextTerm).Error; err != nil {
+		return nil
+	}
+	return &nextTerm.StartDate
+}
+
+// getReportCardRemark fetches a student's persisted teacher/principal
+// remark for one term, or nil if none has been entered yet (every real
+// report card looked at before this method existed had these hardcoded
+// to "").
+func (s *ExamService) getReportCardRemark(ctx context.Context, studentID, termID, sessionID string) *models.ReportCardRemark {
+	var remark models.ReportCardRemark
+	if err := s.db.WithContext(ctx).
+		Where("student_id = ? AND term_id = ? AND session_id = ?", studentID, termID, sessionID).
+		First(&remark).Error; err != nil {
+		return nil
+	}
+	return &remark
+}
+
+// setReportCardRemark upserts the teacher or principal half of a
+// student's report-card remark. schoolID must already be the caller's
+// own resolved tenant (middleware.ResolveSchoolID) - this only re-checks
+// that the named student actually belongs to it, the same tenant
+// boundary every other report-card write path in this file enforces.
+func (s *ExamService) setReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest, isTeacher bool) error {
+	student, err := s.examRepo.GetStudentByID(ctx, req.StudentID)
+	if err != nil {
+		return errors.New("student not found")
+	}
+	if student.SchoolID != schoolID {
+		return errors.New("student does not belong to your school")
+	}
+
+	var remark models.ReportCardRemark
+	err = s.db.WithContext(ctx).
+		Where("student_id = ? AND term_id = ? AND session_id = ?", req.StudentID, req.TermID, req.SessionID).
+		First(&remark).Error
+	if err == gorm.ErrRecordNotFound {
+		remark = models.ReportCardRemark{
+			ID: models.GenerateID(), SchoolID: schoolID,
+			StudentID: req.StudentID, TermID: req.TermID, SessionID: req.SessionID,
+		}
+	} else if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	if isTeacher {
+		remark.TeacherRemark = req.Remark
+		remark.TeacherID = &actorUserID
+		remark.TeacherSetAt = &now
+		if req.Conduct != "" {
+			remark.Conduct = req.Conduct
+		}
+	} else {
+		remark.PrincipalRemark = req.Remark
+		remark.PrincipalID = &actorUserID
+		remark.PrincipalSetAt = &now
+	}
+	return s.db.WithContext(ctx).Save(&remark).Error
+}
+
+// SetTeacherReportCardRemark records a class teacher's comment (and
+// optionally conduct) on a student's termly report card.
+func (s *ExamService) SetTeacherReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest) error {
+	return s.setReportCardRemark(ctx, schoolID, actorUserID, req, true)
+}
+
+// SetPrincipalReportCardRemark records the principal/admin's comment on
+// a student's termly report card.
+func (s *ExamService) SetPrincipalReportCardRemark(ctx context.Context, schoolID, actorUserID string, req *dto.SetReportCardRemarkRequest) error {
+	return s.setReportCardRemark(ctx, schoolID, actorUserID, req, false)
+}
+
+// PreviewTermlyReportCard builds a Main Termly Report Card response
+// carrying the caller's OWN school's real, configured identity (name,
+// address, logo, brand color - models.School) so a school admin can
+// see their own template rendered before any real student is
+// involved. Every student/subject/score field is explicit illustrative
+// sample data, not a real student's record - the same convention the
+// reference design itself uses ("SAMPLE TEMPLATE - replace sample
+// details with school-approved data"), never real academic records.
+func (s *ExamService) PreviewTermlyReportCard(ctx context.Context, schoolID string) (*dto.TermlyReportCardResponse, error) {
+	school, err := s.getSchoolByID(ctx, schoolID)
+	if err != nil {
+		return nil, errors.New("school not found")
+	}
+
+	nextTerm := time.Now().AddDate(0, 4, 0)
+	return &dto.TermlyReportCardResponse{
+		School: dto.SchoolInfo{
+			ID: school.ID, Name: school.Name, Address: school.Address,
+			Logo: school.Logo, PrimaryColor: school.PrimaryColor,
+		},
+		Student: dto.StudentInfo{Name: "Sample Student", AdmissionNumber: "SAMPLE/0000"},
+		Class:   dto.ClassInfo{Name: "Sample Class", ClassTeacher: "Sample Teacher"},
+		Term:    dto.TermInfo{Name: "Sample Term", Number: 1},
+		Session: dto.SessionInfo{Name: "Sample Session"},
+		Subjects: []dto.ReportCardSubject{
+			{SubjectName: "Sample Subject A", SubjectCode: "SMPA", TotalScore: 82, Percentage: 82, Grade: "A", Position: 1, ClassAverage: 65, Remarks: "Excellent", IsComplete: true},
+			{SubjectName: "Sample Subject B", SubjectCode: "SMPB", TotalScore: 68, Percentage: 68, Grade: "B", Position: 5, ClassAverage: 60, Remarks: "Good", IsComplete: true},
+		},
+		Summary: dto.ReportCardSummary{
+			TotalSubjects: 2, TotalScore: 150, TotalMarks: 200, OverallPercentage: 75, OverallGrade: "B",
+			NumberPassed: 2, ClassPosition: 1, TotalStudentsInClass: 1,
+		},
+		TeacherRemarks:   "Sample class teacher comment.",
+		PrincipalRemarks: "Sample principal comment.",
+		Conduct:          "Good",
+		NextTermBegins:   &nextTerm,
+	}, nil
+}
+
 // getSchoolByID gets a school by ID
 func (s *ExamService) getSchoolByID(ctx context.Context, id string) (*models.School, error) {
 	var school models.School
@@ -3217,8 +3621,41 @@ func (s *ExamService) getClassByID(ctx context.Context, id string) (*models.Clas
 	return &class, err
 }
 
+// resolveClassWithTeacher is the shared version of the inline class
+// lookup GetReportCardForUser already does (display name + real
+// assigned teacher's name + class level ID, all real data, empty
+// strings when the class or teacher isn't resolvable) - used by the
+// Mid-Term and Promotion report paths too so they report the same real
+// class teacher name instead of leaving it blank by using
+// getClassByID, which doesn't preload Teacher at all.
+func (s *ExamService) resolveClassWithTeacher(ctx context.Context, classID string) (displayName, teacherName, classLevelID string) {
+	if classID == "" {
+		return "", "", ""
+	}
+	var class models.Class
+	if err := s.db.WithContext(ctx).
+		Preload("ClassLevel").
+		Preload("ClassArm").
+		Preload("Teacher").
+		Where("id = ?", classID).
+		First(&class).Error; err != nil {
+		return "", "", ""
+	}
+	displayName = models.GetClassDisplayName(&class)
+	classLevelID = class.ClassLevelID
+	if class.Teacher != nil {
+		teacherName = strings.TrimSpace(class.Teacher.FirstName + " " + class.Teacher.LastName)
+	}
+	return displayName, teacherName, classLevelID
+}
+
 // ExportExamResults exports exam results to CSV or Excel
-func (s *ExamService) ExportExamResults(ctx context.Context, examID, classID, format string) ([]byte, string, error) {
+// ExportExamResults has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) ExportExamResults(ctx context.Context, examID, classID, format string, schoolID string, isPlatformOwner bool) ([]byte, string, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, "", err
+	}
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return nil, "", errors.New("exam not found")
@@ -3304,7 +3741,12 @@ func (s *ExamService) exportToExcel(attempts []models.ExamAttempt, exam *models.
 // ============================================
 
 // GetExamAssignments gets assignments for an exam
-func (s *ExamService) GetExamAssignments(ctx context.Context, examID string) (interface{}, error) {
+// GetExamAssignments has the same pre-existing gap as GetClassResults -
+// see its doc comment - and the same fix.
+func (s *ExamService) GetExamAssignments(ctx context.Context, examID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	assignments, err := s.examRepo.FindAssignmentsByExamWithContext(ctx, examID)
 	if err != nil {
 		return nil, err
@@ -3312,10 +3754,18 @@ func (s *ExamService) GetExamAssignments(ctx context.Context, examID string) (in
 	return assignments, nil
 }
 
-// GetStudentPerformance gets student performance overview
-func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID string) (*dto.StudentPerformanceResponse, error) {
+// GetStudentPerformance gets student performance overview, scoped to
+// the caller's own school. Before this fix, studentID (taken straight
+// from the URL path - see the handler) had no check against the
+// caller's identity or school at all: any authenticated caller, from
+// any school, could pull any student's full exam performance history
+// platform-wide just by supplying their ID.
+func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID, schoolID string, isPlatformOwner bool) (*dto.StudentPerformanceResponse, error) {
 	student, err := s.examRepo.GetStudentByID(ctx, studentID)
 	if err != nil {
+		return nil, errors.New("student not found")
+	}
+	if !isPlatformOwner && student.SchoolID != schoolID {
 		return nil, errors.New("student not found")
 	}
 
@@ -3410,8 +3860,13 @@ func (s *ExamService) GetStudentPerformance(ctx context.Context, studentID strin
 	}, nil
 }
 
-// GetTeacherSubjectResults gets subject results for a teacher
-func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, classID string) (interface{}, error) {
+// GetTeacherSubjectResults gets subject results for a teacher, scoped
+// to the caller's own school (see authorizeClassTenant). Before this
+// fix it had no school check at all.
+func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, classID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	attempts, err := s.examRepo.GetTeacherSubjectResults(ctx, subjectID, classID)
 	if err != nil {
 		return nil, err
@@ -3450,8 +3905,12 @@ func (s *ExamService) GetTeacherSubjectResults(ctx context.Context, subjectID, c
 	return studentResults, nil
 }
 
-// GetTeacherClassResults gets class results for a teacher
-func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subjectID string) (interface{}, error) {
+// GetTeacherClassResults has the same pre-existing gap as
+// GetTeacherSubjectResults - see its doc comment - and the same fix.
+func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subjectID string, schoolID string, isPlatformOwner bool) (interface{}, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	attempts, err := s.examRepo.GetTeacherClassResults(ctx, classID, subjectID)
 	if err != nil {
 		return nil, err
@@ -3486,8 +3945,18 @@ func (s *ExamService) GetTeacherClassResults(ctx context.Context, classID, subje
 	}, nil
 }
 
-// GetSchoolPerformanceOverview gets school performance overview
-func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, schoolID string) (interface{}, error) {
+// GetSchoolPerformanceOverview gets school performance overview. Before
+// this fix, the client-supplied schoolID was trusted outright with no
+// comparison to the caller's own verified school at all - exactly the
+// "tenant ID supplied by a client independently establishes access"
+// pattern this engagement's mandate singles out. Now resolved via
+// examEffectiveSchoolID: a non-platform-owner's requested schoolID is
+// ignored entirely in favor of their own ctxSchoolID.
+func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, requestedSchoolID, ctxSchoolID string, isPlatformOwner bool) (interface{}, error) {
+	schoolID := examEffectiveSchoolID(requestedSchoolID, ctxSchoolID, isPlatformOwner)
+	if schoolID == "" {
+		return nil, errors.New("school id required")
+	}
 	stats, err := s.examRepo.GetSchoolPerformanceOverview(ctx, schoolID)
 	if err != nil {
 		return nil, err
@@ -3495,8 +3964,15 @@ func (s *ExamService) GetSchoolPerformanceOverview(ctx context.Context, schoolID
 	return stats, nil
 }
 
-// GetSubjectQuestionsForExam gets subject questions for exam creation
-func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, classID string) (*dto.SubjectQuestionsResponse, error) {
+// GetSubjectQuestionsForExam gets subject questions for exam creation,
+// scoped to the caller's own school via the class ID (see
+// authorizeClassTenant). Before this fix it had no school check at all -
+// a real question-bank content leak (text, options) cross-tenant, the
+// same class of issue PreviewExam had.
+func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID, termID, sessionID, classID string, schoolID string, isPlatformOwner bool) (*dto.SubjectQuestionsResponse, error) {
+	if err := s.authorizeClassTenant(ctx, classID, schoolID, isPlatformOwner); err != nil {
+		return nil, err
+	}
 	// Get subject
 	subject, err := s.questionRepo.GetSubjectByID(ctx, subjectID)
 	if err != nil {
@@ -3576,7 +4052,13 @@ func (s *ExamService) GetSubjectQuestionsForExam(ctx context.Context, subjectID,
 }
 
 // PublishExam publishes an exam
-func (s *ExamService) PublishExam(ctx context.Context, examID string) error {
+// PublishExam publishes an exam, scoped to the caller's own school (see
+// authorizeExamTenant).
+func (s *ExamService) PublishExam(ctx context.Context, examID, schoolID string, isPlatformOwner bool) error {
+	if err := s.authorizeExamTenant(ctx, examID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
+
 	exam, err := s.examRepo.FindExamByIDWithContext(ctx, examID)
 	if err != nil {
 		return errors.New("exam not found")
@@ -4785,6 +5267,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
 
     // ✅ FIX: Get class display name for the response
     classDisplayName := ""
+    classLevelID := ""
     if student.ClassID != "" {
         var class models.Class
         if err := s.db.WithContext(ctx).
@@ -4793,6 +5276,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
             Where("id = ?", student.ClassID).
             First(&class).Error; err == nil {
             classDisplayName = models.GetClassDisplayName(&class)
+            classLevelID = class.ClassLevelID
         }
     }
 
@@ -4829,7 +5313,7 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     passed := 0
 
     for _, subject := range subjects {
-        subjectResult, err := s.buildSubjectTermlyResult(ctx, student.ID, subject.ID, results)
+        subjectResult, err := s.buildSubjectTermlyResult(ctx, student.ID, subject.ID, student.SchoolID, classLevelID, results)
         if err != nil {
             continue
         }
@@ -4846,7 +5330,8 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     if totalMarks > 0 {
         overallPercentage = float64(totalScore) / float64(totalMarks) * 100
     }
-    overallGrade, overallGP, _ := dto.GetGrade(overallPercentage)
+    overallGradeResult := s.gradingSvc.ComputeGrade(ctx, student.SchoolID, classLevelID, overallPercentage)
+    overallGrade, overallGP := overallGradeResult.Grade, overallGradeResult.GradePoint
 
     // ✅ Return with class name properly populated
     return &dto.TermlyResultResponse{
@@ -4873,8 +5358,11 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
             Name: session.Name,
         },
         School: dto.SchoolInfo{
-            ID:   school.ID,
-            Name: school.Name,
+            ID:           school.ID,
+            Name:         school.Name,
+            Address:      school.Address,
+            Logo:         school.Logo,
+            PrimaryColor: school.PrimaryColor,
         },
         Subjects: subjectResults,
         Summary: dto.TermlySummary{
@@ -4895,36 +5383,42 @@ func (s *ExamService) GetTermlyResultForUser(ctx context.Context, termID, sessio
     }, nil
 }
 
-// // GetReportCardForUser gets report card for authenticated student
-// func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionID, userID string) (*dto.TermlyReportCardResponse, error) {
-//     student, err := s.examRepo.GetStudentByUserID(ctx, userID)
-//     if err != nil {
-//         return nil, errors.New("student not found")
-//     }
-//     return s.GetTermlyReportCard(ctx, student.ID, termID, sessionID)
-// }
-
-
 // ============================================
 // GetReportCardForUser gets report card for authenticated student
 // ============================================
 func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionID, userID string) (*dto.TermlyReportCardResponse, error) {
-    // Get student from user ID
     student, err := s.examRepo.GetStudentByUserID(ctx, userID)
     if err != nil {
         return nil, errors.New("student not found")
     }
+    return s.GetTermlyReportCardForStudent(ctx, student, termID, sessionID)
+}
 
+// GetTermlyReportCardForStudent builds the Main Termly Academic Report
+// Card for an already-resolved student - the shared builder behind
+// GetReportCardForUser (student-self, which resolves student from a
+// userID first) and the batch/admin report-card paths
+// (collectClassReportCards), which already have a *models.Student from
+// a class roster and have no userID to resolve one from at all. Named
+// distinctly from the pre-existing, unrouted GetTermlyReportCard(ctx,
+// studentID string, ...) above (dead code with no school/tenant check -
+// out of this change's scope to touch) to avoid colliding with it.
+func (s *ExamService) GetTermlyReportCardForStudent(ctx context.Context, student *models.Student, termID, sessionID string) (*dto.TermlyReportCardResponse, error) {
     // ✅ FIX: Get class display name with proper preload
     classDisplayName := ""
+    classTeacherName := ""
     if student.ClassID != "" {
         var class models.Class
         if err := s.db.WithContext(ctx).
             Preload("ClassLevel").
             Preload("ClassArm").
+            Preload("Teacher").
             Where("id = ?", student.ClassID).
             First(&class).Error; err == nil {
             classDisplayName = models.GetClassDisplayName(&class)
+            if class.Teacher != nil {
+                classTeacherName = strings.TrimSpace(class.Teacher.FirstName + " " + class.Teacher.LastName)
+            }
         }
     }
 
@@ -4952,24 +5446,38 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
     reportCardSubjects := make([]dto.ReportCardSubject, 0, len(termlyResult.Subjects))
     for _, subject := range termlyResult.Subjects {
         reportCardSubjects = append(reportCardSubjects, dto.ReportCardSubject{
-            SubjectName:  subject.Subject.Name,
-            SubjectCode:  subject.Subject.Code,
-            TotalScore:   subject.TotalScore,
-            Grade:        subject.Grade,
-            GradePoint:   subject.GradePoint,
-            Position:     subject.Position,
-            ClassAverage: subject.ClassAverage,
-            HighestScore: subject.HighestScore,
-            LowestScore:  subject.LowestScore,
-            Remarks:      subject.Remarks,
+            SubjectName:   subject.Subject.Name,
+            SubjectCode:   subject.Subject.Code,
+            TotalScore:    subject.TotalScore,
+            Percentage:    subject.Percentage,
+            Grade:         subject.Grade,
+            GradePoint:    subject.GradePoint,
+            Position:      subject.Position,
+            ClassAverage:  subject.ClassAverage,
+            HighestScore:  subject.HighestScore,
+            LowestScore:   subject.LowestScore,
+            Remarks:       subject.Remarks,
+            Components:    subject.Components,
+            IsComplete:    subject.IsComplete,
+            IsProvisional: subject.IsProvisional,
         })
+    }
+
+    teacherRemarks, principalRemarks, conduct := "", "", ""
+    if remark := s.getReportCardRemark(ctx, student.ID, termID, sessionID); remark != nil {
+        teacherRemarks = remark.TeacherRemark
+        principalRemarks = remark.PrincipalRemark
+        conduct = remark.Conduct
     }
 
     // ✅ Return with class name properly populated
     return &dto.TermlyReportCardResponse{
         School: dto.SchoolInfo{
-            ID:   termlyResult.School.ID,
-            Name: termlyResult.School.Name,
+            ID:           termlyResult.School.ID,
+            Name:         termlyResult.School.Name,
+            Address:      termlyResult.School.Address,
+            Logo:         termlyResult.School.Logo,
+            PrimaryColor: termlyResult.School.PrimaryColor,
         },
         Student: dto.StudentInfo{
             ID:              student.ID,
@@ -4981,8 +5489,9 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
             SchoolID:        student.SchoolID,
         },
         Class: dto.ClassInfo{
-            ID:   student.ClassID,
-            Name: classDisplayName, // ✅ FIXED
+            ID:           student.ClassID,
+            Name:         classDisplayName, // ✅ FIXED
+            ClassTeacher: classTeacherName,
         },
         Term: dto.TermInfo{
             ID:     term.ID,
@@ -5008,9 +5517,23 @@ func (s *ExamService) GetReportCardForUser(ctx context.Context, termID, sessionI
             BestPerformingSubject: termlyResult.Summary.BestPerformingSubject,
             WorstPerformingSubject: termlyResult.Summary.WorstPerformingSubject,
         },
-        TeacherRemarks:   "",
-        PrincipalRemarks: "",
-        NextTermBegins:   nil,
+        TeacherRemarks:   teacherRemarks,
+        PrincipalRemarks: principalRemarks,
+        Conduct:          conduct,
+        NextTermBegins:   s.findNextTermStart(ctx, term),
+        // nil (not a zero-valued struct) until this class/term has had
+        // at least one day's register taken - "0 days open, 0 present,
+        // 0 absent" would be indistinguishable from a real student who
+        // was absent every single day, so the frontend's own "not
+        // available" fallback (rather than a misleading all-zero table)
+        // depends on this staying nil until real attendance exists.
+        Attendance: func() *dto.AttendanceSummary {
+            present, absent, open, aErr := s.attendanceSummary(ctx, student.ID, student.ClassID, termID)
+            if aErr != nil || open == 0 {
+                return nil
+            }
+            return &dto.AttendanceSummary{DaysPresent: present, DaysAbsent: absent, DaysSchoolOpen: open}
+        }(),
     }, nil
 }
 

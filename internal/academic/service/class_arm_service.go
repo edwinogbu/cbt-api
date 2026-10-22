@@ -27,9 +27,14 @@ func NewClassArmService(repo *repository.ClassArmRepository) *ClassArmService {
 // ============================================
 
 // Create creates a new class arm
-func (s *ClassArmService) Create(req *dto.CreateClassArmRequest) (*dto.ClassArmResponse, error) {
+func (s *ClassArmService) Create(req *dto.CreateClassArmRequest, schoolID string, isPlatformOwner bool) (*dto.ClassArmResponse, error) {
+    effectiveID := effectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+    if effectiveID == "" {
+        return nil, ErrSchoolScopeRequired
+    }
+
     // Validate unique name per school
-    exists, err := s.repo.ExistsByName(req.SchoolID, req.Name)
+    exists, err := s.repo.ExistsByName(effectiveID, req.Name)
     if err != nil {
         return nil, fmt.Errorf("failed to check name uniqueness: %w", err)
     }
@@ -39,7 +44,7 @@ func (s *ClassArmService) Create(req *dto.CreateClassArmRequest) (*dto.ClassArmR
 
     // Validate unique code per school (if code provided)
     if req.ArmCode != "" {
-        exists, err := s.repo.ExistsByCode(req.SchoolID, req.ArmCode)
+        exists, err := s.repo.ExistsByCode(effectiveID, req.ArmCode)
         if err != nil {
             return nil, fmt.Errorf("failed to check code uniqueness: %w", err)
         }
@@ -50,7 +55,7 @@ func (s *ClassArmService) Create(req *dto.CreateClassArmRequest) (*dto.ClassArmR
 
     arm := &models.ClassArm{
         ID:         uuid.New().String(),
-        SchoolID:   req.SchoolID,
+        SchoolID:   effectiveID,
         Name:       req.Name,
         ArmCode:    req.ArmCode,
         Capacity:   req.Capacity,
@@ -69,7 +74,7 @@ func (s *ClassArmService) Create(req *dto.CreateClassArmRequest) (*dto.ClassArmR
 }
 
 // GetByID retrieves a class arm by ID
-func (s *ClassArmService) GetByID(id string) (*dto.ClassArmResponse, error) {
+func (s *ClassArmService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.ClassArmResponse, error) {
     if id == "" {
         return nil, errors.New("class arm ID is required")
     }
@@ -77,6 +82,9 @@ func (s *ClassArmService) GetByID(id string) (*dto.ClassArmResponse, error) {
     arm, err := s.repo.FindByID(id)
     if err != nil {
         return nil, err
+    }
+    if err := authorizeSchoolOwnership(arm.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("class arm not found")
     }
     return s.toResponse(arm), nil
 }
@@ -100,7 +108,7 @@ func (s *ClassArmService) GetBySchool(schoolID string) ([]dto.ClassArmResponse, 
 }
 
 // ✅ FIXED: Update uses string types, not pointers
-func (s *ClassArmService) Update(id string, req *dto.UpdateClassArmRequest) (*dto.ClassArmResponse, error) {
+func (s *ClassArmService) Update(id string, req *dto.UpdateClassArmRequest, schoolID string, isPlatformOwner bool) (*dto.ClassArmResponse, error) {
     if id == "" {
         return nil, errors.New("class arm ID is required")
     }
@@ -109,6 +117,9 @@ func (s *ClassArmService) Update(id string, req *dto.UpdateClassArmRequest) (*dt
     arm, err := s.repo.FindByID(id)
     if err != nil {
         return nil, err
+    }
+    if err := authorizeSchoolOwnership(arm.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("class arm not found")
     }
 
     // ✅ Name is a string, check if it's not empty and different
@@ -162,15 +173,18 @@ func (s *ClassArmService) Update(id string, req *dto.UpdateClassArmRequest) (*dt
 }
 
 // Delete soft-deletes a class arm
-func (s *ClassArmService) Delete(id string) error {
+func (s *ClassArmService) Delete(id, schoolID string, isPlatformOwner bool) error {
     if id == "" {
         return errors.New("class arm ID is required")
     }
 
     // Check if arm exists
-    _, err := s.repo.FindByID(id)
+    arm, err := s.repo.FindByID(id)
     if err != nil {
         return err
+    }
+    if err := authorizeSchoolOwnership(arm.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("class arm not found")
     }
 
     return s.repo.Delete(id)
@@ -268,15 +282,33 @@ func (s *ClassArmService) GetClassArmStats(ctx context.Context, schoolID string)
 // BULK OPERATIONS
 // ============================================
 
-// BulkDeleteClassArms deletes multiple class arms
-func (s *ClassArmService) BulkDeleteClassArms(ctx context.Context, ids []string) (int64, error) {
+// BulkDeleteClassArms deletes only the IDs owned by schoolID - the repo
+// call had no school check at all before this fix, so any other ID in
+// the request is now silently dropped rather than deleted.
+func (s *ClassArmService) BulkDeleteClassArms(ctx context.Context, ids []string, schoolID string, isPlatformOwner bool) (int64, error) {
     if len(ids) == 0 {
         return 0, errors.New("no IDs provided")
     }
     if len(ids) > 100 {
         return 0, errors.New("maximum 100 IDs allowed per request")
     }
-    return s.repo.BulkDeleteClassArms(ctx, ids)
+    if isPlatformOwner {
+        return s.repo.BulkDeleteClassArms(ctx, ids)
+    }
+    allowed := make([]string, 0, len(ids))
+    for _, id := range ids {
+        arm, err := s.repo.FindByID(id)
+        if err != nil {
+            continue
+        }
+        if arm.SchoolID == schoolID {
+            allowed = append(allowed, id)
+        }
+    }
+    if len(allowed) == 0 {
+        return 0, nil
+    }
+    return s.repo.BulkDeleteClassArms(ctx, allowed)
 }
 
 // ============================================
@@ -284,7 +316,7 @@ func (s *ClassArmService) BulkDeleteClassArms(ctx context.Context, ids []string)
 // ============================================
 
 // SearchClassArms searches class arms by name or code
-func (s *ClassArmService) SearchClassArms(ctx context.Context, query string, limit int) ([]dto.ClassArmResponse, error) {
+func (s *ClassArmService) SearchClassArms(ctx context.Context, query string, schoolID string, limit int) ([]dto.ClassArmResponse, error) {
     if query == "" {
         return nil, errors.New("search query is required")
     }
@@ -298,7 +330,7 @@ func (s *ClassArmService) SearchClassArms(ctx context.Context, query string, lim
         limit = 100
     }
 
-    arms, err := s.repo.SearchClassArms(ctx, query, limit)
+    arms, err := s.repo.SearchClassArms(ctx, query, schoolID, limit)
     if err != nil {
         return nil, err
     }

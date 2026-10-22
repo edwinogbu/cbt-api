@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"cbt-api/internal/grading"
 	"cbt-api/internal/models"
 
 	"github.com/google/uuid"
@@ -126,6 +127,26 @@ func (r *ExamRepository) FindExamByIDWithContext(ctx context.Context, id string)
 	return &exam, nil
 }
 
+// ExamBelongsToSchool reports whether the exam identified by examID
+// ultimately belongs to schoolID. Exam itself carries no school_id - it
+// is scoped to a school transitively through its ClassID (classes.school_id
+// is non-nullable, see models.Class) - so this is a JOIN, not a direct
+// column check. This is the server-side ownership check that every
+// single-exam read/write (GetExam, UpdateExam, DeleteExam, PublishExam,
+// ...) must pass before touching the record; see ExamService's callers.
+func (r *ExamRepository) ExamBelongsToSchool(ctx context.Context, examID, schoolID string) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Table("exams").
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.id = ? AND exams.deleted_at IS NULL AND classes.school_id = ?", examID, schoolID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // UpdateExam updates an existing exam
 func (r *ExamRepository) UpdateExam(exam *models.Exam) error {
 	return r.db.Save(exam).Error
@@ -146,8 +167,13 @@ func (r *ExamRepository) DeleteExamWithContext(ctx context.Context, id string) e
 	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&models.Exam{}).Error
 }
 
-// ListExams lists all exams with pagination
-func (r *ExamRepository) ListExams(ctx context.Context, page, limit int) ([]models.Exam, int64, error) {
+// ListExams lists all exams with pagination, scoped to the caller's own
+// school via a join on classes.school_id (Exam has no direct SchoolID
+// column - see ExamBelongsToSchool, same pattern). Before this fix this
+// had no school filter of any kind, and the route it backs has only
+// AuthMiddleware (no role gate) - any authenticated user, any role, any
+// school, could list every exam on the entire platform.
+func (r *ExamRepository) ListExams(ctx context.Context, page, limit int, schoolID string, isPlatformOwner bool) ([]models.Exam, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -158,82 +184,110 @@ func (r *ExamRepository) ListExams(ctx context.Context, page, limit int) ([]mode
 	var exams []models.Exam
 	var total int64
 
-	query := r.db.WithContext(ctx).Model(&models.Exam{}).Where("deleted_at IS NULL")
+	query := r.db.WithContext(ctx).Model(&models.Exam{}).
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.deleted_at IS NULL")
+	if !isPlatformOwner {
+		query = query.Where("classes.school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&exams).Error
+	err := query.Offset(offset).Limit(limit).Order("exams.created_at DESC").Find(&exams).Error
 	return exams, total, err
 }
 
-// ListExamsBySubject lists exams by subject
-func (r *ExamRepository) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int) ([]models.Exam, int64, error) {
+// ListExamsBySubject lists exams by subject, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (r *ExamRepository) ListExamsBySubject(ctx context.Context, subjectID string, page, limit int, schoolID string, isPlatformOwner bool) ([]models.Exam, int64, error) {
 	var exams []models.Exam
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&models.Exam{}).
-		Where("subject_id = ? AND deleted_at IS NULL", subjectID)
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.subject_id = ? AND exams.deleted_at IS NULL", subjectID)
+	if !isPlatformOwner {
+		query = query.Where("classes.school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&exams).Error
+	err := query.Offset(offset).Limit(limit).Order("exams.created_at DESC").Find(&exams).Error
 	return exams, total, err
 }
 
-// ListExamsByTerm lists exams by term
-func (r *ExamRepository) ListExamsByTerm(ctx context.Context, termID string, page, limit int) ([]models.Exam, int64, error) {
+// ListExamsByTerm lists exams by term, scoped to the caller's own school
+// (see ListExams's doc comment - same pre-existing gap, same fix).
+func (r *ExamRepository) ListExamsByTerm(ctx context.Context, termID string, page, limit int, schoolID string, isPlatformOwner bool) ([]models.Exam, int64, error) {
 	var exams []models.Exam
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&models.Exam{}).
-		Where("term_id = ? AND deleted_at IS NULL", termID)
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.term_id = ? AND exams.deleted_at IS NULL", termID)
+	if !isPlatformOwner {
+		query = query.Where("classes.school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&exams).Error
+	err := query.Offset(offset).Limit(limit).Order("exams.created_at DESC").Find(&exams).Error
 	return exams, total, err
 }
 
-// ListExamsBySession lists exams by session
-func (r *ExamRepository) ListExamsBySession(ctx context.Context, sessionID string, page, limit int) ([]models.Exam, int64, error) {
+// ListExamsBySession lists exams by session, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same fix).
+func (r *ExamRepository) ListExamsBySession(ctx context.Context, sessionID string, page, limit int, schoolID string, isPlatformOwner bool) ([]models.Exam, int64, error) {
 	var exams []models.Exam
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&models.Exam{}).
-		Where("session_id = ? AND deleted_at IS NULL", sessionID)
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.session_id = ? AND exams.deleted_at IS NULL", sessionID)
+	if !isPlatformOwner {
+		query = query.Where("classes.school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&exams).Error
+	err := query.Offset(offset).Limit(limit).Order("exams.created_at DESC").Find(&exams).Error
 	return exams, total, err
 }
 
-// ListExamsByClass lists exams by class
-func (r *ExamRepository) ListExamsByClass(ctx context.Context, classID string, page, limit int) ([]models.Exam, int64, error) {
+// ListExamsByClass lists exams by class, scoped to the caller's own
+// school (see ListExams's doc comment - same pre-existing gap, same
+// fix). classID itself is also effectively validated here: a
+// cross-school classID simply matches nothing once the school filter is
+// joined in, rather than leaking that school's exams.
+func (r *ExamRepository) ListExamsByClass(ctx context.Context, classID string, page, limit int, schoolID string, isPlatformOwner bool) ([]models.Exam, int64, error) {
 	var exams []models.Exam
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&models.Exam{}).
-		Where("class_id = ? AND deleted_at IS NULL", classID)
+		Joins("JOIN classes ON classes.id = exams.class_id").
+		Where("exams.class_id = ? AND exams.deleted_at IS NULL", classID)
+	if !isPlatformOwner {
+		query = query.Where("classes.school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
-	err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&exams).Error
+	err := query.Offset(offset).Limit(limit).Order("exams.created_at DESC").Find(&exams).Error
 	return exams, total, err
 }
 
@@ -1157,21 +1211,13 @@ func (r *ExamRepository) GetSubjectsByClassAndTerm(ctx context.Context, classID,
 // HELPER - Grade Calculation
 // ============================================
 
+// getGradeFromPercentage: thin wrapper around grading.Builtin
+// (internal/grading) - previously hardcoded the exact same A>=70/
+// B>=60/.../F boundaries directly, now consolidated into one place.
+// Same transition rationale as dto.GetGrade (exam_dto.go).
 func getGradeFromPercentage(percentage float64) string {
-	switch {
-	case percentage >= 70:
-		return "A"
-	case percentage >= 60:
-		return "B"
-	case percentage >= 50:
-		return "C"
-	case percentage >= 45:
-		return "D"
-	case percentage >= 40:
-		return "E"
-	default:
-		return "F"
-	}
+	grade, _, _ := grading.Builtin(percentage)
+	return grade
 }
 // ============================================
 // HELPER - Grade Calculation

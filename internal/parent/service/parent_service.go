@@ -44,8 +44,13 @@ func NewParentService(
 	}
 }
 
-func (s *ParentService) AutoLinkParentOnRegister(parentID string, admissionNumber string) error {
-	students, err := s.parentRepo.FindStudentsByAdmissionNumber(admissionNumber)
+// AutoLinkParentOnRegister links a newly-registered parent to every
+// student matching admissionNumber WITHIN schoolID - the parent's own,
+// server-validated school from their registration's school_code. See
+// FindStudentsByAdmissionNumberInSchool's doc comment for why this must
+// never search across all schools.
+func (s *ParentService) AutoLinkParentOnRegister(parentID, admissionNumber, schoolID string) error {
+	students, err := s.parentRepo.FindStudentsByAdmissionNumberInSchool(admissionNumber, schoolID)
 	if err != nil {
 		return fmt.Errorf("failed to find students: %w", err)
 	}

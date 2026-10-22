@@ -5,6 +5,7 @@ import (
     "errors"
     "fmt"
     "log"
+    "strings"
     "time"
 
     "github.com/google/uuid"
@@ -38,12 +39,35 @@ func NewSubscriptionService(
 // CRUD METHODS (required by handler)
 // ============================================
 
-func (s *SubscriptionService) GetSubscription(id string) (*dto.SubscriptionResponse, error) {
+// subscriptionAuthorizeSchoolOwnership mirrors
+// internal/academic/service.authorizeSchoolOwnership (duplicated locally
+// since that helper is unexported in a different package): platform_owner
+// is exempt; every other caller must have recordSchoolID == ctxSchoolID,
+// and an empty ctxSchoolID is never treated as "unscoped".
+func subscriptionAuthorizeSchoolOwnership(recordSchoolID, ctxSchoolID string, isPlatformOwner bool) error {
+    if isPlatformOwner {
+        return nil
+    }
+    if ctxSchoolID == "" || recordSchoolID != ctxSchoolID {
+        return errors.New("subscription not found")
+    }
+    return nil
+}
+
+// GetSubscription retrieves a subscription by ID, scoped to the caller's
+// own school (see subscriptionAuthorizeSchoolOwnership). Previously took
+// no school parameter at all - any authenticated user could read any
+// school's subscription (billing tier, status, gateway IDs) just by
+// knowing or enumerating its ID.
+func (s *SubscriptionService) GetSubscription(id, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] GetSubscription: id=%s", id)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         log.Printf("[SERVICE] GetSubscription error: %v", err)
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
     return s.toSubscriptionResponse(sub), nil
 }
@@ -72,11 +96,18 @@ func (s *SubscriptionService) GetCurrentSubscription(schoolID string) (*dto.Subs
     return s.toSubscriptionResponse(sub), nil
 }
 
-func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubscriptionRequest, userID string) (*dto.SubscriptionResponse, error) {
+// UpdateSubscription modifies a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership). Previously any
+// authenticated user could change another school's tier, limits,
+// auto-renew, or status - a billing-sabotage vector, not just a read leak.
+func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubscriptionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] UpdateSubscription: id=%s, user=%s", id, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
 
     if req.Tier != nil {
@@ -110,11 +141,18 @@ func (s *SubscriptionService) UpdateSubscription(id string, req *dto.UpdateSubsc
     return s.toSubscriptionResponse(sub), nil
 }
 
-func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bool, reason string, userID string) error {
+// CancelSubscription cancels a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership). Previously any
+// authenticated user could cancel another school's active subscription
+// outright - a direct sabotage vector against a competitor school.
+func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bool, reason string, userID, schoolID string, isPlatformOwner bool) error {
     log.Printf("[SERVICE] CancelSubscription: id=%s, immediate=%v, reason=%s, user=%s", id, cancelImmediately, reason, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return err
     }
     if cancelImmediately {
         sub.Status = models.SubStatusCancelled
@@ -134,11 +172,16 @@ func (s *SubscriptionService) CancelSubscription(id string, cancelImmediately bo
     return nil
 }
 
-func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscriptionRequest, userID string) (*dto.SubscriptionResponse, error) {
+// RenewSubscription extends a subscription, scoped to the caller's own
+// school (see subscriptionAuthorizeSchoolOwnership).
+func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscriptionRequest, userID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionResponse, error) {
     log.Printf("[SERVICE] RenewSubscription: id=%s, interval=%s, user=%s", id, req.Interval, userID)
     sub, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
     newInterval := models.PaymentInterval(req.Interval)
     newAmount := models.Pricing[sub.Tier][newInterval]
@@ -165,11 +208,19 @@ func (s *SubscriptionService) RenewSubscription(id string, req *dto.RenewSubscri
 // PAYMENT INTENT METHODS (one-time payments)
 // ============================================
 
-func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dto.CreatePaymentIntentRequest, userID string) (*dto.PaymentIntentResponse, error) {
+// CreatePaymentIntent generates a payment link for a subscription,
+// scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Previously any authenticated
+// user could generate a real payment link against another school's
+// subscription and gateway account.
+func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dto.CreatePaymentIntentRequest, userID, schoolID string, isPlatformOwner bool) (*dto.PaymentIntentResponse, error) {
     log.Printf("[SERVICE] CreatePaymentIntent: subscription=%s, user=%s", subscriptionID, userID)
     sub, err := s.repo.FindByID(subscriptionID)
     if err != nil {
         return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
     }
 
     invoice := &models.Invoice{
@@ -249,19 +300,44 @@ func (s *SubscriptionService) CreatePaymentIntent(subscriptionID string, req *dt
     return s.toPaymentIntentResponse(dbPI), nil
 }
 
-func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID string) error {
+// ConfirmPaymentIntent manually re-verifies a payment intent with its
+// gateway and, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Before this fix it took no
+// school parameter at all - any authenticated admin/super_admin could
+// force this re-verification/activation flow against ANY other
+// school's payment intent just by knowing or guessing its UUID,
+// mutating its status/gateway_response and potentially activating
+// that school's subscription, all with zero ownership check.
+func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID, schoolID string, isPlatformOwner bool) error {
     log.Printf("[SERVICE] ConfirmPaymentIntent: id=%s", paymentIntentID)
     pi, err := s.repo.FindPaymentIntentByID(paymentIntentID)
     if err != nil {
+        return errors.New("payment intent not found")
+    }
+    // Same not-found-on-mismatch convention as subscriptionAuthorizeSchoolOwnership,
+    // worded for this resource so a cross-school caller can't distinguish
+    // "wrong owner" from "no such payment intent".
+    if !isPlatformOwner && (schoolID == "" || pi.SchoolID != schoolID) {
         return errors.New("payment intent not found")
     }
     if pi.IsFinalized {
         return errors.New("payment intent already finalized")
     }
 
+    return s.verifyAndFinalizePaymentIntent(pi)
+}
+
+// verifyAndFinalizePaymentIntent re-checks a payment intent with its
+// gateway of record and, on success, finalizes it: marks its invoice
+// paid, activates a pending subscription, and records the payment
+// transaction. It assumes the caller has already performed the
+// ownership and already-finalized checks - shared by ConfirmPaymentIntent
+// (looked up by ID) and VerifyPayment (looked up by gateway reference) so
+// the mutation logic isn't duplicated between the two near-identical flows.
+func (s *SubscriptionService) verifyAndFinalizePaymentIntent(pi *models.PaymentIntent) error {
     verification, err := s.paymentService.VerifyPayment(context.Background(), pi.Gateway, pi.Reference)
     if err != nil {
-        log.Printf("[SERVICE] ConfirmPaymentIntent: verification failed: %v", err)
+        log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: verification failed: %v", err)
         return err
     }
 
@@ -281,7 +357,7 @@ func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID string) error
             sub.LastPaymentDate = timePtr(time.Now())
             sub.NextPaymentDate = calculateNextPaymentDate(sub.EndDate, sub.PaymentInterval)
             s.repo.Update(sub)
-            log.Printf("[SERVICE] ConfirmPaymentIntent: subscription %s activated", sub.ID)
+            log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: subscription %s activated", sub.ID)
         }
 
         transaction := &models.PaymentTransaction{
@@ -304,8 +380,40 @@ func (s *SubscriptionService) ConfirmPaymentIntent(paymentIntentID string) error
     }
 
     s.repo.UpdatePaymentIntent(pi)
-    log.Printf("[SERVICE] ConfirmPaymentIntent: final status=%s", pi.Status)
+    log.Printf("[SERVICE] verifyAndFinalizePaymentIntent: final status=%s", pi.Status)
     return nil
+}
+
+// VerifyPayment manually re-verifies a payment intent by its gateway
+// reference, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Before this fix it was a
+// complete stub: the handler returned a hardcoded "Payment verified
+// successfully" message regardless of what was submitted, with no DB
+// lookup, no ownership check, and no real gateway call at all - a
+// misleading success message that never actually verified or finalized
+// anything.
+//
+// The request's gateway field is intentionally ignored for the actual
+// verification call: the server-recorded pi.Gateway is used instead, so
+// a caller can't redirect verification to a different gateway than the
+// one the payment intent was actually created against.
+func (s *SubscriptionService) VerifyPayment(reference, schoolID string, isPlatformOwner bool) error {
+    log.Printf("[SERVICE] VerifyPayment: reference=%s", reference)
+    pi, err := s.repo.FindPaymentIntentByReference(reference)
+    if err != nil {
+        return errors.New("payment intent not found")
+    }
+    // Same not-found-on-mismatch convention as ConfirmPaymentIntent, so a
+    // cross-school caller can't distinguish "wrong owner" from "no such
+    // payment intent".
+    if !isPlatformOwner && (schoolID == "" || pi.SchoolID != schoolID) {
+        return errors.New("payment intent not found")
+    }
+    if pi.IsFinalized {
+        return errors.New("payment intent already finalized")
+    }
+
+    return s.verifyAndFinalizePaymentIntent(pi)
 }
 
 // ============================================
@@ -462,6 +570,19 @@ func (s *SubscriptionService) CreateSubscription(ctx context.Context, req *dto.C
 // WEBHOOK PROCESSING (only payment_success)
 // ============================================
 
+// isDuplicateWebhookEventError reports whether err is a unique-constraint
+// violation on webhook_events.idempotency_key, checked by message rather
+// than a driver-specific error type so it works the same way against
+// Postgres ("duplicate key value violates unique constraint") in
+// production and SQLite ("UNIQUE constraint failed") in tests.
+func isDuplicateWebhookEventError(err error) bool {
+    if err == nil {
+        return false
+    }
+    msg := strings.ToLower(err.Error())
+    return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint")
+}
+
 func (s *SubscriptionService) ProcessWebhook(ctx context.Context, gateway models.PaymentGateway, payload []byte, signature string) error {
     log.Printf("[WEBHOOK] Received for gateway %s", gateway)
     gw, err := s.paymentService.GetGateway(gateway)
@@ -475,16 +596,44 @@ func (s *SubscriptionService) ProcessWebhook(ctx context.Context, gateway models
         return err
     }
 
+    // Dedup key: only correlate on event.Reference when the gateway
+    // actually gave us one. An event whose reference came back empty
+    // (e.g. a parse path that doesn't always attach one) must not
+    // collide with every *other* no-reference event under the same
+    // unique index - that would make the second such event look like
+    // a duplicate of the first and get silently dropped below.
+    idempotencyKey := fmt.Sprintf("%s:%s:%s", gateway, event.Type, event.Reference)
+    if event.Reference == "" {
+        idempotencyKey = uuid.New().String()
+    }
+
     webhookEvent := &models.WebhookEvent{
         ID:             uuid.New().String(),
         Gateway:        gateway,
         EventType:      event.Type,
+        Reference:      event.Reference,
         Payload:        event.RawData,
-        IdempotencyKey: event.Reference,
+        IdempotencyKey: idempotencyKey,
         Status:         "pending",
         CreatedAt:      time.Now(),
     }
-    s.repo.CreateWebhookEvent(webhookEvent)
+    // CreateWebhookEvent's uniqueIndex on idempotency_key is what
+    // actually makes this atomic: two concurrent/replayed deliveries
+    // of the same event (gateways retry on timeout, and a captured
+    // valid signature can be replayed later) both attempt this same
+    // insert, and the database resolves which one succeeds. Before
+    // this fix the insert's error was discarded unchecked, so a
+    // duplicate silently fell through into the activation logic below
+    // and relied only on `sub.Status == Pending` to avoid reprocessing
+    // - a different, weaker guard than the one this constraint gives.
+    if err := s.repo.CreateWebhookEvent(webhookEvent); err != nil {
+        if isDuplicateWebhookEventError(err) {
+            log.Printf("[WEBHOOK] Duplicate delivery (idempotency_key=%s) - already recorded, skipping", idempotencyKey)
+            return nil
+        }
+        log.Printf("[WEBHOOK] Failed to record webhook event: %v", err)
+        return fmt.Errorf("failed to record webhook event: %w", err)
+    }
 
     if event.Type == "payment_success" {
         log.Printf("[WEBHOOK] Payment success for reference %s", event.Reference)
@@ -713,6 +862,144 @@ func (s *SubscriptionService) toInvoiceResponse(inv *models.Invoice) *dto.Invoic
         Items:         inv.Items,
         CreatedAt:     inv.CreatedAt,
     }
+}
+
+func (s *SubscriptionService) toPaymentTransactionResponse(pt *models.PaymentTransaction) *dto.PaymentTransactionResponse {
+    return &dto.PaymentTransactionResponse{
+        ID:             pt.ID,
+        SubscriptionID: pt.SubscriptionID,
+        InvoiceID:      pt.InvoiceID,
+        Amount:         pt.Amount,
+        Fee:            pt.Fee,
+        Tax:            pt.Tax,
+        Currency:       string(pt.Currency),
+        PaymentMethod:  string(pt.PaymentMethod),
+        Status:         string(pt.PaymentStatus),
+        Gateway:        string(pt.Gateway),
+        Reference:      pt.Reference,
+        Description:    pt.Description,
+        PaidAt:         pt.PaidAt,
+        CreatedAt:      pt.CreatedAt,
+    }
+}
+
+// GetInvoices retrieves every invoice for a subscription, scoped to the
+// caller's own school (see subscriptionAuthorizeSchoolOwnership).
+// Previously a handler-level stub that always returned an empty list
+// for any subscription ID - that's not a cross-tenant leak (nobody got
+// real data), but it also meant a school could never see its own real
+// billing history and the "retrieved successfully" response was
+// misleading about what had actually happened. FindInvoicesBySubscription
+// already existed, unused, doing the real query.
+func (s *SubscriptionService) GetInvoices(subscriptionID, schoolID string, isPlatformOwner bool) ([]dto.InvoiceResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+    invoices, err := s.repo.FindInvoicesBySubscription(subscriptionID)
+    if err != nil {
+        return nil, err
+    }
+    responses := make([]dto.InvoiceResponse, len(invoices))
+    for i := range invoices {
+        responses[i] = *s.toInvoiceResponse(&invoices[i])
+    }
+    return responses, nil
+}
+
+// GetTransactions retrieves every payment transaction for a
+// subscription, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Same prior state and fix
+// rationale as GetInvoices - FindPaymentTransactionsBySubscription
+// already existed, unused, doing the real query.
+func (s *SubscriptionService) GetTransactions(subscriptionID, schoolID string, isPlatformOwner bool) ([]dto.PaymentTransactionResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+    transactions, err := s.repo.FindPaymentTransactionsBySubscription(subscriptionID)
+    if err != nil {
+        return nil, err
+    }
+    responses := make([]dto.PaymentTransactionResponse, len(transactions))
+    for i := range transactions {
+        responses[i] = *s.toPaymentTransactionResponse(&transactions[i])
+    }
+    return responses, nil
+}
+
+// GetSubscriptionUsage reports a school's real current usage against
+// its subscription's limits, scoped to the caller's own school (see
+// subscriptionAuthorizeSchoolOwnership). Previously a handler-level
+// stub returning nil for every subscription - like GetInvoices/
+// GetTransactions before this same fix, that was never a cross-tenant
+// leak (nobody got real data), but also never a school's own real
+// usage, which an admin needs to know before hitting a plan limit.
+//
+// StorageUsedMB/StoragePercent are reported as 0: unlike student,
+// teacher, exam and question counts, this codebase has no
+// comprehensive per-school storage accounting (only a partial source -
+// QuestionBankAttachment.FileSize - that would undercount anything
+// else ever uploaded). Reporting a number assembled from a known-
+// incomplete source would be more misleading than reporting none, so
+// it stays at 0 until real storage accounting exists.
+func (s *SubscriptionService) GetSubscriptionUsage(subscriptionID, schoolID string, isPlatformOwner bool) (*dto.SubscriptionUsageResponse, error) {
+    sub, err := s.repo.FindByID(subscriptionID)
+    if err != nil {
+        return nil, errors.New("subscription not found")
+    }
+    if err := subscriptionAuthorizeSchoolOwnership(sub.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, err
+    }
+
+    students, err := s.repo.CountStudentsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    teachers, err := s.repo.CountTeachersBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    exams, err := s.repo.CountExamsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+    questions, err := s.repo.CountQuestionsBySchool(sub.SchoolID)
+    if err != nil {
+        return nil, err
+    }
+
+    return &dto.SubscriptionUsageResponse{
+        CurrentStudents:  int(students),
+        CurrentTeachers:  int(teachers),
+        CurrentExams:     int(exams),
+        CurrentQuestions: int(questions),
+        StorageUsedMB:    0,
+        MaxStudents:      sub.MaxStudents,
+        MaxTeachers:      sub.MaxTeachers,
+        MaxExams:         sub.MaxExams,
+        MaxQuestions:     sub.MaxQuestions,
+        MaxStorageMB:     sub.MaxStorageMB,
+        StudentPercent:   usagePercent(students, sub.MaxStudents),
+        TeacherPercent:   usagePercent(teachers, sub.MaxTeachers),
+        ExamPercent:      usagePercent(exams, sub.MaxExams),
+        StoragePercent:   0,
+    }, nil
+}
+
+// usagePercent guards against a zero/unset limit, which would
+// otherwise divide by zero.
+func usagePercent(current int64, max int) float64 {
+    if max <= 0 {
+        return 0
+    }
+    return float64(current) / float64(max) * 100
 }
 
 // ============================================

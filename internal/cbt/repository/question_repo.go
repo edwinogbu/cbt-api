@@ -174,7 +174,13 @@ func (r *QuestionRepository) Delete(ctx context.Context, id string) error {
 // QUERY / FILTER OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID string, page, limit int) ([]models.QuestionBank, int64, error) {
+// ListBySubject lists questions for subjectID, scoped to schoolID -
+// Subject is a global reference table shared by every school (see
+// models.Subject: no school_id column), so without the school_id filter
+// this returned every school's questions for that subject. A ""
+// schoolID means unscoped (platform_owner only; every other caller must
+// pass its own school_id, see middleware.ResolveSchoolIDOrNoResults).
+func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID, schoolID string, page, limit int) ([]models.QuestionBank, int64, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -188,6 +194,9 @@ func (r *QuestionRepository) ListBySubject(ctx context.Context, subjectID string
 
 	query := r.db.WithContext(ctx).Model(&models.QuestionBank{}).
 		Where("subject_id = ? AND deleted_at IS NULL", subjectID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("failed to count questions: %w", err)
@@ -363,30 +372,43 @@ func (r *QuestionRepository) FindByExternalID(ctx context.Context, schoolID, ses
 // CONTEXT-AWARE QUERY METHODS
 // ============================================
 
-func (r *QuestionRepository) FindByTerm(ctx context.Context, subjectID, termID string) ([]models.QuestionBank, error) {
+// FindByTerm is scoped to schoolID - a "" schoolID means unscoped
+// (platform_owner only; every other caller must pass its own school_id).
+// term_id/subject_id alone never scope this to one school: subject is a
+// global table shared by every school, and a valid term_id for one school
+// does not confirm the caller belongs to it.
+func (r *QuestionRepository) FindByTerm(ctx context.Context, subjectID, termID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("subject_id = ? AND term_id = ? AND deleted_at IS NULL", subjectID, termID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("subject_id = ? AND term_id = ? AND deleted_at IS NULL", subjectID, termID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
-func (r *QuestionRepository) FindBySession(ctx context.Context, subjectID, sessionID string) ([]models.QuestionBank, error) {
+// FindBySession is scoped to schoolID - see FindByTerm's doc comment.
+func (r *QuestionRepository) FindBySession(ctx context.Context, subjectID, sessionID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("subject_id = ? AND session_id = ? AND deleted_at IS NULL", subjectID, sessionID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("subject_id = ? AND session_id = ? AND deleted_at IS NULL", subjectID, sessionID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
-func (r *QuestionRepository) FindByClass(ctx context.Context, classID string) ([]models.QuestionBank, error) {
+// FindByClass is scoped to schoolID - see FindByTerm's doc comment.
+func (r *QuestionRepository) FindByClass(ctx context.Context, classID, schoolID string) ([]models.QuestionBank, error) {
 	var questions []models.QuestionBank
-	err := r.db.WithContext(ctx).
-		Where("class_id = ? AND deleted_at IS NULL", classID).
-		Order("created_at DESC").
-		Find(&questions).Error
+	query := r.db.WithContext(ctx).
+		Where("class_id = ? AND deleted_at IS NULL", classID)
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
+	}
+	err := query.Order("created_at DESC").Find(&questions).Error
 	return questions, err
 }
 
@@ -469,11 +491,15 @@ func (r *QuestionRepository) CountQuestionsByExamType(ctx context.Context, examT
 // SUMMARY & STATISTICS OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subjectID string) ([]QuestionTermSummary, error) {
+// GetQuestionContextSummary is scoped to schoolID - a "" schoolID means
+// unscoped (platform_owner only). Subject is a global table shared by
+// every school, so subjectID alone previously let any authenticated
+// caller see every school's term-by-term question counts for it.
+func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subjectID, schoolID string) ([]QuestionTermSummary, error) {
 	var results []QuestionTermSummary
 
 	query := `
-		SELECT 
+		SELECT
 			t.id as term_id,
 			t.name as term_name,
 			t.term_number,
@@ -486,17 +512,29 @@ func (r *QuestionRepository) GetQuestionContextSummary(ctx context.Context, subj
 		FROM question_bank q
 		JOIN terms t ON t.id = q.term_id
 		JOIN academic_sessions s ON s.id = q.session_id
-		WHERE q.subject_id = ? 
+		WHERE q.subject_id = ?
 			AND q.deleted_at IS NULL
+	`
+	args := []interface{}{subjectID}
+	if schoolID != "" {
+		query += " AND q.school_id = ?"
+		args = append(args, schoolID)
+	}
+	query += `
 		GROUP BY t.id, t.name, t.term_number, s.name
 		ORDER BY t.term_number ASC
 	`
 
-	err := r.db.WithContext(ctx).Raw(query, subjectID).Scan(&results).Error
+	err := r.db.WithContext(ctx).Raw(query, args...).Scan(&results).Error
 	return results, err
 }
 
-func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjectID string) (map[string]int64, error) {
+// GetStatisticsByExamType is scoped to schoolID - a "" schoolID means
+// unscoped (platform_owner only; every other caller must pass its own
+// school_id, see middleware.ResolveSchoolIDOrNoResults). Subject is a
+// global table shared by every school, so subjectID alone never scopes
+// this to one school.
+func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjectID, schoolID string) (map[string]int64, error) {
 	var results []struct {
 		ExamType string
 		Count    int64
@@ -508,6 +546,9 @@ func (r *QuestionRepository) GetStatisticsByExamType(ctx context.Context, subjec
 
 	if subjectID != "" {
 		query = query.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
 	}
 
 	err := query.Group("exam_type").Scan(&results).Error
@@ -863,13 +904,20 @@ func (r *QuestionRepository) DetachTags(ctx context.Context, questionID string, 
 // STATISTICS OPERATIONS
 // ============================================
 
-func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID string) (map[string]interface{}, error) {
+// GetStatistics is scoped to schoolID - previously had no school filter
+// at all, so GET /questions/statistics returned every school's question
+// counts and average marks platform-wide. A "" schoolID means unscoped
+// (platform_owner only).
+func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID, schoolID string) (map[string]interface{}, error) {
 	var total int64
 	var published, draft, archived int64
 
 	query := r.db.WithContext(ctx).Model(&models.QuestionBank{}).Where("deleted_at IS NULL")
 	if subjectID != "" {
 		query = query.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		query = query.Where("school_id = ?", schoolID)
 	}
 
 	if err := query.Count(&total).Error; err != nil {
@@ -886,15 +934,21 @@ func (r *QuestionRepository) GetStatistics(ctx context.Context, subjectID string
 		return nil, fmt.Errorf("failed to count archived questions: %w", err)
 	}
 
+	avgQuery := r.db.WithContext(ctx).Model(&models.QuestionBank{}).Where("deleted_at IS NULL")
+	if subjectID != "" {
+		avgQuery = avgQuery.Where("subject_id = ?", subjectID)
+	}
+	if schoolID != "" {
+		avgQuery = avgQuery.Where("school_id = ?", schoolID)
+	}
 	var avgMarks float64
-	if err := r.db.WithContext(ctx).Model(&models.QuestionBank{}).
+	if err := avgQuery.
 		Select("COALESCE(AVG(marks), 0)").
-		Where("deleted_at IS NULL").
 		Row().Scan(&avgMarks); err != nil {
 		return nil, fmt.Errorf("failed to calculate average marks: %w", err)
 	}
 
-	examTypeStats, err := r.GetStatisticsByExamType(ctx, subjectID)
+	examTypeStats, err := r.GetStatisticsByExamType(ctx, subjectID, schoolID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get exam type statistics: %w", err)
 	}

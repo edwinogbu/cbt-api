@@ -15,7 +15,39 @@ const (
     RoleStudent   UserRole = "student"
     RoleParent    UserRole = "parent"
     RoleSuperAdmin UserRole = "super_admin"
-    
+
+    // RoleHOD/RoleExamOfficer/RoleVPAcademics are Academic Broad Sheet
+    // approval-chain roles (teacher submits -> HOD reviews -> exam
+    // officer checks completeness -> VP Academics/admin approves),
+    // granted the same way as any additional role - via UserRoleGrant/
+    // AuthService.GrantRole, never a user's primary Role at
+    // registration (RegisterRequest.Role's oneof allowlist is
+    // unchanged). A user holding one of these almost always also holds
+    // RoleTeacher as their primary role (see UserRoleGrant's own doc
+    // comment, which already anticipated "an HOD also granted
+    // teacher") - these are additive school-scoped responsibilities,
+    // not a replacement for being a teacher.
+    RoleHOD          UserRole = "hod"
+    RoleExamOfficer  UserRole = "examination_officer"
+    RoleVPAcademics  UserRole = "vp_academics"
+
+    // RolePlatformOwner is a distinct tier above every school-scoped role,
+    // including super_admin (which today is - and remains - a school-level
+    // elevated admin, not a platform-wide authority). A platform owner is
+    // not tied to any school (User.SchoolID is nil for this role) and is
+    // the only role authorized for cross-tenant operations: the tenant
+    // registry, platform-controlled branding, and the LAN Setup Dashboard.
+    //
+    // This role can ONLY become a user's primary Role via the server-side
+    // bootstrap in pkg/database/postgres.go's seedPlatformOwner() (gated
+    // on PLATFORM_OWNER_EMAIL/PLATFORM_OWNER_PASSWORD env vars, never a
+    // request parameter). It is explicitly rejected by AuthService.GrantRole
+    // so no admin/super_admin can grant it to themselves or anyone else via
+    // POST /auth/users/:id/roles, and it is not in RegisterRequest.Role's
+    // allowlist (oneof=student teacher admin parent) so public self-
+    // registration can never set it either. Do not add it to either path.
+    RolePlatformOwner UserRole = "platform_owner"
+
     StatusActive    UserStatus = "active"
     StatusInactive  UserStatus = "inactive"
     StatusSuspended UserStatus = "suspended"

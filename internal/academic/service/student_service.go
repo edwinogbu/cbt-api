@@ -29,7 +29,12 @@ func NewStudentService(
     }
 }
 
-func (s *StudentService) Create(req *dto.CreateStudentRequest) (*dto.StudentDetailResponse, error) {
+func (s *StudentService) Create(req *dto.CreateStudentRequest, schoolID string, isPlatformOwner bool) (*dto.StudentDetailResponse, error) {
+    effectiveID := effectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+    if effectiveID == "" {
+        return nil, ErrSchoolScopeRequired
+    }
+
     user, err := s.userRepo.FindByID(req.UserID)
     if err != nil {
         return nil, errors.New("user not found")
@@ -39,15 +44,18 @@ func (s *StudentService) Create(req *dto.CreateStudentRequest) (*dto.StudentDeta
         return nil, errors.New("admission number already exists")
     }
     if req.ClassID != "" {
-        _, err := s.classRepo.FindByID(req.ClassID)
+        class, err := s.classRepo.FindByID(req.ClassID)
         if err != nil {
+            return nil, errors.New("class not found")
+        }
+        if class.SchoolID != effectiveID {
             return nil, errors.New("class not found")
         }
     }
     student := &models.Student{
         ID:            uuid.New().String(),
         UserID:        req.UserID,
-        SchoolID:      req.SchoolID,
+        SchoolID:      effectiveID,
         ClassID:       req.ClassID,
         AdmissionNo:   req.AdmissionNo,
         DateOfBirth:   req.DateOfBirth,
@@ -66,9 +74,12 @@ func (s *StudentService) Create(req *dto.CreateStudentRequest) (*dto.StudentDeta
     return s.toDetailResponse(student, user), nil
 }
 
-func (s *StudentService) GetByID(id string) (*dto.StudentDetailResponse, error) {
+func (s *StudentService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.StudentDetailResponse, error) {
     student, err := s.studentRepo.FindByID(id)
     if err != nil {
+        return nil, errors.New("student not found")
+    }
+    if err := authorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("student not found")
     }
     user, err := s.userRepo.FindByID(student.UserID)
@@ -78,9 +89,21 @@ func (s *StudentService) GetByID(id string) (*dto.StudentDetailResponse, error) 
     return s.toDetailResponse(student, user), nil
 }
 
-func (s *StudentService) GetByUserID(userID string) (*dto.StudentDetailResponse, error) {
+// GetByUserID looks up the Student record for userID - reachable both
+// as a student's own profile lookup (StudentHandler.GetStudentProfile,
+// which passes the caller's own user_id from the verified JWT) AND as
+// GET /user-student/:userId, which takes an arbitrary client-supplied
+// userId. Without the tenant check, the latter would let any
+// authenticated user enumerate another school's student records -
+// including guardian contact info and address, direct PII - by guessing
+// a user ID. The self-lookup case is unaffected: a student's own school
+// is always their own record's school, so the check passes naturally.
+func (s *StudentService) GetByUserID(userID, schoolID string, isPlatformOwner bool) (*dto.StudentDetailResponse, error) {
     student, err := s.studentRepo.FindByUserID(userID)
     if err != nil {
+        return nil, errors.New("student not found for this user")
+    }
+    if err := authorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("student not found for this user")
     }
     user, err := s.userRepo.FindByID(student.UserID)
@@ -103,7 +126,20 @@ func (s *StudentService) GetBySchool(schoolID string, page, limit int) ([]dto.St
     return responses, total, nil
 }
 
-func (s *StudentService) GetByClass(classID string, page, limit int) ([]dto.StudentDetailResponse, int64, error) {
+// GetByClass returns the roster for classID, but only once the class
+// itself is confirmed to belong to schoolID - without this check, any
+// authenticated user who knew or enumerated another school's class ID
+// could read that school's students (names, guardian contact info,
+// addresses - direct PII), even though the URL names no school at all.
+func (s *StudentService) GetByClass(classID, schoolID string, isPlatformOwner bool, page, limit int) ([]dto.StudentDetailResponse, int64, error) {
+    class, err := s.classRepo.FindByID(classID)
+    if err != nil {
+        return nil, 0, errors.New("class not found")
+    }
+    if err := authorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, 0, errors.New("class not found")
+    }
+
     students, total, err := s.studentRepo.FindByClass(classID, page, limit)
     if err != nil {
         return nil, 0, err
@@ -116,15 +152,21 @@ func (s *StudentService) GetByClass(classID string, page, limit int) ([]dto.Stud
     return responses, total, nil
 }
 
-func (s *StudentService) Update(id string, req *dto.UpdateStudentRequest) (*dto.StudentDetailResponse, error) {
+func (s *StudentService) Update(id string, req *dto.UpdateStudentRequest, schoolID string, isPlatformOwner bool) (*dto.StudentDetailResponse, error) {
     student, err := s.studentRepo.FindByID(id)
     if err != nil {
         return nil, errors.New("student not found")
     }
+    if err := authorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("student not found")
+    }
     if req.ClassID != nil {
         if *req.ClassID != "" {
-            _, err := s.classRepo.FindByID(*req.ClassID)
+            class, err := s.classRepo.FindByID(*req.ClassID)
             if err != nil {
+                return nil, errors.New("class not found")
+            }
+            if class.SchoolID != student.SchoolID {
                 return nil, errors.New("class not found")
             }
         }
@@ -159,17 +201,34 @@ func (s *StudentService) Update(id string, req *dto.UpdateStudentRequest) (*dto.
     return s.toDetailResponse(student, user), nil
 }
 
-func (s *StudentService) Delete(id string) error {
-    return s.studentRepo.Delete(id)
-}
-
-func (s *StudentService) TransferClass(studentID, newClassID string) error {
-    _, err := s.studentRepo.FindByID(studentID)
+func (s *StudentService) Delete(id, schoolID string, isPlatformOwner bool) error {
+    student, err := s.studentRepo.FindByID(id)
     if err != nil {
         return errors.New("student not found")
     }
-    _, err = s.classRepo.FindByID(newClassID)
+    if err := authorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("student not found")
+    }
+    return s.studentRepo.Delete(id)
+}
+
+// TransferClass moves studentID to newClassID, requiring both to belong
+// to schoolID - without the second check, a caller could transfer their
+// own school's student into another school's class, and without the
+// first, could transfer another school's student at all.
+func (s *StudentService) TransferClass(studentID, newClassID, schoolID string, isPlatformOwner bool) error {
+    student, err := s.studentRepo.FindByID(studentID)
     if err != nil {
+        return errors.New("student not found")
+    }
+    if err := authorizeSchoolOwnership(student.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("student not found")
+    }
+    class, err := s.classRepo.FindByID(newClassID)
+    if err != nil {
+        return errors.New("class not found")
+    }
+    if class.SchoolID != student.SchoolID {
         return errors.New("class not found")
     }
     return s.studentRepo.TransferClass(studentID, newClassID)

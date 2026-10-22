@@ -18,10 +18,14 @@ func NewClassLevelService(repo *repository.ClassLevelRepository) *ClassLevelServ
     return &ClassLevelService{repo: repo}
 }
 
-func (s *ClassLevelService) Create(req *dto.CreateClassLevelRequest) (*dto.ClassLevelResponse, error) {
+func (s *ClassLevelService) Create(req *dto.CreateClassLevelRequest, schoolID string, isPlatformOwner bool) (*dto.ClassLevelResponse, error) {
+    effectiveID := effectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+    if effectiveID == "" {
+        return nil, ErrSchoolScopeRequired
+    }
     level := &models.ClassLevel{
         ID:          uuid.New().String(),
-        SchoolID:    req.SchoolID,
+        SchoolID:    effectiveID,
         Name:        req.Name,
         LevelNumber: req.LevelNumber,
         Category:    req.Category,
@@ -42,9 +46,12 @@ func (s *ClassLevelService) Create(req *dto.CreateClassLevelRequest) (*dto.Class
     return s.toResponse(level), nil
 }
 
-func (s *ClassLevelService) GetByID(id string) (*dto.ClassLevelResponse, error) {
+func (s *ClassLevelService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.ClassLevelResponse, error) {
     level, err := s.repo.FindByID(id)
     if err != nil {
+        return nil, errors.New("class level not found")
+    }
+    if err := authorizeSchoolOwnership(level.SchoolID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("class level not found")
     }
     return s.toResponse(level), nil
@@ -76,12 +83,15 @@ func (s *ClassLevelService) GetByCategory(schoolID, category string) ([]dto.Clas
     return responses, nil
 }
 
-func (s *ClassLevelService) Update(id string, req *dto.UpdateClassLevelRequest) (*dto.ClassLevelResponse, error) {
+func (s *ClassLevelService) Update(id string, req *dto.UpdateClassLevelRequest, schoolID string, isPlatformOwner bool) (*dto.ClassLevelResponse, error) {
     level, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("class level not found")
     }
-    
+    if err := authorizeSchoolOwnership(level.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("class level not found")
+    }
+
     if req.Name != "" {
         level.Name = req.Name
     }
@@ -109,23 +119,44 @@ func (s *ClassLevelService) Update(id string, req *dto.UpdateClassLevelRequest) 
     return s.toResponse(level), nil
 }
 
-// func (s *ClassLevelService) Delete(id string) error {
-//     return s.repo.Delete(id)
-// }
 // Delete soft-deletes a single class level by ID
-func (s *ClassLevelService) Delete(id string) error {
+func (s *ClassLevelService) Delete(id, schoolID string, isPlatformOwner bool) error {
     if id == "" {
         return errors.New("id is required")
+    }
+    level, err := s.repo.FindByID(id)
+    if err != nil {
+        return errors.New("class level not found")
+    }
+    if err := authorizeSchoolOwnership(level.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("class level not found")
     }
     return s.repo.Delete(id)
 }
 
-// BulkDeleteClassLevels deletes multiple class levels by IDs
-func (s *ClassLevelService) BulkDeleteClassLevels(ids []string) (int64, error) {
+// BulkDeleteClassLevels deletes only the IDs owned by schoolID - any
+// other ID in the request is silently dropped, matching Delete above.
+func (s *ClassLevelService) BulkDeleteClassLevels(ids []string, schoolID string, isPlatformOwner bool) (int64, error) {
     if len(ids) == 0 {
         return 0, errors.New("no IDs provided for bulk delete")
     }
-    return s.repo.BulkDelete(ids)
+    if isPlatformOwner {
+        return s.repo.BulkDelete(ids)
+    }
+    allowed := make([]string, 0, len(ids))
+    for _, id := range ids {
+        level, err := s.repo.FindByID(id)
+        if err != nil {
+            continue
+        }
+        if level.SchoolID == schoolID {
+            allowed = append(allowed, id)
+        }
+    }
+    if len(allowed) == 0 {
+        return 0, nil
+    }
+    return s.repo.BulkDelete(allowed)
 }
 
 
@@ -159,14 +190,6 @@ func (s *ClassLevelService) List(req *dto.ListClassLevelsRequest) (*dto.SearchCl
         Limit:      req.Limit,
         TotalPages: totalPages,
     }, nil
-}
-
-// NEW: Bulk delete
-func (s *ClassLevelService) BulkDelete(ids []string) (int64, error) {
-    if len(ids) == 0 {
-        return 0, errors.New("no IDs provided")
-    }
-    return s.repo.BulkDelete(ids)
 }
 
 // NEW: Get stats

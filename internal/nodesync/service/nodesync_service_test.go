@@ -56,14 +56,33 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		)`,
 		`CREATE TABLE results (
 			id TEXT PRIMARY KEY, student_id TEXT NOT NULL, exam_id TEXT NOT NULL,
-			attempt_id TEXT NOT NULL, total_score INTEGER, percentage REAL, grade TEXT,
-			remarks TEXT, passed INTEGER DEFAULT 0, fully_graded INTEGER DEFAULT 1, published_at DATETIME,
+			attempt_id TEXT, total_score INTEGER, percentage REAL, grade TEXT,
+			remarks TEXT, passed INTEGER DEFAULT 0, theory_score INTEGER, fully_graded INTEGER DEFAULT 1, published_at DATETIME,
 			synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
 		`CREATE TABLE exam_event_logs (
 			id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, student_id TEXT NOT NULL,
 			event_type TEXT NOT NULL, client_sequence INTEGER, payload_json TEXT,
 			client_timestamp TEXT, synced_to_cloud_at DATETIME, created_at DATETIME
+		)`,
+		`CREATE TABLE report_card_approvals (
+			id TEXT PRIMARY KEY, school_id TEXT NOT NULL, student_id TEXT NOT NULL,
+			report_type TEXT NOT NULL, term_id TEXT DEFAULT '', session_id TEXT NOT NULL,
+			status TEXT NOT NULL, version INTEGER DEFAULT 1, snapshot_json TEXT, notes TEXT,
+			actor_id TEXT NOT NULL, synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE report_card_audit_logs (
+			id TEXT PRIMARY KEY, school_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+			action TEXT NOT NULL, report_type TEXT, student_id TEXT, class_id TEXT,
+			term_id TEXT, session_id TEXT, notes TEXT, content_hash TEXT NOT NULL,
+			synced_to_cloud_at DATETIME, created_at DATETIME
+		)`,
+		`CREATE TABLE attendance_records (
+			id TEXT PRIMARY KEY, school_id TEXT NOT NULL, student_id TEXT NOT NULL,
+			class_id TEXT NOT NULL, term_id TEXT NOT NULL, session_id TEXT NOT NULL,
+			date DATE NOT NULL, status TEXT NOT NULL, marked_by TEXT NOT NULL, notes TEXT,
+			synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME,
+			UNIQUE(student_id, term_id, date)
 		)`,
 	}
 	for _, stmt := range ddl {

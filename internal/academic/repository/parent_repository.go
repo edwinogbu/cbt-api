@@ -25,10 +25,17 @@ func (r *ParentRepository) FindLinksByParentID(parentID string) ([]models.Parent
 	return links, err
 }
 
-// FindStudentByAdmissionNumber returns all students with that admission number (supports multiple)
-func (r *ParentRepository) FindStudentsByAdmissionNumber(admissionNo string) ([]models.Student, error) {
+// FindStudentsByAdmissionNumberInSchool returns students with that
+// admission number WITHIN one school. schoolID must come from the
+// registering parent's own, server-validated school (their school_code),
+// never from client input directly - admission numbers are often
+// short/sequential, not secrets, and without this scope any registrant
+// could auto-link themselves as "parent" to a student at a completely
+// different school just by guessing a number, crossing the tenant
+// boundary this platform otherwise enforces everywhere else.
+func (r *ParentRepository) FindStudentsByAdmissionNumberInSchool(admissionNo, schoolID string) ([]models.Student, error) {
 	var students []models.Student
-	err := r.db.Where("admission_no = ? AND deleted_at IS NULL", admissionNo).Find(&students).Error
+	err := r.db.Where("admission_no = ? AND school_id = ? AND deleted_at IS NULL", admissionNo, schoolID).Find(&students).Error
 	return students, err
 }
 

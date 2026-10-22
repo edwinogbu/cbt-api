@@ -11,7 +11,7 @@ import (
 // TestGenerateAndValidateJWT_RoundTrip confirms the basic happy path: a
 // token this package issues validates and returns the same claims.
 func TestGenerateAndValidateJWT_RoundTrip(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestGenerateAndValidateJWT_RoundTrip(t *testing.T) {
 // TestValidateJWT_RejectsExpiredToken confirms expiry is actually
 // enforced, not just stored as a claim.
 func TestValidateJWT_RejectsExpiredToken(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", -time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", -time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -76,12 +76,32 @@ func TestValidateJWT_RejectsNoneAlgorithm(t *testing.T) {
 	}
 }
 
+// TestValidateJWT_RejectsNonHS256Algorithm guards against JWT algorithm
+// confusion: a token signed with the REAL server secret but under a
+// different algorithm (HS384 here) must still be rejected, since
+// ValidateJWT now pins jwt.WithValidMethods to HS256 explicitly rather
+// than accepting whatever algorithm the token's own header claims.
+func TestValidateJWT_RejectsNonHS256Algorithm(t *testing.T) {
+	wrongAlg := jwt.NewWithClaims(jwt.SigningMethodHS384, jwt.MapClaims{
+		"user_id": "user-123",
+		"role":    "super_admin",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	})
+	signed, err := wrongAlg.SignedString(jwtSecret)
+	if err != nil {
+		t.Fatalf("failed to build HS384 token: %v", err)
+	}
+	if _, err := ValidateJWT(signed); err == nil {
+		t.Fatal("expected a non-HS256 token (even with the real secret) to be rejected, got no error")
+	}
+}
+
 // TestValidateJWT_RejectsTamperedPayload confirms that flipping the role
 // claim in an otherwise-valid token (without re-signing, as an attacker
 // who can only read a token but not the server secret would have to try)
 // invalidates the signature.
 func TestValidateJWT_RejectsTamperedPayload(t *testing.T) {
-	token, err := GenerateJWT("user-123", "user@example.com", "student", time.Hour)
+	token, err := GenerateJWT("user-123", "user@example.com", "student", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}
@@ -92,7 +112,7 @@ func TestValidateJWT_RejectsTamperedPayload(t *testing.T) {
 	// Swap in the payload segment from a token that claims admin, built
 	// with a throwaway key - simulates an attacker splicing a
 	// higher-privilege payload onto a validly-signed token's header/sig.
-	adminPayloadToken, err := GenerateJWT("user-123", "user@example.com", "super_admin", time.Hour)
+	adminPayloadToken, err := GenerateJWT("user-123", "user@example.com", "super_admin", "school-1", time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT failed: %v", err)
 	}

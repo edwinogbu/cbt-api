@@ -54,11 +54,17 @@ func GenerateUUID() string {
     return hex.EncodeToString(bytes)
 }
 
-func GenerateJWT(userID, email, role string, expiry time.Duration) (string, error) {
+// GenerateJWT embeds schoolID as a signed claim so every downstream
+// tenant check (middleware.GetSchoolID) reads a value the server itself
+// set at login/token-issuance time from the database - never a value a
+// client could supply via a request body, query param, or header. Pass
+// "" for a user with no school (e.g. models.RolePlatformOwner).
+func GenerateJWT(userID, email, role, schoolID string, expiry time.Duration) (string, error) {
     claims := jwt.MapClaims{
         "user_id":    userID,
         "email":      email,
         "role":       role,
+        "school_id":  schoolID,
         "session_id": GenerateUUID(),
         "exp":        time.Now().Add(expiry).Unix(),
         "iat":        time.Now().Unix(),
@@ -67,10 +73,17 @@ func GenerateJWT(userID, email, role string, expiry time.Duration) (string, erro
     return token.SignedString(jwtSecret)
 }
 
+// ValidateJWT restricts accepted tokens to HS256 (jwt.WithValidMethods)
+// so the keyFunc's unconditional return of jwtSecret can never be
+// reached for a token claiming a different algorithm. Every token this
+// app issues (GenerateJWT) is already HS256, so this changes nothing
+// for a real token - it only forecloses the well-known JWT algorithm-
+// confusion class of attack (e.g. a forged "alg" header) for good,
+// rather than relying on this package only ever using one algorithm.
 func ValidateJWT(tokenString string) (jwt.MapClaims, error) {
     token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
         return jwtSecret, nil
-    })
+    }, jwt.WithValidMethods([]string{"HS256"}))
     if err != nil {
         return nil, err
     }

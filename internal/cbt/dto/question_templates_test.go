@@ -71,6 +71,25 @@ func TestTXTTemplate_ParsesWithTXTParser(t *testing.T) {
 	if len(items[1].Options) != 4 || items[1].CorrectOptionKeys[0] != "A" {
 		t.Errorf("sample question 1: options=%d correct=%v, want 4 options and [A]", len(items[1].Options), items[1].CorrectOptionKeys)
 	}
+	// Regression test for a real bug found via live testing: this
+	// format's determineQuestionType() always fell through to
+	// QuestionTypeSingle with zero options for any question with no
+	// detected A-D option lines, so every essay question in every
+	// TXT/DOCX bulk upload failed validation with "options are required
+	// for MCQ questions" - 100% of the time, including this template's
+	// own sample essay question. Neither prior version of this test
+	// caught it because neither checked items[2] (the essay sample) at
+	// all - only items[0] and items[1].
+	if items[2].QuestionType != QuestionTypeEssay {
+		t.Errorf("sample question 2 (essay): got type=%s, want essay", items[2].QuestionType)
+	}
+	if len(items[2].Options) != 0 {
+		t.Errorf("sample question 2 (essay): got %d options, want 0", len(items[2].Options))
+	}
+	wantExplanation := "A full answer should mention sunlight, chlorophyll, carbon dioxide, water, glucose, and oxygen."
+	if items[2].Explanation != wantExplanation {
+		t.Errorf("sample question 2 (essay): Explanation = %q, want the full model-answer text %q (not a mangled single letter)", items[2].Explanation, wantExplanation)
+	}
 }
 
 func TestDOCXTemplate_ParsesWithDOCXParser(t *testing.T) {
@@ -94,5 +113,20 @@ func TestDOCXTemplate_ParsesWithDOCXParser(t *testing.T) {
 	}
 	if len(items[1].Options) != 4 || items[1].CorrectOptionKeys[0] != "A" {
 		t.Errorf("sample question 1: options=%d correct=%v, want 4 options and [A]", len(items[1].Options), items[1].CorrectOptionKeys)
+	}
+	// Same regression test as TestTXTTemplate_ParsesWithTXTParser above,
+	// for the identical bug in DOCXParser.determineQuestionType -
+	// confirmed live by uploading GET /questions/templates/docx's own
+	// unmodified output through POST /questions/bulk-upload before this
+	// fix: "Row 3: options are required for MCQ questions".
+	if items[2].QuestionType != QuestionTypeEssay {
+		t.Errorf("sample question 2 (essay): got type=%s, want essay", items[2].QuestionType)
+	}
+	if len(items[2].Options) != 0 {
+		t.Errorf("sample question 2 (essay): got %d options, want 0", len(items[2].Options))
+	}
+	wantExplanation := "A full answer should mention sunlight, chlorophyll, carbon dioxide, water, glucose, and oxygen."
+	if items[2].Explanation != wantExplanation {
+		t.Errorf("sample question 2 (essay): Explanation = %q, want the full model-answer text %q (not a mangled single letter)", items[2].Explanation, wantExplanation)
 	}
 }

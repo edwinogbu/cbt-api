@@ -12,14 +12,34 @@ import (
 )
 
 type TermService struct {
-    repo *repository.TermRepository
+    repo        *repository.TermRepository
+    sessionRepo *repository.SessionRepository
 }
 
-func NewTermService(repo *repository.TermRepository) *TermService {
-    return &TermService{repo: repo}
+func NewTermService(repo *repository.TermRepository, sessionRepo *repository.SessionRepository) *TermService {
+    return &TermService{repo: repo, sessionRepo: sessionRepo}
 }
 
-func (s *TermService) Create(req *dto.CreateTermRequest) (*dto.TermResponse, error) {
+// authorizeTermTenant is Term's variant of authorizeSchoolOwnership
+// (tenant.go): Term carries no school_id of its own - it is scoped only
+// transitively via SessionID -> AcademicSession.SchoolID, the same
+// pattern as Exam -> Class in internal/cbt/service/exam_service.go.
+func (s *TermService) authorizeTermTenant(sessionID, schoolID string, isPlatformOwner bool) error {
+    if isPlatformOwner {
+        return nil
+    }
+    session, err := s.sessionRepo.FindByID(sessionID)
+    if err != nil {
+        return errors.New("term not found")
+    }
+    return authorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner)
+}
+
+func (s *TermService) Create(req *dto.CreateTermRequest, schoolID string, isPlatformOwner bool) (*dto.TermResponse, error) {
+    if err := s.authorizeTermTenant(req.SessionID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("session not found")
+    }
+
     // Generate name if not provided
     name := req.Name
     if name == "" {
@@ -30,7 +50,7 @@ func (s *TermService) Create(req *dto.CreateTermRequest) (*dto.TermResponse, err
         }
         name = termNames[req.TermNumber]
     }
-    
+
     term := &models.Term{
         ID:         uuid.New().String(),
         SessionID:  req.SessionID,
@@ -56,20 +76,27 @@ func (s *TermService) Create(req *dto.CreateTermRequest) (*dto.TermResponse, err
     return s.toResponse(term), nil
 }
 
-func (s *TermService) GetByID(id string) (*dto.TermResponse, error) {
+func (s *TermService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.TermResponse, error) {
     term, err := s.repo.FindByID(id)
     if err != nil {
+        return nil, errors.New("term not found")
+    }
+    if err := s.authorizeTermTenant(term.SessionID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("term not found")
     }
     return s.toResponse(term), nil
 }
 
-func (s *TermService) GetBySession(sessionID string) ([]dto.TermResponse, error) {
+func (s *TermService) GetBySession(sessionID, schoolID string, isPlatformOwner bool) ([]dto.TermResponse, error) {
+    if err := s.authorizeTermTenant(sessionID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("session not found")
+    }
+
     terms, err := s.repo.FindBySession(sessionID)
     if err != nil {
         return nil, err
     }
-    
+
     var responses []dto.TermResponse
     for _, term := range terms {
         // Get session name for each term
@@ -79,7 +106,11 @@ func (s *TermService) GetBySession(sessionID string) ([]dto.TermResponse, error)
     return responses, nil
 }
 
-func (s *TermService) GetCurrent(sessionID string) (*dto.TermResponse, error) {
+func (s *TermService) GetCurrent(sessionID, schoolID string, isPlatformOwner bool) (*dto.TermResponse, error) {
+    if err := s.authorizeTermTenant(sessionID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("session not found")
+    }
+
     term, err := s.repo.FindCurrentBySession(sessionID)
     if err != nil {
         return nil, errors.New("no current term found")
@@ -87,12 +118,15 @@ func (s *TermService) GetCurrent(sessionID string) (*dto.TermResponse, error) {
     return s.toResponse(term), nil
 }
 
-func (s *TermService) Update(id string, req *dto.UpdateTermRequest) (*dto.TermResponse, error) {
+func (s *TermService) Update(id string, req *dto.UpdateTermRequest, schoolID string, isPlatformOwner bool) (*dto.TermResponse, error) {
     term, err := s.repo.FindByID(id)
     if err != nil {
         return nil, errors.New("term not found")
     }
-    
+    if err := s.authorizeTermTenant(term.SessionID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("term not found")
+    }
+
     if req.Name != "" {
         term.Name = req.Name
     }
@@ -122,12 +156,26 @@ func (s *TermService) Update(id string, req *dto.UpdateTermRequest) (*dto.TermRe
     return s.toResponse(term), nil
 }
 
-func (s *TermService) Delete(id string) error {
+func (s *TermService) Delete(id, schoolID string, isPlatformOwner bool) error {
+    term, err := s.repo.FindByID(id)
+    if err != nil {
+        return errors.New("term not found")
+    }
+    if err := s.authorizeTermTenant(term.SessionID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("term not found")
+    }
     return s.repo.Delete(id)
 }
 
-// ListAllTerms returns all terms with pagination
-func (s *TermService) ListAllTerms(ctx context.Context, page, limit int) (*dto.TermListResponse, error) {
+// ListAllTerms returns all terms with pagination. Every authenticated
+// role could reach GET /terms/list with no school filter at all before
+// this fix - a non-platform-owner is now always scoped to their own
+// school (via the same repo query ListAllTermsBySchool uses); only an
+// authenticated platform_owner sees every school's terms.
+func (s *TermService) ListAllTerms(ctx context.Context, page, limit int, schoolID string, isPlatformOwner bool) (*dto.TermListResponse, error) {
+    if !isPlatformOwner {
+        return s.ListAllTermsBySchool(ctx, schoolID, page, limit)
+    }
     terms, total, err := s.repo.ListAllTerms(ctx, page, limit)
     if err != nil {
         return nil, err
@@ -183,8 +231,19 @@ func (s *TermService) ListAllTermsBySchool(ctx context.Context, schoolID string,
 }
 
 // GetAllTerms returns all terms without pagination (for dropdowns)
-func (s *TermService) GetAllTerms(ctx context.Context) ([]dto.TermResponse, error) {
-    terms, err := s.repo.GetAllTerms(ctx)
+// GetAllTerms is the unpaginated "for dropdowns" listing - GET
+// /terms/all had no school filter at all before this fix, so any
+// authenticated role (student included) could enumerate every term
+// across every school. A non-platform-owner is now always scoped to
+// their own school; only platform_owner sees everything.
+func (s *TermService) GetAllTerms(ctx context.Context, schoolID string, isPlatformOwner bool) ([]dto.TermResponse, error) {
+    var terms []models.Term
+    var err error
+    if isPlatformOwner {
+        terms, err = s.repo.GetAllTerms(ctx)
+    } else {
+        terms, _, err = s.repo.ListAllTermsBySchool(ctx, schoolID, 1, 100)
+    }
     if err != nil {
         return nil, err
     }
@@ -271,7 +330,29 @@ func (s *TermService) ListTerms(ctx context.Context, req *dto.ListTermsRequest) 
 }
 
 // BulkDeleteTerms - bulk delete
-func (s *TermService) BulkDeleteTerms(ctx context.Context, ids []string) (int64, error) {
+// BulkDeleteTerms deletes only the IDs whose session belongs to
+// schoolID - any other ID is silently dropped, matching Delete above.
+func (s *TermService) BulkDeleteTerms(ctx context.Context, ids []string, schoolID string, isPlatformOwner bool) (int64, error) {
+    if isPlatformOwner {
+        return s.bulkDeleteTermsUnscoped(ctx, ids)
+    }
+    allowed := make([]string, 0, len(ids))
+    for _, id := range ids {
+        term, err := s.repo.FindByID(id)
+        if err != nil {
+            continue
+        }
+        if s.authorizeTermTenant(term.SessionID, schoolID, false) == nil {
+            allowed = append(allowed, id)
+        }
+    }
+    if len(allowed) == 0 {
+        return 0, nil
+    }
+    return s.bulkDeleteTermsUnscoped(ctx, allowed)
+}
+
+func (s *TermService) bulkDeleteTermsUnscoped(ctx context.Context, ids []string) (int64, error) {
     if len(ids) == 0 {
         return 0, errors.New("no IDs provided")
     }

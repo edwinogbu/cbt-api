@@ -48,6 +48,11 @@ import (
 	nodeSyncRepo "cbt-api/internal/nodesync/repository"
 	nodeSyncService "cbt-api/internal/nodesync/service"
 
+	// PLATFORM OWNER: TENANT REGISTRY, BRANDING, AUDIT LOG, LAN SETUP DASHBOARD
+	platformHandler "cbt-api/internal/platform/handler"
+	platformRepo "cbt-api/internal/platform/repository"
+	platformService "cbt-api/internal/platform/service"
+
 	"cbt-api/pkg/email"
 	"cbt-api/pkg/payment"
 	"cbt-api/pkg/database"
@@ -103,6 +108,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 	nodeSyncSvc := nodeSyncService.NewNodeSyncService(nodeSyncRepository)
 	nodeSyncH := nodeSyncHandler.NewNodeSyncHandler(nodeSyncSvc)
 
+	// PLATFORM OWNER INITIALIZATION
+	platformH := initPlatformHandler()
+
 	// API version 1 group
 	v1 := r.Group("/api/v1")
 	{
@@ -122,21 +130,35 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 		setupOnboardingRoutes(v1, onboardingH)
 
 		// ========== SUBJECT ROUTES ==========
+		// Subject is a global, platform-shared curriculum taxonomy (no
+		// school_id column at all - confirmed against the live schema),
+		// so there's no tenant-isolation dimension to scope these by.
+		// But before this fix, mutating endpoints had no role gate
+		// beyond AuthMiddleware - any authenticated user, including a
+		// student or parent, could create/rename/delete a subject every
+		// school's exam and question-bank data references, a platform-
+		// wide vandalism vector. Reads stay open to any authenticated
+		// user; writes now require the same roles the academic routes
+		// already use for curriculum management.
 		subject := v1.Group("/subjects")
 		subject.Use(middleware.AuthMiddleware())
 		{
-			subject.POST("/create", subjectHandler.CreateSubject)
 			subject.GET("/list", subjectHandler.ListSubjects)
 			subject.GET("/active", subjectHandler.ListActiveSubjects)
 			subject.GET("/view/:id", subjectHandler.GetSubject)
-			subject.PUT("/update/:id", subjectHandler.UpdateSubject)
-			subject.DELETE("/delete/:id", subjectHandler.DeleteSubject)
+		}
+		subjectWrite := v1.Group("/subjects")
+		subjectWrite.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			subjectWrite.POST("/create", subjectHandler.CreateSubject)
+			subjectWrite.PUT("/update/:id", subjectHandler.UpdateSubject)
+			subjectWrite.DELETE("/delete/:id", subjectHandler.DeleteSubject)
 		}
 
 		// ==================== EXAM ROUTES ====================
 		// ALL 23 EXAM ENDPOINTS ORGANIZED UNDER /v1/exams
 		setupExamRoutes(v1, examH, studentRepo)
-		setupStudentExamRoutes(v1, examH, studentRepo)
+		setupStudentExamRoutes(v1, examH, questionH, studentRepo)
 
 		// ==================== QUESTION ROUTES ====================
 		setupCBTQuestionRoutes(v1, questionH)
@@ -149,6 +171,9 @@ func SetupRoutes(r *gin.Engine, q queue.Queue, e *engine.Engine) {
 
 		// ==================== SCHOOL NODE <-> CLOUD SYNC ROUTES ====================
 		setupNodeSyncRoutes(v1, nodeSyncH, nodeSyncSvc)
+
+		// ==================== PLATFORM OWNER ROUTES ====================
+		setupPlatformRoutes(v1, platformH)
 	}
 
 	// Swagger UI endpoint (no version prefix, accessible directly)
@@ -194,9 +219,14 @@ func setupOnboardingRoutes(rg *gin.RouterGroup, handler *onboardingHandler.Onboa
 		// Health check
 		onboarding.GET("/health", handler.HealthCheck)
 
-		// Admin endpoints (protected)
+		// Admin endpoints (protected) - admin/super_admin, plus
+		// platform_owner for cross-tenant oversight (same gate as every
+		// other admin surface in this codebase). GetOnboardingStats in
+		// particular reports platform-wide onboarding-funnel counts
+		// (see OnboardingService.GetOnboardingStats), not any one
+		// school's own data, so platform_owner reaching it is the point.
 		admin := onboarding.Group("/admin")
-		admin.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+		admin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 		{
 			admin.POST("/complete/:session_id", handler.CompleteOnboarding)
 			admin.DELETE("/cleanup", handler.CleanupExpiredSessions)
@@ -245,7 +275,7 @@ func initOnboardingHandler() *onboardingHandler.OnboardingHandler {
 // ============================================
 // setupStudentExamRoutes - All student exam routes with automatic context
 // ============================================
-func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, studentRepo *academicRepo.StudentRepository) {
+func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, questionHandler *cbtQuestionHandler.QuestionHandler, studentRepo *academicRepo.StudentRepository) {
 	student := rg.Group("/student/exams")
 	student.Use(middleware.AuthMiddleware())
 	student.Use(middleware.StudentContextMiddleware(studentRepo))
@@ -265,7 +295,26 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 		student.GET("/review/:attemptId", handler.GetStudentExamReviewForUser)
 		student.GET("/termly-result", handler.GetStudentTermlyResultForUser)
 		student.GET("/report-card", handler.GetTermlyReportCardForUser)
+		student.GET("/report-card/pdf", handler.DownloadTermlyReportCardForUser)
+		student.GET("/report-card/midterm", handler.GetMidTermProgressReportForUser)
+		student.GET("/report-card/midterm/pdf", handler.DownloadMidTermProgressReportForUser)
+		student.GET("/report-card/promotion", handler.GetPromotionReportCardForUser)
+		student.GET("/report-card/promotion/pdf", handler.DownloadPromotionReportCardForUser)
+		student.GET("/attendance/summary", handler.GetMyAttendanceSummary)
 		student.POST("/practice", handler.StartPracticeForUser)
+		// Reuses the exact same handler/service/tenant-scoping as the
+		// teacher/admin-only GET /questions/academic/current (both end
+		// up calling QuestionService.GetCurrentAcademicContext with
+		// middleware.ResolveSchoolID's own school_id resolution, which
+		// is already safe for any authenticated role - it forces the
+		// caller's own school_id except for platform_owner, regardless
+		// of which route group reaches it). Added so a student-facing
+		// page (the termly report card) can resolve "my current
+		// session/term" without widening the /questions group's own
+		// role gate, which was deliberately tightened to exclude
+		// students in an earlier fix precisely because that group also
+		// bundles write/CRUD operations students must never reach.
+		student.GET("/academic/current", questionHandler.GetCurrentAcademicContext)
 	}
 }
 
@@ -276,15 +325,6 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 	exams := rg.Group("/exams")
 	exams.Use(middleware.AuthMiddleware())
 	{
-		exams.POST("/create", handler.CreateExam)
-		exams.GET("/:id", handler.GetExam)
-		exams.GET("/list", handler.ListExams)
-		exams.PUT("/:id", handler.UpdateExam)
-		exams.DELETE("/:id", handler.DeleteExam)
-		exams.POST("/:id/questions", handler.AddQuestionsToExam)
-		exams.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
-		exams.POST("/:id/assign", handler.AssignExam)
-		exams.GET("/:id/assignments", handler.GetExamAssignments)
 		// These four handlers (StartExam/SaveAnswer/BulkSaveAnswers/SubmitExam)
 		// call middleware.GetStudentID(c), which reads the "student_id" key
 		// set by StudentContextMiddleware - every other route in this group
@@ -303,32 +343,235 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		exams.POST("/save-answer", middleware.StudentContextMiddleware(studentRepo), handler.SaveAnswer)
 		exams.POST("/bulk-answer", middleware.StudentContextMiddleware(studentRepo), handler.BulkSaveAnswers)
 		exams.POST("/submit", middleware.StudentContextMiddleware(studentRepo), handler.SubmitExam)
-		exams.GET("/:id/results/class", handler.GetClassResults)
-		exams.GET("/:id/results/export", handler.ExportResults)
-		exams.GET("/:id/results/rankings", handler.GetExamRankings)
-		exams.GET("/:id/statistics", handler.GetExamStatistics)
-		exams.GET("/students/:studentId/performance", handler.GetStudentPerformance)
+		// These two ignore their :studentId path param entirely and
+		// resolve the real student from middleware.GetUserID(c) instead
+		// (self-service only), so they're safe under plain AuthMiddleware.
 		exams.GET("/students/:studentId/exams/:examId/result", handler.GetStudentExamResult)
 		exams.GET("/practice/:studentId/:subjectId", handler.StartPractice)
-		exams.GET("/teacher/subjects/:subjectId/results", handler.GetTeacherSubjectResults)
-		exams.GET("/teacher/classes/:classId/results", handler.GetTeacherClassResults)
-		exams.GET("/teacher/performance/dashboard", handler.GetTeacherDashboard)
-		exams.GET("/school/performance/overview", handler.GetSchoolPerformanceOverview)
-		exams.POST("/create-with-context", handler.CreateExamWithContext)
-		exams.GET("/subject-questions", handler.GetSubjectQuestionsForExam)
-		exams.POST("/:id/bulk-questions", handler.BulkAddQuestionsToExam)
-		exams.GET("/:id/preview", handler.PreviewExam)
-		exams.POST("/:id/publish", handler.PublishExam)
 
-		// Manual/essay marking - teacher/admin/super_admin only (same
-		// role gate as the question-bank group below); authorization
-		// against the specific exam's class is enforced inside
-		// ExamService.authorizeMarking, not just this role check.
+		// Everything below is a teacher/admin/super_admin surface, plus
+		// platform_owner for cross-tenant oversight (same gate as the
+		// question-bank and academic route groups): students/parents have
+		// no legitimate call into exam creation, grading-adjacent data,
+		// or cross-student/class reporting. Before this fix this entire
+		// group (23+ routes) had ONLY AuthMiddleware - any authenticated
+		// role, students included, could call CreateExam, DeleteExam,
+		// PublishExam, GetClassResults, ExportResults, etc. for any exam
+		// in their own school. Each handler below still resolves its own
+		// school scope from the verified JWT (authorizeExamTenant/
+		// authorizeClassTenant), so this role gate is a second,
+		// independent layer, not the only one.
+		examsStaff := exams.Group("")
+		examsStaff.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			examsStaff.POST("/create", handler.CreateExam)
+			examsStaff.GET("/:id", handler.GetExam)
+			examsStaff.GET("/list", handler.ListExams)
+			examsStaff.PUT("/:id", handler.UpdateExam)
+			examsStaff.DELETE("/:id", handler.DeleteExam)
+			examsStaff.POST("/:id/questions", handler.AddQuestionsToExam)
+			examsStaff.DELETE("/:id/questions/:questionId", handler.RemoveQuestionFromExam)
+			examsStaff.POST("/:id/assign", handler.AssignExam)
+			examsStaff.GET("/:id/assignments", handler.GetExamAssignments)
+			examsStaff.GET("/:id/results/class", handler.GetClassResults)
+			examsStaff.GET("/:id/results/export", handler.ExportResults)
+			examsStaff.GET("/:id/results/rankings", handler.GetExamRankings)
+			examsStaff.GET("/:id/statistics", handler.GetExamStatistics)
+			examsStaff.GET("/students/:studentId/performance", handler.GetStudentPerformance)
+			examsStaff.GET("/teacher/subjects/:subjectId/results", handler.GetTeacherSubjectResults)
+			examsStaff.GET("/teacher/classes/:classId/results", handler.GetTeacherClassResults)
+			examsStaff.GET("/teacher/performance/dashboard", handler.GetTeacherDashboard)
+			examsStaff.GET("/school/performance/overview", handler.GetSchoolPerformanceOverview)
+			examsStaff.POST("/create-with-context", handler.CreateExamWithContext)
+			examsStaff.GET("/subject-questions", handler.GetSubjectQuestionsForExam)
+			examsStaff.POST("/:id/bulk-questions", handler.BulkAddQuestionsToExam)
+			examsStaff.GET("/:id/preview", handler.PreviewExam)
+			examsStaff.POST("/:id/publish", handler.PublishExam)
+		}
+
+		// Manual/essay marking - teacher/admin/super_admin, plus
+		// platform_owner for cross-tenant support (same role gate as the
+		// question-bank group below); the tenant boundary itself is
+		// enforced inside ExamService.MarkDescriptiveAnswer/
+		// GetPendingManualMarking (authorizeExamTenant / the school_id
+		// filter), not just this role check.
 		marking := exams.Group("/marking")
-		marking.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
+		marking.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
 		{
 			marking.GET("/pending", handler.GetPendingManualMarking)
 			marking.POST("/grade", handler.MarkDescriptiveAnswer)
+		}
+
+		// Report-card comments: a teacher sets their own remark, but
+		// "principal" has no distinct role in this system - an
+		// admin/super_admin stands in for the principal's sign-off, so
+		// that endpoint is deliberately NOT open to "teacher".
+		reportCardRemarks := exams.Group("/report-card")
+		{
+			teacherRemark := reportCardRemarks.Group("")
+			teacherRemark.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			teacherRemark.POST("/teacher-remark", handler.SetTeacherReportCardRemark)
+
+			principalRemark := reportCardRemarks.Group("")
+			principalRemark.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			principalRemark.POST("/principal-remark", handler.SetPrincipalReportCardRemark)
+
+			// Lets an authorized school admin preview their own
+			// school's report-card template (real name/logo/brand
+			// color, illustrative sample student data) before any real
+			// result is ever printed.
+			templatePreview := reportCardRemarks.Group("")
+			templatePreview.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			templatePreview.GET("/preview", handler.PreviewReportCardTemplate)
+
+			midTermRemark := reportCardRemarks.Group("")
+			midTermRemark.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			midTermRemark.POST("/midterm-remark", handler.SetMidTermRemark)
+
+			// Recording the FINAL promotion decision is never open to
+			// "teacher" - a recommendation (computed, shown on the
+			// report itself) is not the same as the school's
+			// authorized decision, which only admin-tier roles may
+			// record.
+			promotionDecision := reportCardRemarks.Group("")
+			promotionDecision.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			promotionDecision.POST("/promotion-decision", handler.RecordPromotionDecision)
+
+			// Approving/rejecting a report card is the same "principal"
+			// sign-off as the promotion decision above - not open to
+			// "teacher" for the same reason. Reading approval status/
+			// history is informational and open to teacher too, so
+			// staff preparing a class's results can see what is already
+			// approved without needing admin-tier access.
+			reportCardApproval := reportCardRemarks.Group("")
+			reportCardApproval.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
+			reportCardApproval.POST("/approve", handler.ApproveReportCard)
+			reportCardApproval.POST("/reject", handler.RejectReportCard)
+			reportCardApproval.POST("/batch-approve", handler.BatchApproveReportCards)
+			// Integrity verification is admin-tier, not teacher-readable
+			// like plain approval-status/history below - it's a
+			// compliance/security check (did anything bypass the API and
+			// edit an audit row directly?), not routine reading.
+			reportCardApproval.GET("/approval-history/verify", handler.VerifyReportCardAuditIntegrity)
+
+			reportCardApprovalRead := reportCardRemarks.Group("")
+			reportCardApprovalRead.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+			reportCardApprovalRead.GET("/approval-status", handler.GetReportCardApprovalStatus)
+			reportCardApprovalRead.GET("/approval-history", handler.GetReportCardApprovalHistory)
+		}
+
+		// Class-wide report-card batch review, bulk PDF, and
+		// spreadsheet export - same staff role gate as the rest of
+		// examsStaff above (teacher/admin/super_admin/platform_owner),
+		// with the class-level tenant boundary enforced inside
+		// ExamService.authorizeClassTenant, not just this role check.
+		reportCardBatch := exams.Group("/classes/:classId/report-cards")
+		reportCardBatch.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			reportCardBatch.GET("", handler.GetClassReportCardSummary)
+			reportCardBatch.GET("/batch-pdf", handler.DownloadClassReportCardsZIP)
+			reportCardBatch.GET("/export", handler.ExportClassReportCards)
+		}
+
+		// Attendance: a teacher marks/reads their own class's register;
+		// the tenant boundary is enforced inside
+		// ExamService.authorizeClassTenant, same as reportCardBatch above.
+		attendance := exams.Group("/attendance")
+		attendance.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			attendance.POST("/mark", handler.MarkClassAttendance)
+			attendance.GET("/class/:classId", handler.GetClassAttendanceForDate)
+			attendance.GET("/summary", handler.GetStudentAttendanceSummary)
+		}
+
+		// Academic Broad Sheet / Student Score Register system.
+		// Assessment settings (weighted components, grading boundaries)
+		// and teacher-subject assignments are school-policy
+		// configuration - admin-tier, same as every other academic
+		// configuration group (classes/sessions/terms), plus
+		// vp_academics (an academic administrator per the spec, granted
+		// the same way as hod/examination_officer - see
+		// models.RoleVPAcademics's own doc comment).
+		assessmentSettings := exams.Group("/academic")
+		assessmentSettings.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner", "vp_academics"))
+		{
+			assessmentSettings.POST("/assessment-schemes", handler.UpsertAssessmentScheme)
+			assessmentSettings.GET("/assessment-schemes", handler.ListAssessmentSchemes)
+			assessmentSettings.DELETE("/assessment-schemes/:id", handler.DeactivateAssessmentScheme)
+			assessmentSettings.POST("/grading-scales", handler.UpsertGradingScale)
+			assessmentSettings.GET("/grading-scales", handler.ListGradingScales)
+			assessmentSettings.DELETE("/grading-scales/:id", handler.DeactivateGradingScale)
+			assessmentSettings.POST("/teacher-subject-assignments", handler.CreateTeacherSubjectAssignment)
+			assessmentSettings.GET("/teacher-subject-assignments", handler.ListTeacherSubjectAssignments)
+			assessmentSettings.DELETE("/teacher-subject-assignments/:id", handler.DeleteTeacherSubjectAssignment)
+		}
+
+		// A teacher's own "my subjects" landing view, and the Student
+		// Score Register itself - open to every staff role that might
+		// BE an assigned subject teacher or need oversight read access
+		// (HOD/Examination Officer/VP Academics); ExamService.
+		// SaveScoreRegister/authorizeClassTenant enforce the actual
+		// class-tenant boundary, the same pattern reportCardBatch/
+		// attendance above already use rather than narrowing this role
+		// gate further.
+		scoreRegister := exams.Group("")
+		scoreRegister.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
+		{
+			scoreRegister.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
+			scoreRegister.GET("/score-register", handler.GetScoreRegister)
+			scoreRegister.POST("/score-register/save", handler.SaveScoreRegister)
+			scoreRegister.POST("/score-register/remark", handler.SaveScoreRegisterRemark)
+			scoreRegister.GET("/score-register/status", handler.GetSubjectResultSubmissionStatus)
+			// Submit is the subject teacher's own action - same broad
+			// staff-role gate as the group above (ExamService.
+			// authorizeClassTenant still enforces the tenant boundary);
+			// narrower than that for who may actually be a subject
+			// teacher would need per-assignment enforcement this
+			// iteration doesn't add (see GetMySubjectAssignments' own
+			// doc comment on that same gap).
+			scoreRegister.POST("/score-register/submit", handler.SubmitSubjectResults)
+		}
+
+		// Review/return is HOD/Examination Officer tier (plus admin, who
+		// can always stand in); approve is the academic-administrator
+		// tier - admin/super_admin/vp_academics/platform_owner. Two
+		// separate groups, not scoreRegister above, since these must
+		// never be reachable by a plain "teacher" (a teacher approving
+		// their own submission would defeat the whole approval chain).
+		subjectResultReview := exams.Group("/score-register")
+		subjectResultReview.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "platform_owner"))
+		{
+			subjectResultReview.POST("/review", handler.ReviewSubjectResults)
+			subjectResultReview.POST("/return", handler.ReturnSubjectResults)
+		}
+
+		subjectResultApproval := exams.Group("/score-register")
+		subjectResultApproval.Use(middleware.RoleMiddleware("admin", "super_admin", "vp_academics", "platform_owner"))
+		subjectResultApproval.POST("/approve", handler.ApproveSubjectResults)
+
+		// Broad sheets: the Class Teacher view is open to the same
+		// staff roles as the score register itself (a class's own
+		// teacher, or any oversight role); the Subject (HOD/Examination
+		// Officer) and School-wide (VP Academics) views are oversight-
+		// only, same gate as the review/approval groups above - a plain
+		// "teacher" has no business pulling another teacher's subject
+		// standing across classes, or the whole school's monitor.
+		classBroadSheet := exams.Group("/broadsheet")
+		classBroadSheet.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
+		classBroadSheet.GET("/class", handler.GetClassBroadSheet)
+		classBroadSheet.GET("/class/export", handler.ExportClassBroadSheet)
+		classBroadSheet.POST("/class/review/save", handler.SaveClassBroadSheetReview)
+		classBroadSheet.POST("/class/review/submit", handler.SubmitClassBroadSheetReview)
+
+		oversightBroadSheet := exams.Group("/broadsheet")
+		oversightBroadSheet.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "vp_academics", "platform_owner"))
+		{
+			oversightBroadSheet.GET("/subject", handler.GetSubjectBroadSheet)
+			oversightBroadSheet.GET("/subject/export", handler.ExportSubjectBroadSheet)
+			oversightBroadSheet.GET("/school", handler.GetSchoolBroadSheet)
+			oversightBroadSheet.GET("/school/export", handler.ExportSchoolBroadSheet)
+			oversightBroadSheet.POST("/class/review/approve", handler.ApproveClassBroadSheetReview)
+			oversightBroadSheet.POST("/class/review/return", handler.ReturnClassBroadSheetReview)
 		}
 	}
 }
@@ -342,7 +585,20 @@ func setupActorRoutes(rg *gin.RouterGroup,
 	parentH *parentHandler.ParentHandler) {
 
 	admin := rg.Group("/admin")
-	admin.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	// AdminOnly() is an exact-match RoleMiddleware("admin") - it never
+	// included super_admin or platform_owner, even though every method
+	// AdminHandler calls into (AdminService.AssignTeacher/ListUsersByRole/
+	// ListAllStudents/ListAllClasses/ListAllTeachers/HardDeleteStudent/
+	// UnassignTeacher) is already role-agnostic once past this gate - each
+	// takes schoolID+isPlatformOwner and scopes/bypasses on those alone,
+	// matching the RoleMiddleware("admin", "super_admin", "platform_owner")
+	// gate every other admin-ish route group in this codebase already
+	// uses (academic/questions/subscriptions/exams). Confirmed live: a
+	// real super_admin's own dashboard got 403 "Insufficient permissions"
+	// on every one of these calls (ListUsers/ListStudents/ListClasses/
+	// ListTeachers), rendering it empty - not a deliberate restriction,
+	// just this one group never updated when super_admin was introduced.
+	admin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		admin.POST("/teachers/assign", adminH.AssignTeacher)
 		admin.DELETE("/teachers/unassign/:classId", adminH.UnassignTeacher)
@@ -351,6 +607,18 @@ func setupActorRoutes(rg *gin.RouterGroup,
 		admin.GET("/classes", adminH.ListClasses)
 		admin.GET("/teachers", adminH.ListTeachers)
 		admin.DELETE("/students/:id/permanent", adminH.HardDeleteStudent)
+		// Read-only, filesystem-sourced backup status (Master
+		// Implementation Plan section 7) - reports what
+		// scripts/backup-school-node.sh has actually written to
+		// BACKUP_DIR, never a claimed/assumed status. Same role gate
+		// as every other /admin/* route; a backup is a per-node/
+		// per-school concern, not platform-owner-exclusive.
+		admin.GET("/backups", adminHandler.ListBackups)
+		// Live, real-time node health (Master Implementation Plan
+		// section 1 "guided setup... health monitoring") - DB/Redis
+		// connectivity + latency, process uptime, node identity. Same
+		// role gate as every other /admin/* route.
+		admin.GET("/system/health", adminHandler.GetSystemHealth)
 	}
 
 	teacher := rg.Group("/teacher")
@@ -414,10 +682,15 @@ func setupAuthRoutes(rg *gin.RouterGroup, handler *authHandler.AuthHandler) {
 		protected.POST("/switch-role", handler.SwitchRole)
 	}
 
-	// Admin-only role grant/revoke management - who gets which extra
-	// role is an admin decision, enforced server-side.
+	// Role grant/revoke management - who gets which extra role is an
+	// admin decision, enforced server-side, plus platform_owner for
+	// cross-tenant support (same gate as academic/subscription/questions).
+	// AuthService.GrantRole/RevokeRole independently verify the target
+	// user belongs to the caller's own school (platform_owner exempt),
+	// so this role gate alone was never the only thing standing between
+	// a school admin and another school's user roster.
 	roleAdmin := rg.Group("/auth/users")
-	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin"))
+	roleAdmin.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		roleAdmin.POST("/:id/roles", handler.GrantRole)
 		roleAdmin.DELETE("/:id/roles/:role", handler.RevokeRole)
@@ -436,8 +709,26 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 	classHandler *academicHandler.ClassHandler,
 	studentHandler *academicHandler.StudentHandler) {
 
+	// A student's own profile lookup (StudentHandler.GetStudentProfile
+	// reads the caller's own user_id from the verified JWT, never a
+	// client-supplied one - see its own doc comment) is the one
+	// legitimate non-staff read in this whole route group, so it gets
+	// its own unrestricted-by-role group, authenticated but otherwise
+	// open to every role.
+	academicSelfProfile := rg.Group("/")
+	academicSelfProfile.Use(middleware.AuthMiddleware())
+	{
+		academicSelfProfile.GET("/student/profile", studentHandler.GetStudentProfile)
+	}
+
+	// Every other academic-module route is school/class/term/student
+	// management - teachers and admins (school-scoped, enforced in the
+	// handler/service layer) and platform_owner (cross-tenant). Students
+	// and parents have no legitimate call into it: before this gate, any
+	// authenticated role - students included - could call these CRUD
+	// endpoints, matching the gate already applied to /questions.
 	academic := rg.Group("/")
-	academic.Use(middleware.AuthMiddleware())
+	academic.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "teacher", "platform_owner"))
 	{
 		academic.POST("/schools", schoolHandler.CreateSchool)
 		academic.GET("/schools", schoolHandler.GetAllSchools)
@@ -509,8 +800,6 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 		academic.PUT("/classes/:id", classHandler.UpdateClass)
 		academic.DELETE("/classes/:id", classHandler.DeleteClass)
 
-		academic.GET("/student/profile", studentHandler.GetStudentProfile)
-
 		academic.POST("/students", studentHandler.CreateStudent)
 		academic.GET("/school-students/:schoolId", studentHandler.GetStudentsBySchool)
 		academic.GET("/class-students/:classId", studentHandler.GetStudentsByClass)
@@ -527,7 +816,10 @@ func setupAcademicRoutes(rg *gin.RouterGroup,
 // ============================================
 func setupSubscriptionRoutes(rg *gin.RouterGroup, handler *subscriptionHandler.SubscriptionHandler) {
 	subscription := rg.Group("/subscriptions")
-	subscription.Use(middleware.AuthMiddleware())
+	// Billing/subscription management is an admin-only surface (plus
+	// platform_owner, cross-tenant) - before this gate, any authenticated
+	// role, students and parents included, could call these endpoints.
+	subscription.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		subscription.POST("", handler.CreateSubscription)
 		subscription.GET("", handler.GetSubscriptions)
@@ -552,12 +844,18 @@ func setupSubscriptionRoutes(rg *gin.RouterGroup, handler *subscriptionHandler.S
 func setupCBTQuestionRoutes(rg *gin.RouterGroup, handler *cbtQuestionHandler.QuestionHandler) {
 	q := rg.Group("/questions")
 	q.Use(middleware.AuthMiddleware())
-	// Question bank management is a teacher/admin surface: students and
-	// parents have no legitimate call into it (confirmed - the frontend's
+	// Question bank management is a teacher/admin surface, plus
+	// platform_owner for cross-tenant oversight/support (same gate as
+	// the academic and subscription route groups): students and parents
+	// have no legitimate call into it (confirmed - the frontend's
 	// question.service.ts is only wired into /dashboard/admin and teacher
 	// pages), and the FKs trusted inside these handlers (school/class/subject)
-	// are only safe once the caller's role is restricted here.
-	q.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin"))
+	// are only safe once the caller's role is restricted here. Every
+	// handler in this group resolves its own school scope from the
+	// verified JWT (see middleware.GetSchoolID/IsPlatformOwner) rather
+	// than trusting a client-supplied value, so platform_owner's
+	// cross-tenant reach is bounded by that, not by this role gate alone.
+	q.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
 	{
 		q.POST("/create", handler.CreateQuestion)
 		q.GET("/:id", handler.GetQuestion)
@@ -640,11 +938,58 @@ func setupNodeSyncRoutes(rg *gin.RouterGroup, handler *nodeSyncHandler.NodeSyncH
 		nodesync.GET("/pull", handler.Pull)
 	}
 
+	// LAN Setup Dashboard: issuing a School CBT Node credential - admin/
+	// super_admin for their own school, plus platform_owner for
+	// cross-tenant support (same gate as every other admin surface in
+	// this codebase). The tenant boundary itself is enforced inside
+	// NodeSyncHandler.CreateCredential (RequireOwnSchool against the
+	// named school_id), not just this role check - a credential names
+	// its own target school in the request body, so the role check alone
+	// was never enough.
 	adminNodes := rg.Group("/admin/school-nodes")
-	adminNodes.Use(middleware.AuthMiddleware(), middleware.AdminOnly())
+	adminNodes.Use(middleware.AuthMiddleware(), middleware.RoleMiddleware("admin", "super_admin", "platform_owner"))
 	{
 		adminNodes.POST("/credentials", handler.CreateCredential)
 	}
+}
+
+// ============================================
+// PLATFORM OWNER ROUTES (Master Implementation Plan Phases 3-4, 10, 11)
+// ============================================
+// Tenant registry, platform-controlled branding, cross-tenant audit log,
+// and the LAN Setup Dashboard. Every route here is gated to EXACTLY
+// "platform_owner" via middleware.PlatformOwnerOnly() - never "admin" or
+// "super_admin", which are school-scoped roles. Unlike every other admin-ish
+// group in this file (which adds platform_owner alongside admin/super_admin
+// for cross-tenant oversight), this group grants NO access at all to
+// admin/super_admin: a school administrator must never read or write
+// another school's tenant record, another school's LAN configuration, or
+// the platform-wide audit log, regardless of their own school's role.
+func setupPlatformRoutes(rg *gin.RouterGroup, handler *platformHandler.PlatformHandler) {
+	platform := rg.Group("/platform")
+	platform.Use(middleware.AuthMiddleware(), middleware.PlatformOwnerOnly())
+	{
+		platform.GET("/tenants", handler.ListTenants)
+		platform.GET("/tenants/:id", handler.GetTenant)
+		platform.PUT("/tenants/:id/branding", handler.UpdateBranding)
+		platform.PUT("/tenants/:id/provision", handler.ProvisionTenant)
+		platform.PUT("/tenants/:id/suspend", handler.SuspendTenant)
+
+		platform.GET("/audit-logs", handler.ListAuditLogs)
+
+		platform.GET("/lan-config/:schoolId", handler.GetLANConfig)
+		platform.PUT("/lan-config/:schoolId", handler.UpdateLANConfig)
+		platform.PUT("/lan-config/:schoolId/active", handler.SetLANConfigActive)
+		platform.POST("/lan-config/:schoolId/test", handler.TestLANConnectivity)
+		platform.GET("/lan-config/:schoolId/history", handler.ListLANConfigHistory)
+		platform.POST("/lan-config/:schoolId/rollback", handler.RollbackLANConfig)
+	}
+}
+
+func initPlatformHandler() *platformHandler.PlatformHandler {
+	repo := platformRepo.NewPlatformRepository(database.DB)
+	svc := platformService.NewPlatformService(repo)
+	return platformHandler.NewPlatformHandler(svc)
 }
 
 func initSyncHandler() *syncHandler.SyncHandler {
@@ -701,7 +1046,8 @@ func initClassArmHandler() *academicHandler.ClassArmHandler {
 
 func initTermHandler() *academicHandler.TermHandler {
 	repo := academicRepo.NewTermRepository(database.DB)
-	service := academicService.NewTermService(repo)
+	sessionRepo := academicRepo.NewSessionRepository(database.DB)
+	service := academicService.NewTermService(repo, sessionRepo)
 	return academicHandler.NewTermHandler(service)
 }
 

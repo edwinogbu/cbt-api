@@ -33,34 +33,55 @@ func NewClassService(
     }
 }
 
-func (s *ClassService) Create(req *dto.CreateClassRequest) (*dto.ClassResponse, error) {
-    // Verify class level exists
+// Create creates a class scoped to schoolID (the caller's own school,
+// forced server-side - see effectiveSchoolID; req.SchoolID is honored
+// only for an authenticated platform_owner). ClassLevelID/ClassArmID/
+// SessionID are verified to belong to that same school - without this,
+// a caller could wire their class to another school's level/arm/session,
+// which is itself a cross-tenant data-mixing vector even though it
+// doesn't directly leak another school's data.
+func (s *ClassService) Create(req *dto.CreateClassRequest, schoolID string, isPlatformOwner bool) (*dto.ClassResponse, error) {
+    effectiveID := effectiveSchoolID(req.SchoolID, schoolID, isPlatformOwner)
+    if effectiveID == "" {
+        return nil, ErrSchoolScopeRequired
+    }
+
+    // Verify class level exists and belongs to this school
     classLevel, err := s.classLevelRepo.FindByID(req.ClassLevelID)
     if err != nil {
         return nil, errors.New("class level not found")
     }
-    
-    // Verify class arm exists
+    if classLevel.SchoolID != effectiveID {
+        return nil, errors.New("class level not found")
+    }
+
+    // Verify class arm exists and belongs to this school
     classArm, err := s.classArmRepo.FindByID(req.ClassArmID)
     if err != nil {
         return nil, errors.New("class arm not found")
     }
-    
-    // Verify session exists
-    _, err = s.sessionRepo.FindByID(req.SessionID)
+    if classArm.SchoolID != effectiveID {
+        return nil, errors.New("class arm not found")
+    }
+
+    // Verify session exists and belongs to this school
+    session, err := s.sessionRepo.FindByID(req.SessionID)
     if err != nil {
         return nil, errors.New("session not found")
     }
-    
+    if session.SchoolID != effectiveID {
+        return nil, errors.New("session not found")
+    }
+
     // Generate class code
-    classCode := fmt.Sprintf("%s-%s-%s", 
-        classLevel.Name, 
+    classCode := fmt.Sprintf("%s-%s-%s",
+        classLevel.Name,
         classArm.Name,
         time.Now().Format("2006"))
-    
+
     class := &models.Class{
         ID:           uuid.New().String(),
-        SchoolID:     req.SchoolID,
+        SchoolID:     effectiveID,
         SessionID:    req.SessionID,
         ClassLevelID: req.ClassLevelID,
         ClassArmID:   req.ClassArmID,
@@ -82,9 +103,12 @@ func (s *ClassService) Create(req *dto.CreateClassRequest) (*dto.ClassResponse, 
     return s.toResponse(class), nil
 }
 
-func (s *ClassService) GetByID(id string) (*dto.ClassResponse, error) {
+func (s *ClassService) GetByID(id, schoolID string, isPlatformOwner bool) (*dto.ClassResponse, error) {
     class, err := s.classRepo.FindByID(id)
     if err != nil {
+        return nil, errors.New("class not found")
+    }
+    if err := authorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner); err != nil {
         return nil, errors.New("class not found")
     }
     return s.toResponse(class), nil
@@ -95,16 +119,28 @@ func (s *ClassService) GetBySchool(schoolID string) ([]dto.ClassResponse, error)
     if err != nil {
         return nil, err
     }
-    
+
     return s.toResponseList(classes), nil
 }
 
-func (s *ClassService) GetBySession(sessionID string) ([]dto.ClassResponse, error) {
+// GetBySession returns classes for sessionID, but only once the session
+// itself is confirmed to belong to schoolID - without this check, a
+// caller could enumerate another school's session IDs to read its
+// classes even though the URL names no school at all.
+func (s *ClassService) GetBySession(sessionID, schoolID string, isPlatformOwner bool) ([]dto.ClassResponse, error) {
+    session, err := s.sessionRepo.FindByID(sessionID)
+    if err != nil {
+        return nil, errors.New("session not found")
+    }
+    if err := authorizeSchoolOwnership(session.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("session not found")
+    }
+
     classes, err := s.classRepo.FindBySession(sessionID)
     if err != nil {
         return nil, err
     }
-    
+
     return s.toResponseList(classes), nil
 }
 
@@ -117,12 +153,15 @@ func (s *ClassService) GetBySchoolAndSession(schoolID, sessionID string) ([]dto.
     return s.toResponseList(classes), nil
 }
 
-func (s *ClassService) Update(id string, req *dto.UpdateClassRequest) (*dto.ClassResponse, error) {
+func (s *ClassService) Update(id string, req *dto.UpdateClassRequest, schoolID string, isPlatformOwner bool) (*dto.ClassResponse, error) {
     class, err := s.classRepo.FindByID(id)
     if err != nil {
         return nil, errors.New("class not found")
     }
-    
+    if err := authorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return nil, errors.New("class not found")
+    }
+
     if req.TeacherID != nil {
         class.TeacherID = req.TeacherID
     }
@@ -141,7 +180,14 @@ func (s *ClassService) Update(id string, req *dto.UpdateClassRequest) (*dto.Clas
     return s.toResponse(class), nil
 }
 
-func (s *ClassService) Delete(id string) error {
+func (s *ClassService) Delete(id, schoolID string, isPlatformOwner bool) error {
+    class, err := s.classRepo.FindByID(id)
+    if err != nil {
+        return errors.New("class not found")
+    }
+    if err := authorizeSchoolOwnership(class.SchoolID, schoolID, isPlatformOwner); err != nil {
+        return errors.New("class not found")
+    }
     return s.classRepo.Delete(id)
 }
 
@@ -223,39 +269,74 @@ func (s *ClassService) ListClasses(ctx context.Context, req *dto.ListClassesRequ
     }, nil
 }
 
-// GetByTeacher - get classes by teacher ID
-func (s *ClassService) GetByTeacher(ctx context.Context, teacherID string) ([]dto.ClassResponse, error) {
+// filterBySchool drops any class not owned by schoolID - the FindByTeacher/
+// FindByArm/FindByLevel repo queries take no school filter at all, so this
+// is the only thing standing between "I know a teacher/arm/level ID from
+// another school" and reading that school's classes.
+func filterClassesBySchool(classes []models.Class, schoolID string, isPlatformOwner bool) []models.Class {
+    if isPlatformOwner {
+        return classes
+    }
+    filtered := make([]models.Class, 0, len(classes))
+    for _, class := range classes {
+        if class.SchoolID == schoolID {
+            filtered = append(filtered, class)
+        }
+    }
+    return filtered
+}
+
+// GetByTeacher - get classes by teacher ID, scoped to schoolID
+func (s *ClassService) GetByTeacher(ctx context.Context, teacherID, schoolID string, isPlatformOwner bool) ([]dto.ClassResponse, error) {
     classes, err := s.classRepo.FindByTeacher(teacherID)
     if err != nil {
         return nil, err
     }
-    return s.toResponseList(classes), nil
+    return s.toResponseList(filterClassesBySchool(classes, schoolID, isPlatformOwner)), nil
 }
 
-// GetByArm - get classes by class arm ID
-func (s *ClassService) GetByArm(ctx context.Context, classArmID string) ([]dto.ClassResponse, error) {
+// GetByArm - get classes by class arm ID, scoped to schoolID
+func (s *ClassService) GetByArm(ctx context.Context, classArmID, schoolID string, isPlatformOwner bool) ([]dto.ClassResponse, error) {
     classes, err := s.classRepo.FindByArm(ctx, classArmID)
     if err != nil {
         return nil, err
     }
-    return s.toResponseList(classes), nil
+    return s.toResponseList(filterClassesBySchool(classes, schoolID, isPlatformOwner)), nil
 }
 
-// GetByLevel - get classes by class level ID
-func (s *ClassService) GetByLevel(ctx context.Context, classLevelID string) ([]dto.ClassResponse, error) {
+// GetByLevel - get classes by class level ID, scoped to schoolID
+func (s *ClassService) GetByLevel(ctx context.Context, classLevelID, schoolID string, isPlatformOwner bool) ([]dto.ClassResponse, error) {
     classes, err := s.classRepo.FindByLevel(ctx, classLevelID)
     if err != nil {
         return nil, err
     }
-    return s.toResponseList(classes), nil
+    return s.toResponseList(filterClassesBySchool(classes, schoolID, isPlatformOwner)), nil
 }
 
-// BulkDeleteClasses - bulk delete
-func (s *ClassService) BulkDeleteClasses(ctx context.Context, ids []string) (int64, error) {
+// BulkDeleteClasses - bulk delete, scoped to schoolID: any ID not owned
+// by the caller's school is silently dropped rather than deleted, the
+// same policy as the single-record Delete above.
+func (s *ClassService) BulkDeleteClasses(ctx context.Context, ids []string, schoolID string, isPlatformOwner bool) (int64, error) {
     if len(ids) == 0 {
         return 0, errors.New("no IDs provided")
     }
-    return s.classRepo.BulkDeleteClasses(ctx, ids)
+    if isPlatformOwner {
+        return s.classRepo.BulkDeleteClasses(ctx, ids)
+    }
+    allowed := make([]string, 0, len(ids))
+    for _, id := range ids {
+        class, err := s.classRepo.FindByID(id)
+        if err != nil {
+            continue
+        }
+        if class.SchoolID == schoolID {
+            allowed = append(allowed, id)
+        }
+    }
+    if len(allowed) == 0 {
+        return 0, nil
+    }
+    return s.classRepo.BulkDeleteClasses(ctx, allowed)
 }
 
 // GetClassStats - statistics
