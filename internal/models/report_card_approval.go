@@ -67,8 +67,17 @@ type ReportCardAuditLog struct {
 	ActorID    string `gorm:"type:uuid;not null" json:"actor_id"`
 	Action     string `gorm:"type:varchar(40);not null;index" json:"action"`
 	ReportType string `gorm:"type:varchar(20);not null" json:"report_type"`
-	StudentID  string `gorm:"type:uuid;index" json:"student_id,omitempty"`
-	ClassID    string `gorm:"type:uuid;index" json:"class_id,omitempty"`
+	// StudentID/ClassID are *string, not string: a class-wide action
+	// (batch_approved) has no single StudentID and a per-student action
+	// (approved/rejected) has no ClassID. GORM writes a nil pointer as
+	// SQL NULL; a bare "" string field here would instead be sent as the
+	// literal empty string, which Postgres's uuid column type rejects
+	// outright ("invalid input syntax for type uuid: \"\""), silently
+	// failing every single-student audit write (writeReportCardAudit
+	// only logs the failure, never raises it - by design, so a logging
+	// bug can never block the approval it records).
+	StudentID *string `gorm:"type:uuid;index" json:"student_id,omitempty"`
+	ClassID   *string `gorm:"type:uuid;index" json:"class_id,omitempty"`
 	TermID     string `gorm:"type:varchar(40)" json:"term_id,omitempty"`
 	SessionID  string `gorm:"type:uuid" json:"session_id,omitempty"`
 	Notes      string `gorm:"type:text" json:"notes,omitempty"`

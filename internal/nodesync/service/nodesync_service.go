@@ -23,6 +23,17 @@ func NewNodeSyncService(repo *repository.NodeSyncRepository) *NodeSyncService {
 	return &NodeSyncService{repo: repo}
 }
 
+// nilIfEmpty converts a wire-format DTO's plain string (empty when the
+// field is "not applicable to this action") into the nil models.
+// ReportCardAuditLog.StudentID/ClassID expect - see that field's own
+// doc comment for why a non-nil empty string there breaks the write.
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // AuthenticateNode resolves a plaintext node API key to the school it
 // belongs to. There is no index-friendly way to look up a bcrypt hash by
 // plaintext, so this checks every active credential - fine at the scale of
@@ -301,7 +312,7 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 		now := time.Now()
 		entry := &models.ReportCardAuditLog{
 			ID: r.ID, SchoolID: r.SchoolID, ActorID: r.ActorID, Action: r.Action, ReportType: r.ReportType,
-			StudentID: r.StudentID, ClassID: r.ClassID, TermID: r.TermID, SessionID: r.SessionID,
+			StudentID: nilIfEmpty(r.StudentID), ClassID: nilIfEmpty(r.ClassID), TermID: r.TermID, SessionID: r.SessionID,
 			Notes: r.Notes, ContentHash: r.ContentHash, CreatedAt: r.CreatedAt, SyncedToCloudAt: &now,
 		}
 		if err := s.repo.CreateReportCardAuditLogIfAbsent(ctx, entry); err != nil {

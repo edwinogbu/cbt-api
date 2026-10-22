@@ -44,6 +44,20 @@ func reportCardAuditContentHash(schoolID, actorID, action, reportType, studentID
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// strPtr/strDeref convert between models.ReportCardAuditLog's *string
+// scope fields (StudentID/ClassID - nil for "not applicable to this
+// action", never the empty string, so GORM writes a real SQL NULL
+// instead of a value Postgres's uuid column type rejects) and the plain
+// strings reportCardAuditContentHash and the dto layer use.
+func strPtr(s string) *string { return &s }
+
+func strDeref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // validReportCardTypes are the only report-card instance types the
 // approval/batch workflow understands - the same three types
 // internal/cbt/pdf generates (GenerateTermlyReportCard /
@@ -108,10 +122,18 @@ func (s *ExamService) buildReportCardSnapshot(ctx context.Context, student *mode
 // recording.
 func (s *ExamService) writeReportCardAudit(ctx context.Context, log *models.ReportCardAuditLog) {
 	log.ID = models.GenerateID()
-	log.CreatedAt = time.Now()
+	// Truncated to microseconds: Postgres's timestamptz column (and every
+	// other DB this runs against) stores and returns CreatedAt at
+	// microsecond precision, dropping time.Now()'s nanosecond-level
+	// jitter. Hashing the untruncated value here would make
+	// VerifyReportCardAuditIntegrity recompute a different hash from the
+	// same row the instant it round-trips through the DB - every entry
+	// would be flagged as "tampered" immediately after being written,
+	// even though nothing ever touched it.
+	log.CreatedAt = time.Now().Truncate(time.Microsecond)
 	log.ContentHash = reportCardAuditContentHash(
 		log.SchoolID, log.ActorID, log.Action, log.ReportType,
-		log.StudentID, log.ClassID, log.TermID, log.SessionID, log.Notes, log.CreatedAt,
+		strDeref(log.StudentID), strDeref(log.ClassID), log.TermID, log.SessionID, log.Notes, log.CreatedAt,
 	)
 	if err := s.db.WithContext(ctx).Create(log).Error; err != nil {
 		fmt.Printf("failed to write report-card audit log: %v\n", err)
@@ -136,11 +158,11 @@ func (s *ExamService) VerifyReportCardAuditIntegrity(ctx context.Context, school
 	for _, l := range logs {
 		expected := reportCardAuditContentHash(
 			l.SchoolID, l.ActorID, l.Action, l.ReportType,
-			l.StudentID, l.ClassID, l.TermID, l.SessionID, l.Notes, l.CreatedAt,
+			strDeref(l.StudentID), strDeref(l.ClassID), l.TermID, l.SessionID, l.Notes, l.CreatedAt,
 		)
 		if expected != l.ContentHash {
 			report.Issues = append(report.Issues, dto.AuditIntegrityIssue{
-				ID: l.ID, Action: l.Action, StudentID: l.StudentID, CreatedAt: l.CreatedAt,
+				ID: l.ID, Action: l.Action, StudentID: strDeref(l.StudentID), CreatedAt: l.CreatedAt,
 			})
 		}
 	}
@@ -222,7 +244,7 @@ func (s *ExamService) ApproveReportCard(ctx context.Context, schoolID, actorID s
 
 	s.writeReportCardAudit(ctx, &models.ReportCardAuditLog{
 		SchoolID: schoolID, ActorID: actorID, Action: "approved",
-		ReportType: req.ReportType, StudentID: req.StudentID,
+		ReportType: req.ReportType, StudentID: strPtr(req.StudentID),
 		TermID: req.TermID, SessionID: req.SessionID, Notes: req.Notes,
 	})
 	return approvalToResponse(&approval), nil
@@ -261,7 +283,7 @@ func (s *ExamService) RejectReportCard(ctx context.Context, schoolID, actorID st
 
 	s.writeReportCardAudit(ctx, &models.ReportCardAuditLog{
 		SchoolID: schoolID, ActorID: actorID, Action: "rejected",
-		ReportType: req.ReportType, StudentID: req.StudentID,
+		ReportType: req.ReportType, StudentID: strPtr(req.StudentID),
 		TermID: req.TermID, SessionID: req.SessionID, Notes: req.Notes,
 	})
 	return approvalToResponse(&approval), nil
@@ -321,7 +343,7 @@ func (s *ExamService) GetApprovalHistory(ctx context.Context, schoolID, studentI
 	for i, l := range logs {
 		entries[i] = dto.ReportCardAuditEntry{
 			ID: l.ID, Action: l.Action, ReportType: l.ReportType,
-			StudentID: l.StudentID, ClassID: l.ClassID, TermID: l.TermID,
+			StudentID: strDeref(l.StudentID), ClassID: strDeref(l.ClassID), TermID: l.TermID,
 			SessionID: l.SessionID, ActorID: l.ActorID, Notes: l.Notes,
 			CreatedAt: l.CreatedAt,
 		}
@@ -388,7 +410,7 @@ func (s *ExamService) BatchApproveReportCards(ctx context.Context, schoolID, act
 
 	s.writeReportCardAudit(ctx, &models.ReportCardAuditLog{
 		SchoolID: schoolID, ActorID: actorID, Action: "batch_approved",
-		ReportType: req.ReportType, ClassID: req.ClassID,
+		ReportType: req.ReportType, ClassID: strPtr(req.ClassID),
 		TermID: req.TermID, SessionID: req.SessionID, Notes: req.Notes,
 	})
 	return resp, nil

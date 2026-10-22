@@ -23,6 +23,17 @@ import (
 	"go.uber.org/zap"
 )
 
+// strDeref converts models.ReportCardAuditLog's *string scope fields
+// (StudentID/ClassID, nil when "not applicable to this action" - see
+// that field's own doc comment) into the plain string the wire-format
+// dto.ReportCardAuditLogPush uses.
+func strDeref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 type SyncClient struct {
 	repo         *repository.NodeSyncRepository
 	cloudBaseURL string
@@ -141,7 +152,7 @@ func (c *SyncClient) push(ctx context.Context) error {
 	for _, l := range reportCardAuditLogs {
 		req.ReportCardAuditLogs = append(req.ReportCardAuditLogs, dto.ReportCardAuditLogPush{
 			ID: l.ID, SchoolID: l.SchoolID, ActorID: l.ActorID, Action: l.Action, ReportType: l.ReportType,
-			StudentID: l.StudentID, ClassID: l.ClassID, TermID: l.TermID, SessionID: l.SessionID,
+			StudentID: strDeref(l.StudentID), ClassID: strDeref(l.ClassID), TermID: l.TermID, SessionID: l.SessionID,
 			Notes: l.Notes, ContentHash: l.ContentHash, CreatedAt: l.CreatedAt,
 		})
 	}
