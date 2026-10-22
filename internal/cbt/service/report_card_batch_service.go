@@ -255,6 +255,29 @@ func (s *ExamService) ExportClassReportCards(ctx context.Context, schoolID strin
 
 var classSummaryHeaders = []string{"Admission No.", "Student Name", "Overall %", "Overall Grade", "Class Position", "Approval Status", "Approval Version", "Error"}
 
+// sanitizeSpreadsheetCell defends against CSV/Excel formula injection: a
+// cell value that opens with =, +, -, @, tab, or CR is interpreted as a
+// formula by Excel/LibreOffice/Google Sheets the moment the exported
+// file is opened, not displayed as the literal text - a classic way a
+// crafted name/remark turns into code execution or data exfiltration for
+// whoever opens the sheet. Prefixing a leading apostrophe forces the
+// cell to be read as plain text in every one of those programs. Applied
+// to every string-origin column here (admission number, name, grade,
+// status, error) - none of them are guaranteed free of attacker-
+// influenced content (a student record, however implausible, is still
+// data this export did not originate itself).
+func sanitizeSpreadsheetCell(v string) string {
+	if v == "" {
+		return v
+	}
+	switch v[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + v
+	default:
+		return v
+	}
+}
+
 func classSummaryRowValues(r dto.ClassReportCardSummaryRow) []string {
 	position := ""
 	if r.ClassPosition > 0 {
@@ -268,7 +291,11 @@ func classSummaryRowValues(r dto.ClassReportCardSummaryRow) []string {
 	if r.Error == "" {
 		percentage = strconv.FormatFloat(r.OverallPercentage, 'f', 1, 64)
 	}
-	return []string{r.AdmissionNumber, r.StudentName, percentage, r.OverallGrade, position, r.ApprovalStatus, version, r.Error}
+	return []string{
+		sanitizeSpreadsheetCell(r.AdmissionNumber), sanitizeSpreadsheetCell(r.StudentName),
+		percentage, sanitizeSpreadsheetCell(r.OverallGrade), position,
+		sanitizeSpreadsheetCell(r.ApprovalStatus), version, sanitizeSpreadsheetCell(r.Error),
+	}
 }
 
 func exportClassSummaryToCSV(summary *dto.ClassReportCardSummaryResponse) []byte {

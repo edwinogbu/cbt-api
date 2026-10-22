@@ -65,6 +65,18 @@ func setupTestDB(t *testing.T) *gorm.DB {
 			event_type TEXT NOT NULL, client_sequence INTEGER, payload_json TEXT,
 			client_timestamp TEXT, synced_to_cloud_at DATETIME, created_at DATETIME
 		)`,
+		`CREATE TABLE report_card_approvals (
+			id TEXT PRIMARY KEY, school_id TEXT NOT NULL, student_id TEXT NOT NULL,
+			report_type TEXT NOT NULL, term_id TEXT DEFAULT '', session_id TEXT NOT NULL,
+			status TEXT NOT NULL, version INTEGER DEFAULT 1, snapshot_json TEXT, notes TEXT,
+			actor_id TEXT NOT NULL, synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE report_card_audit_logs (
+			id TEXT PRIMARY KEY, school_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+			action TEXT NOT NULL, report_type TEXT, student_id TEXT, class_id TEXT,
+			term_id TEXT, session_id TEXT, notes TEXT, content_hash TEXT NOT NULL,
+			synced_to_cloud_at DATETIME, created_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {

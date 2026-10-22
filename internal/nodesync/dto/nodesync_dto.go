@@ -14,6 +14,62 @@ type PushRequest struct {
 	Answers  []AnswerPush  `json:"answers"`
 	Results  []ResultPush  `json:"results"`
 	Events   []EventPush   `json:"events"`
+	// ReportCardApprovals/ReportCardAuditLogs fall under this rule's own
+	// "audit" category - a school's report-card approve/reject actions,
+	// taken entirely locally on a node with no cloud connectivity
+	// required (see ExamService.ApproveReportCard et al.), reconciled to
+	// the cloud opportunistically like everything else in this file.
+	ReportCardApprovals []ReportCardApprovalPush `json:"report_card_approvals"`
+	ReportCardAuditLogs []ReportCardAuditLogPush `json:"report_card_audit_logs"`
+}
+
+// ReportCardApprovalPush mirrors models.ReportCardApproval. SchoolID
+// travels with the record (unlike Session/Result/Event, which only carry
+// a StudentID and have their school derived via a join) because a
+// report-card approval can be class-wide with no single StudentID -
+// Push verifies this against the authenticated node's own school rather
+// than trusting it, the same "never trust a client-supplied tenant ID"
+// rule as everywhere else in this codebase.
+type ReportCardApprovalPush struct {
+	ID         string `json:"id" binding:"required,uuid"`
+	SchoolID   string `json:"school_id" binding:"required,uuid"`
+	StudentID  string `json:"student_id" binding:"required,uuid"`
+	ReportType string `json:"report_type" binding:"required"`
+	TermID     string `json:"term_id"`
+	SessionID  string `json:"session_id" binding:"required,uuid"`
+	Status     string `json:"status" binding:"required"`
+	// Version is the authority for Push's conflict rule (see
+	// NodeSyncService.Push's report-card section): an incoming push with
+	// a lower version than what the cloud already has for this scope is
+	// a stale write from a node that's been offline since before a
+	// newer approval/re-approval happened elsewhere, and is rejected -
+	// the same "never let an offline write revert a more final cloud
+	// state" principle as the exam-attempt status-rank check above.
+	Version      int    `json:"version" binding:"required"`
+	SnapshotJSON string `json:"snapshot_json"`
+	Notes        string `json:"notes"`
+	ActorID      string `json:"actor_id" binding:"required,uuid"`
+}
+
+// ReportCardAuditLogPush mirrors models.ReportCardAuditLog. Audit log
+// entries are append-only everywhere in this codebase (see
+// ExamService.writeReportCardAudit) - Push inserts a pushed entry only
+// if its ID isn't already stored, never updates one that is (an audit
+// trail entry, once written, is immutable; ContentHash travels with it
+// so the cloud's own copy is exactly as tamper-evident as the node's).
+type ReportCardAuditLogPush struct {
+	ID          string    `json:"id" binding:"required,uuid"`
+	SchoolID    string    `json:"school_id" binding:"required,uuid"`
+	ActorID     string    `json:"actor_id" binding:"required,uuid"`
+	Action      string    `json:"action" binding:"required"`
+	ReportType  string    `json:"report_type"`
+	StudentID   string    `json:"student_id"`
+	ClassID     string    `json:"class_id"`
+	TermID      string    `json:"term_id"`
+	SessionID   string    `json:"session_id"`
+	Notes       string    `json:"notes"`
+	ContentHash string    `json:"content_hash" binding:"required"`
+	CreatedAt   time.Time `json:"created_at" binding:"required"`
 }
 
 // SessionPush mirrors models.ExamAttempt. ID is the node-generated UUID
@@ -79,16 +135,18 @@ type EventPush struct {
 // counted in *Accepted did not happen; the handler guarantees every
 // input ID appears in exactly one of the two.
 type PushResponse struct {
-	SessionsAccepted int             `json:"sessions_accepted"`
-	AnswersAccepted  int             `json:"answers_accepted"`
-	ResultsAccepted  int             `json:"results_accepted"`
-	EventsAccepted   int             `json:"events_accepted"`
-	Rejected         []RejectedPush  `json:"rejected,omitempty"`
-	ServerTimestamp  time.Time       `json:"server_timestamp"`
+	SessionsAccepted            int            `json:"sessions_accepted"`
+	AnswersAccepted             int            `json:"answers_accepted"`
+	ResultsAccepted             int            `json:"results_accepted"`
+	EventsAccepted              int            `json:"events_accepted"`
+	ReportCardApprovalsAccepted int            `json:"report_card_approvals_accepted"`
+	ReportCardAuditLogsAccepted int            `json:"report_card_audit_logs_accepted"`
+	Rejected                    []RejectedPush `json:"rejected,omitempty"`
+	ServerTimestamp             time.Time      `json:"server_timestamp"`
 }
 
 type RejectedPush struct {
-	Type   string `json:"type"` // "session" | "answer" | "result" | "event"
+	Type   string `json:"type"` // "session" | "answer" | "result" | "event" | "report_card_approval" | "report_card_audit_log"
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
 }

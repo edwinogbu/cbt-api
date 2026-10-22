@@ -129,3 +129,18 @@ type ClassReportCardSummaryResponse struct {
 	SessionID  string                      `json:"session_id"`
 	Rows       []ClassReportCardSummaryRow `json:"rows"`
 }
+
+// AuditIntegrityIssue flags one models.ReportCardAuditLog row whose
+// stored ContentHash no longer matches its own columns - see that
+// field's doc comment for what this can and can't detect.
+type AuditIntegrityIssue struct {
+	ID        string    `json:"id"`
+	Action    string    `json:"action"`
+	StudentID string    `json:"student_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AuditIntegrityReport struct {
+	Checked int                   `json:"checked"`
+	Issues  []AuditIntegrityIssue `json:"issues"`
+}

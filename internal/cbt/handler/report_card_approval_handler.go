@@ -140,6 +140,27 @@ func (h *ExamHandler) GetReportCardApprovalHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": entries})
 }
 
+// VerifyReportCardAuditIntegrity godoc
+// @Summary      Verify the report-card audit trail has not been tampered with
+// @Tags         Report Card Approvals
+// @Produce      json
+// @Success      200 {object} map[string]interface{} "data"
+// @Security     BearerAuth
+// @Router       /exams/report-card/approval-history/verify [get]
+func (h *ExamHandler) VerifyReportCardAuditIntegrity(c *gin.Context) {
+	schoolID := middleware.GetSchoolID(c)
+	if schoolID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no school context"})
+		return
+	}
+	report, err := h.examService.VerifyReportCardAuditIntegrity(c.Request.Context(), schoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success", "data": report})
+}
+
 // BatchApproveReportCards godoc
 // @Summary      Approve every (or every named) student's report card in a class
 // @Tags         Report Card Approvals

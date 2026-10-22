@@ -258,6 +258,60 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 		resp.EventsAccepted++
 	}
 
+	// Report-card approvals/audit logs carry their own SchoolID (unlike
+	// Session/Result/Event, scoped via StudentID) because a batch action
+	// can be class-wide with no single StudentID - checked directly
+	// against the authenticated node's school rather than derived, same
+	// "never trust a client-supplied tenant ID" rule as belongsToSchool
+	// above.
+	for _, r := range req.ReportCardApprovals {
+		if r.SchoolID != schoolID {
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "report_card_approval", ID: r.ID, Reason: "school_id does not match authenticated node's school"})
+			continue
+		}
+
+		if existing, findErr := s.repo.FindReportCardApprovalByID(ctx, r.ID); findErr == nil && existing != nil && r.Version < existing.Version {
+			logger.Warn("rejected report-card approval push: stale version",
+				zap.String("id", r.ID), zap.Int("incoming_version", r.Version), zap.Int("stored_version", existing.Version))
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "report_card_approval", ID: r.ID,
+				Reason: "conflict: cloud already has a newer approval version for this report card"})
+			continue
+		}
+
+		now := time.Now()
+		approval := &models.ReportCardApproval{
+			ID: r.ID, SchoolID: r.SchoolID, StudentID: r.StudentID, ReportType: r.ReportType,
+			TermID: r.TermID, SessionID: r.SessionID, Status: r.Status, Version: r.Version,
+			SnapshotJSON: r.SnapshotJSON, Notes: r.Notes, ActorID: r.ActorID, SyncedToCloudAt: &now,
+		}
+		if err := s.repo.UpsertReportCardApproval(ctx, approval); err != nil {
+			logger.Error("upsert report-card approval failed", zap.String("id", r.ID), zap.Error(err))
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "report_card_approval", ID: r.ID, Reason: "write failed"})
+			continue
+		}
+		resp.ReportCardApprovalsAccepted++
+	}
+
+	for _, r := range req.ReportCardAuditLogs {
+		if r.SchoolID != schoolID {
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "report_card_audit_log", ID: r.ID, Reason: "school_id does not match authenticated node's school"})
+			continue
+		}
+
+		now := time.Now()
+		entry := &models.ReportCardAuditLog{
+			ID: r.ID, SchoolID: r.SchoolID, ActorID: r.ActorID, Action: r.Action, ReportType: r.ReportType,
+			StudentID: r.StudentID, ClassID: r.ClassID, TermID: r.TermID, SessionID: r.SessionID,
+			Notes: r.Notes, ContentHash: r.ContentHash, CreatedAt: r.CreatedAt, SyncedToCloudAt: &now,
+		}
+		if err := s.repo.CreateReportCardAuditLogIfAbsent(ctx, entry); err != nil {
+			logger.Error("insert report-card audit log failed", zap.String("id", r.ID), zap.Error(err))
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "report_card_audit_log", ID: r.ID, Reason: "write failed"})
+			continue
+		}
+		resp.ReportCardAuditLogsAccepted++
+	}
+
 	return resp, nil
 }
 

@@ -152,13 +152,13 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
 			school_id TEXT, student_id TEXT, report_type TEXT, term_id TEXT DEFAULT '', session_id TEXT,
 			status TEXT, version INTEGER DEFAULT 1, snapshot_json TEXT, notes TEXT,
-			actor_id TEXT, created_at DATETIME, updated_at DATETIME
+			actor_id TEXT, synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME
 		)`,
 		`CREATE TABLE report_card_audit_logs (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
 			school_id TEXT, actor_id TEXT, action TEXT, report_type TEXT,
 			student_id TEXT, class_id TEXT, term_id TEXT, session_id TEXT, notes TEXT,
-			created_at DATETIME
+			content_hash TEXT, synced_to_cloud_at DATETIME, created_at DATETIME
 		)`,
 		`CREATE TABLE class_levels (
 			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),

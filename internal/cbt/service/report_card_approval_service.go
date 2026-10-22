@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,35 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// reportCardAuditContentHash computes the tamper-evidence hash for one
+// models.ReportCardAuditLog row - see that field's own doc comment. Takes
+// the row's fields directly (not the struct) so the same function
+// computes the hash both at write time and at verify time without caring
+// whether the row came from a fresh Create or a later SELECT.
+func reportCardAuditContentHash(schoolID, actorID, action, reportType, studentID, classID, termID, sessionID, notes string, createdAt time.Time) string {
+	h := sha256.New()
+	h.Write([]byte(schoolID))
+	h.Write([]byte{0})
+	h.Write([]byte(actorID))
+	h.Write([]byte{0})
+	h.Write([]byte(action))
+	h.Write([]byte{0})
+	h.Write([]byte(reportType))
+	h.Write([]byte{0})
+	h.Write([]byte(studentID))
+	h.Write([]byte{0})
+	h.Write([]byte(classID))
+	h.Write([]byte{0})
+	h.Write([]byte(termID))
+	h.Write([]byte{0})
+	h.Write([]byte(sessionID))
+	h.Write([]byte{0})
+	h.Write([]byte(notes))
+	h.Write([]byte{0})
+	h.Write([]byte(createdAt.UTC().Format(time.RFC3339Nano)))
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // validReportCardTypes are the only report-card instance types the
 // approval/batch workflow understands - the same three types
@@ -78,9 +109,42 @@ func (s *ExamService) buildReportCardSnapshot(ctx context.Context, student *mode
 func (s *ExamService) writeReportCardAudit(ctx context.Context, log *models.ReportCardAuditLog) {
 	log.ID = models.GenerateID()
 	log.CreatedAt = time.Now()
+	log.ContentHash = reportCardAuditContentHash(
+		log.SchoolID, log.ActorID, log.Action, log.ReportType,
+		log.StudentID, log.ClassID, log.TermID, log.SessionID, log.Notes, log.CreatedAt,
+	)
 	if err := s.db.WithContext(ctx).Create(log).Error; err != nil {
 		fmt.Printf("failed to write report-card audit log: %v\n", err)
 	}
+}
+
+// VerifyReportCardAuditIntegrity recomputes every stored entry's
+// ContentHash from its own columns and reports any row whose recomputed
+// hash no longer matches what was stored at write time - evidence the row
+// was altered directly (not through ApproveReportCard/RejectReportCard/
+// BatchApproveReportCards, the only legitimate writers of this table)
+// since it was created. A clean result does not prove no row was ever
+// deleted outright (no per-row hash can detect that), only that every
+// row currently present is exactly as it was written.
+func (s *ExamService) VerifyReportCardAuditIntegrity(ctx context.Context, schoolID string) (*dto.AuditIntegrityReport, error) {
+	var logs []models.ReportCardAuditLog
+	if err := s.db.WithContext(ctx).Where("school_id = ?", schoolID).Find(&logs).Error; err != nil {
+		return nil, err
+	}
+
+	report := &dto.AuditIntegrityReport{Checked: len(logs)}
+	for _, l := range logs {
+		expected := reportCardAuditContentHash(
+			l.SchoolID, l.ActorID, l.Action, l.ReportType,
+			l.StudentID, l.ClassID, l.TermID, l.SessionID, l.Notes, l.CreatedAt,
+		)
+		if expected != l.ContentHash {
+			report.Issues = append(report.Issues, dto.AuditIntegrityIssue{
+				ID: l.ID, Action: l.Action, StudentID: l.StudentID, CreatedAt: l.CreatedAt,
+			})
+		}
+	}
+	return report, nil
 }
 
 func approvalToResponse(a *models.ReportCardApproval) *dto.ReportCardApprovalResponse {
@@ -284,6 +348,16 @@ func (s *ExamService) BatchApproveReportCards(ctx context.Context, schoolID, act
 		return nil, err
 	}
 	req.TermID = scope.TermID
+
+	// An explicit StudentIDs list is attacker/caller-controlled in size
+	// (unlike the "whole class roster" default below, which is bounded
+	// by how many real students a class actually has) - cap it so one
+	// request can't force an unbounded number of individual report-card
+	// builds/snapshots/DB writes in a single call.
+	const maxExplicitBatchSize = 1000
+	if len(req.StudentIDs) > maxExplicitBatchSize {
+		return nil, fmt.Errorf("too many student_ids in one batch (%d); max is %d", len(req.StudentIDs), maxExplicitBatchSize)
+	}
 
 	studentIDs := req.StudentIDs
 	if len(studentIDs) == 0 {

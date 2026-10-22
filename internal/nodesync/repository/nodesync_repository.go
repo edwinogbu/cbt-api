@@ -113,6 +113,30 @@ func (r *NodeSyncRepository) UpsertEvent(ctx context.Context, e *models.ExamEven
 	return r.db.WithContext(ctx).Save(e).Error
 }
 
+// FindReportCardApprovalByID backs Push's version-conflict check - see
+// NodeSyncService.Push's report-card section.
+func (r *NodeSyncRepository) FindReportCardApprovalByID(ctx context.Context, id string) (*models.ReportCardApproval, error) {
+	var a models.ReportCardApproval
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&a).Error; err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *NodeSyncRepository) UpsertReportCardApproval(ctx context.Context, a *models.ReportCardApproval) error {
+	return r.db.WithContext(ctx).Save(a).Error
+}
+
+// CreateReportCardAuditLogIfAbsent inserts a pushed audit-log entry only
+// if its ID isn't already stored - this table is append-only everywhere
+// else in this codebase (see ExamService.writeReportCardAudit), so a
+// retried push of an already-accepted entry must stay a true no-op, not
+// an update that could, even accidentally, alter a tamper-evident row's
+// own ContentHash-covered fields.
+func (r *NodeSyncRepository) CreateReportCardAuditLogIfAbsent(ctx context.Context, e *models.ReportCardAuditLog) error {
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(e).Error
+}
+
 // ============================================================
 // Pull: entities changed since a cursor, scoped to one school.
 // ============================================================
@@ -249,6 +273,34 @@ func (r *NodeSyncRepository) MarkEventsSynced(ctx context.Context, ids []string)
 	}
 	now := time.Now()
 	return r.db.WithContext(ctx).Model(&models.ExamEventLog{}).Where("id IN ?", ids).Update("synced_to_cloud_at", now).Error
+}
+
+func (r *NodeSyncRepository) UnsyncedReportCardApprovals(ctx context.Context) ([]models.ReportCardApproval, error) {
+	var rows []models.ReportCardApproval
+	err := r.db.WithContext(ctx).Where("synced_to_cloud_at IS NULL").Limit(outboxBatchSize).Find(&rows).Error
+	return rows, err
+}
+
+func (r *NodeSyncRepository) UnsyncedReportCardAuditLogs(ctx context.Context) ([]models.ReportCardAuditLog, error) {
+	var rows []models.ReportCardAuditLog
+	err := r.db.WithContext(ctx).Where("synced_to_cloud_at IS NULL").Limit(outboxBatchSize).Find(&rows).Error
+	return rows, err
+}
+
+func (r *NodeSyncRepository) MarkReportCardApprovalsSynced(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now()
+	return r.db.WithContext(ctx).Model(&models.ReportCardApproval{}).Where("id IN ?", ids).Update("synced_to_cloud_at", now).Error
+}
+
+func (r *NodeSyncRepository) MarkReportCardAuditLogsSynced(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now()
+	return r.db.WithContext(ctx).Model(&models.ReportCardAuditLog{}).Where("id IN ?", ids).Update("synced_to_cloud_at", now).Error
 }
 
 // ============================================================

@@ -447,6 +447,11 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			reportCardApproval.POST("/approve", handler.ApproveReportCard)
 			reportCardApproval.POST("/reject", handler.RejectReportCard)
 			reportCardApproval.POST("/batch-approve", handler.BatchApproveReportCards)
+			// Integrity verification is admin-tier, not teacher-readable
+			// like plain approval-status/history below - it's a
+			// compliance/security check (did anything bypass the API and
+			// edit an audit row directly?), not routine reading.
+			reportCardApproval.GET("/approval-history/verify", handler.VerifyReportCardAuditIntegrity)
 
 			reportCardApprovalRead := reportCardRemarks.Group("")
 			reportCardApprovalRead.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
