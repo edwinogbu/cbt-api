@@ -558,12 +558,15 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		classBroadSheet := exams.Group("/broadsheet")
 		classBroadSheet.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
 		classBroadSheet.GET("/class", handler.GetClassBroadSheet)
+		classBroadSheet.GET("/class/export", handler.ExportClassBroadSheet)
 
 		oversightBroadSheet := exams.Group("/broadsheet")
 		oversightBroadSheet.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "vp_academics", "platform_owner"))
 		{
 			oversightBroadSheet.GET("/subject", handler.GetSubjectBroadSheet)
+			oversightBroadSheet.GET("/subject/export", handler.ExportSubjectBroadSheet)
 			oversightBroadSheet.GET("/school", handler.GetSchoolBroadSheet)
+			oversightBroadSheet.GET("/school/export", handler.ExportSchoolBroadSheet)
 		}
 	}
 }
