@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"cbt-api/internal/cbt/dto"
 
@@ -166,6 +167,24 @@ func TestGenerateSubjectBroadSheetPDF_ProducesValidPDFWithRealData(t *testing.T)
 	})
 }
 
+func TestGenerateClassBroadSheetPDF_ShowsClassTeacherAndReviewSummary(t *testing.T) {
+	resp := sampleClassBroadSheet()
+	resp.ClassTeacherName = "Mrs. A. Ibrahim"
+	resp.Review = &dto.ClassBroadSheetReviewResponse{
+		Status:  "submitted",
+		Summary: "Strong overall performance this term; two students need extra support in English.",
+	}
+	out, err := GenerateClassBroadSheetPDF(sampleSchoolInfo(), resp)
+	if err != nil {
+		t.Fatalf("GenerateClassBroadSheetPDF failed: %v", err)
+	}
+	got := extractPDFText(t, out)
+	mustContainAll(t, got, []string{
+		"Class Teacher: Mrs. A. Ibrahim",
+		"Strong overall performance this term",
+	})
+}
+
 func sampleSchoolBroadSheet() *dto.SchoolBroadSheetResponse {
 	return &dto.SchoolBroadSheetResponse{
 		TermID: "term-1", SessionID: "session-1", ReportType: "termly",
@@ -174,7 +193,31 @@ func sampleSchoolBroadSheet() *dto.SchoolBroadSheetResponse {
 			{ClassID: "class-1", ClassName: "SSS 2 A", SubjectID: "subj-2", SubjectName: "English Language", TeacherName: "Chika Obi", Enrolled: 30, MarksEntered: 12, Incomplete: 18, ClassAveragePct: 50.1, PassRatePct: 40.0, Submitted: false, Reviewed: false, ApprovedPublished: false},
 		},
 		TotalStudents: 30, ClassesIncluded: 1, SubjectResultSets: 2, SubmissionsComplete: 1, PendingIncomplete: 1, AwaitingReview: 0, Approved: 1, Published: 1,
+		GeneratedAt: time.Date(2026, time.March, 14, 9, 30, 0, 0, time.UTC), OverallStatus: "Ready for review",
 	}
+}
+
+func TestGenerateSchoolBroadSheetPDF_ShowsPromotionReviewSection(t *testing.T) {
+	resp := sampleSchoolBroadSheet()
+	resp.ReportType = "promotion"
+	resp.PromotionReview = &dto.SchoolPromotionReviewSummary{
+		EligibilityRulesApplied: "Overall ≥ 50.0%",
+		EligibleCount:           18, RequiresReviewCount: 4, IncompleteBlockedCount: 2,
+		DecisionStatus: "Pending",
+	}
+	out, err := GenerateSchoolBroadSheetPDF(sampleSchoolInfo(), resp)
+	if err != nil {
+		t.Fatalf("GenerateSchoolBroadSheetPDF failed: %v", err)
+	}
+	got := extractPDFText(t, out)
+	mustContainAll(t, got, []string{
+		"C. PROMOTION REVIEW",
+		"Eligible - subject to authorisation: 18",
+		"Requires review / remediation: 4",
+		"Incomplete records - decision blocked: 2",
+		"Decision status: Pending",
+		"Status: Ready for review",
+	})
 }
 
 func TestGenerateSchoolBroadSheetPDF_ProducesValidPDFWithRealData(t *testing.T) {

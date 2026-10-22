@@ -104,3 +104,68 @@ type SubjectResultAuditLog struct {
 }
 
 func (SubjectResultAuditLog) TableName() string { return "subject_result_audit_logs" }
+
+// ScoreRegisterRemark is one student's free-text teacher remark on the
+// Student Score Register (template A's "Teacher remark" column) - a
+// per-(student, subject, term, session) comment distinct from any
+// numeric score, so it's its own small table rather than overloading
+// models.Result.Remarks (which already holds a different, computed-
+// from-grade value used by the report-card pipeline). A nil/missing
+// row means no remark has been written yet.
+type ScoreRegisterRemark struct {
+	ID        string    `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	SchoolID  string    `gorm:"type:uuid;not null;index" json:"school_id"`
+	StudentID string    `gorm:"type:uuid;not null;uniqueIndex:idx_score_register_remark_scope" json:"student_id"`
+	ClassID   string    `gorm:"type:uuid;not null" json:"class_id"`
+	SubjectID string    `gorm:"type:uuid;not null;uniqueIndex:idx_score_register_remark_scope" json:"subject_id"`
+	TermID    string    `gorm:"type:uuid;not null;uniqueIndex:idx_score_register_remark_scope" json:"term_id"`
+	SessionID string    `gorm:"type:uuid;not null;uniqueIndex:idx_score_register_remark_scope" json:"session_id"`
+	Remark    string    `gorm:"type:text" json:"remark"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (ScoreRegisterRemark) TableName() string { return "score_register_remarks" }
+
+// ClassBroadSheetReview is the Class Teacher Broad Sheet's own
+// actionable workflow (template B, page 4): the class teacher's
+// written class-wide summary, an optional HOD/Examination Officer
+// review, and a "next action" control - distinct from
+// SubjectResultSubmission (one subject's worksheet, scored per class
+// per subject) and ReportCardApproval (one finished student report):
+// this is the class-wide roll-up document itself, one row per (class,
+// report_type, term, session) - TermID empty for a promotion-scope
+// broad sheet, matching GetClassBroadSheet's own normalization (an
+// ordinary empty-string column, not a nullable one: no two valid rows
+// ever share every other scope field, so there's no ScopeKey-style
+// NULL-uniqueness problem to solve here).
+//
+// Deliberately simpler than SubjectResultSubmission: no separate
+// append-only audit log/content-hash trail, since this workflow never
+// changes a numeric record - only a narrative summary and a status - so
+// the ordinary updated_at/status history on this one row is
+// proportionate, not a corner cut.
+type ClassBroadSheetReview struct {
+	ID             string     `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	SchoolID       string     `gorm:"type:uuid;not null;uniqueIndex:idx_class_broadsheet_review_scope" json:"school_id"`
+	ClassID        string     `gorm:"type:uuid;not null;uniqueIndex:idx_class_broadsheet_review_scope" json:"class_id"`
+	ReportType     string     `gorm:"type:varchar(20);not null;uniqueIndex:idx_class_broadsheet_review_scope" json:"report_type"`
+	TermID         string     `gorm:"type:uuid;uniqueIndex:idx_class_broadsheet_review_scope" json:"term_id,omitempty"`
+	SessionID      string     `gorm:"type:uuid;not null;uniqueIndex:idx_class_broadsheet_review_scope" json:"session_id"`
+	Status         string     `gorm:"type:varchar(20);not null;default:'draft'" json:"status"` // draft|submitted|returned|approved
+	Summary        string     `gorm:"type:text" json:"summary"`
+	ClassTeacherID string     `gorm:"type:uuid" json:"class_teacher_id,omitempty"`
+	SubmittedAt    *time.Time `json:"submitted_at,omitempty"`
+	ReviewerID     *string    `gorm:"type:uuid" json:"reviewer_id,omitempty"`
+	ReviewedAt     *time.Time `json:"reviewed_at,omitempty"`
+	ReturnNotes    string     `gorm:"type:text" json:"return_notes,omitempty"`
+	// NextAction mirrors the template's own three options verbatim:
+	// "return_to_subject_teacher" | "submit_for_academic_review" |
+	// "complete" - the class teacher's own stated intent, not a
+	// system-computed field.
+	NextAction string    `gorm:"type:varchar(40)" json:"next_action,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (ClassBroadSheetReview) TableName() string { return "class_broadsheet_reviews" }

@@ -63,3 +63,31 @@ func (h *ExamHandler) SaveScoreRegister(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "success", "data": resp})
 }
+
+// SaveScoreRegisterRemark godoc
+// @Summary      Save one student's teacher remark on the Score Register
+// @Tags         Score Register
+// @Accept       json
+// @Produce      json
+// @Param        request body dto.SaveScoreRegisterRemarkRequest true "Remark to save"
+// @Success      200 {object} map[string]interface{}
+// @Failure      400 {object} map[string]interface{}
+// @Security     BearerAuth
+// @Router       /exams/score-register/remark [post]
+func (h *ExamHandler) SaveScoreRegisterRemark(c *gin.Context) {
+	var req dto.SaveScoreRegisterRemarkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	actorID := middleware.GetUserID(c)
+	if actorID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if err := h.examService.SaveScoreRegisterRemark(c.Request.Context(), middleware.GetSchoolID(c), actorID, middleware.IsPlatformOwner(c), &req); err != nil {
+		c.JSON(statusForSettingsError(err), gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}

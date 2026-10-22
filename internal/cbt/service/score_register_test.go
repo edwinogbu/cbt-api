@@ -265,3 +265,48 @@ func TestSaveScoreRegister_LockedSubmissionRequiresCorrectionReason(t *testing.T
 		t.Fatalf("expected a save WITH correction_reason to succeed on a locked submission, got error: %v", err)
 	}
 }
+
+func TestScoreRegisterRemark_SaveAndReadBack(t *testing.T) {
+	db := setupExamTestDB(t)
+	svc := newTestExamService(db)
+	seedRegisterClass(t, db, "class-1", "school-1")
+	seedTermlySubject(t, db, "subj-math", "Mathematics")
+	seedRegisterStudent(t, db, "student-1", "class-1", "school-1", "A001", "Amara")
+	seedRegisterExam(t, db, "exam-main", "subj-math", "class-1", "term-1", "session-1", "main_exam", 100, nil)
+
+	ctx := context.Background()
+	err := svc.SaveScoreRegisterRemark(ctx, "school-1", "teacher-1", false, &dto.SaveScoreRegisterRemarkRequest{
+		ClassID: "class-1", SubjectID: "subj-math", TermID: "term-1", SessionID: "session-1",
+		StudentID: "student-1", Remark: "Shows consistent improvement.",
+	})
+	if err != nil {
+		t.Fatalf("SaveScoreRegisterRemark failed: %v", err)
+	}
+
+	resp, err := svc.GetScoreRegister(ctx, "school-1", false, "class-1", "subj-math", "term-1", "session-1")
+	if err != nil {
+		t.Fatalf("GetScoreRegister failed: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(resp.Rows))
+	}
+	row := resp.Rows[0]
+	if row.Remark == nil || *row.Remark != "Shows consistent improvement." {
+		t.Fatalf("Remark = %v, want \"Shows consistent improvement.\"", row.Remark)
+	}
+
+	// Updating the same student's remark upserts rather than duplicating.
+	if err := svc.SaveScoreRegisterRemark(ctx, "school-1", "teacher-1", false, &dto.SaveScoreRegisterRemarkRequest{
+		ClassID: "class-1", SubjectID: "subj-math", TermID: "term-1", SessionID: "session-1",
+		StudentID: "student-1", Remark: "Updated remark.",
+	}); err != nil {
+		t.Fatalf("second SaveScoreRegisterRemark failed: %v", err)
+	}
+	resp2, err := svc.GetScoreRegister(ctx, "school-1", false, "class-1", "subj-math", "term-1", "session-1")
+	if err != nil {
+		t.Fatalf("GetScoreRegister (2nd) failed: %v", err)
+	}
+	if resp2.Rows[0].Remark == nil || *resp2.Rows[0].Remark != "Updated remark." {
+		t.Fatalf("Remark after update = %v, want \"Updated remark.\"", resp2.Rows[0].Remark)
+	}
+}

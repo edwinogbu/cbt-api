@@ -103,6 +103,8 @@ func init() {
 	Register(&TeacherSubjectAssignment{})
 	Register(&SubjectResultSubmission{})
 	Register(&SubjectResultAuditLog{})
+	Register(&ScoreRegisterRemark{})
+	Register(&ClassBroadSheetReview{})
 
 	// ============================================
 	// OFFLINE-FIRST SYNC MODELS

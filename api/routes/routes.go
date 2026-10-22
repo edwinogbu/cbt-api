@@ -520,6 +520,7 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			scoreRegister.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
 			scoreRegister.GET("/score-register", handler.GetScoreRegister)
 			scoreRegister.POST("/score-register/save", handler.SaveScoreRegister)
+			scoreRegister.POST("/score-register/remark", handler.SaveScoreRegisterRemark)
 			scoreRegister.GET("/score-register/status", handler.GetSubjectResultSubmissionStatus)
 			// Submit is the subject teacher's own action - same broad
 			// staff-role gate as the group above (ExamService.
@@ -559,6 +560,8 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 		classBroadSheet.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
 		classBroadSheet.GET("/class", handler.GetClassBroadSheet)
 		classBroadSheet.GET("/class/export", handler.ExportClassBroadSheet)
+		classBroadSheet.POST("/class/review/save", handler.SaveClassBroadSheetReview)
+		classBroadSheet.POST("/class/review/submit", handler.SubmitClassBroadSheetReview)
 
 		oversightBroadSheet := exams.Group("/broadsheet")
 		oversightBroadSheet.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "vp_academics", "platform_owner"))
@@ -567,6 +570,8 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			oversightBroadSheet.GET("/subject/export", handler.ExportSubjectBroadSheet)
 			oversightBroadSheet.GET("/school", handler.GetSchoolBroadSheet)
 			oversightBroadSheet.GET("/school/export", handler.ExportSchoolBroadSheet)
+			oversightBroadSheet.POST("/class/review/approve", handler.ApproveClassBroadSheetReview)
+			oversightBroadSheet.POST("/class/review/return", handler.ReturnClassBroadSheetReview)
 		}
 	}
 }

@@ -178,6 +178,9 @@ func GenerateClassBroadSheetPDF(school dto.SchoolInfo, resp *dto.ClassBroadSheet
 	pdfDoc := newBroadSheetPDF()
 
 	subtitle := fmt.Sprintf("%s Report - %d student(s)", titleCase(resp.ReportType), resp.StudentCount)
+	if resp.ClassTeacherName != "" {
+		subtitle += " - Class Teacher: " + resp.ClassTeacherName
+	}
 	drawBroadSheetHeader(pdfDoc, school, "Class Teacher Broad Sheet: "+resp.ClassName, subtitle, accent)
 
 	const studentW = 46.0
@@ -215,10 +218,17 @@ func GenerateClassBroadSheetPDF(school dto.SchoolInfo, resp *dto.ClassBroadSheet
 		table.drawRow(pdfDoc, cells, i%2 == 1)
 	}
 
-	drawBroadSheetFooter(pdfDoc,
+	footerLines := []string{
 		"* result not yet complete for that subject.",
 		fmt.Sprintf("%d of %d student(s) have at least one incomplete subject result.", resp.StudentsWithIncompleteResults, resp.StudentCount),
-	)
+	}
+	if resp.Review != nil && resp.Review.Summary != "" {
+		footerLines = append(footerLines,
+			"",
+			fmt.Sprintf("Class teacher summary (%s): %s", titleCase(resp.Review.Status), resp.Review.Summary),
+		)
+	}
+	drawBroadSheetFooter(pdfDoc, footerLines...)
 
 	var buf bytes.Buffer
 	if err := pdfDoc.Output(&buf); err != nil {
@@ -273,9 +283,10 @@ func GenerateSchoolBroadSheetPDF(school dto.SchoolInfo, resp *dto.SchoolBroadShe
 	pdfDoc := newBroadSheetPDF()
 
 	subtitle := fmt.Sprintf(
-		"%d student(s) - %d class(es) - %d subject result set(s) - %d complete, %d pending, %d approved",
+		"%d student(s) - %d class(es) - %d subject result set(s) - %d complete, %d pending, %d approved - Status: %s - Generated %s",
 		resp.TotalStudents, resp.ClassesIncluded, resp.SubjectResultSets,
 		resp.SubmissionsComplete, resp.PendingIncomplete, resp.Approved,
+		resp.OverallStatus, resp.GeneratedAt.Format("Jan 2, 2006 15:04"),
 	)
 	drawBroadSheetHeader(pdfDoc, school, "VP Academics / School General Broad Sheet", subtitle, accent)
 
@@ -311,11 +322,39 @@ func GenerateSchoolBroadSheetPDF(school dto.SchoolInfo, resp *dto.SchoolBroadShe
 		table.drawRow(pdfDoc, cells, i%2 == 1)
 	}
 
+	if resp.PromotionReview != nil {
+		drawSchoolPromotionReviewSection(pdfDoc, resp.PromotionReview, accent)
+	}
+
 	var buf bytes.Buffer
 	if err := pdfDoc.Output(&buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// drawSchoolPromotionReviewSection renders template C's "Section C" -
+// the school-wide promotion-eligibility tally - only ever called when
+// resp.PromotionReview is non-nil (a termly/midterm report has no
+// eligibility decision to monitor).
+func drawSchoolPromotionReviewSection(pdfDoc *fpdf.Fpdf, pr *dto.SchoolPromotionReviewSummary, accent [3]int) {
+	pdfDoc.Ln(4)
+	pdfDoc.SetFont("helvetica", "B", 10.5)
+	setText(pdfDoc, accent)
+	pdfDoc.CellFormat(bsUsableWidthMM, 6, "C. PROMOTION REVIEW", "", 1, "L", false, 0, "")
+
+	pdfDoc.SetFont("helvetica", "", 8.5)
+	setText(pdfDoc, colorTextDark)
+	lines := []string{
+		"Eligibility rules applied: " + pr.EligibilityRulesApplied,
+		fmt.Sprintf("Eligible - subject to authorisation: %d", pr.EligibleCount),
+		fmt.Sprintf("Requires review / remediation: %d", pr.RequiresReviewCount),
+		fmt.Sprintf("Incomplete records - decision blocked: %d", pr.IncompleteBlockedCount),
+		"Decision status: " + pr.DecisionStatus,
+	}
+	for _, line := range lines {
+		pdfDoc.CellFormat(bsUsableWidthMM, 5, line, "", 1, "L", false, 0, "")
+	}
 }
 
 func maxInt(a, b int) int {

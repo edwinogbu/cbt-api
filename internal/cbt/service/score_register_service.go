@@ -13,6 +13,8 @@ import (
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/grading"
 	"cbt-api/internal/models"
+
+	"gorm.io/gorm"
 )
 
 // builtinComponentLabels names a register column for an ExamType when
@@ -193,11 +195,24 @@ func (s *ExamService) GetScoreRegister(ctx context.Context, schoolID string, isP
 		resp.SubmissionStatus = "draft"
 	}
 
+	var remarkRows []models.ScoreRegisterRemark
+	remarksByStudent := map[string]string{}
+	if err := s.db.WithContext(ctx).
+		Where("class_id = ? AND subject_id = ? AND term_id = ? AND session_id = ?", classID, subjectID, termID, sessionID).
+		Find(&remarkRows).Error; err == nil {
+		for _, r := range remarkRows {
+			remarksByStudent[r.StudentID] = r.Remark
+		}
+	}
+
 	resultsComplete := 0
 	for _, st := range students {
 		row := dto.ScoreRegisterRow{
 			StudentID: st.ID, AdmissionNumber: st.AdmissionNo,
 			StudentName: strings.TrimSpace(st.User.FirstName + " " + st.User.LastName),
+		}
+		if remark, ok := remarksByStudent[st.ID]; ok {
+			row.Remark = &remark
 		}
 		row.Cells = make([]dto.ScoreCell, len(components))
 		for i, c := range components {
@@ -349,6 +364,56 @@ func (s *ExamService) SaveScoreRegister(ctx context.Context, schoolID, actorID s
 		})
 	}
 	return resp, nil
+}
+
+// SaveScoreRegisterRemark upserts one student's teacher remark
+// (template A's "Teacher remark" column) - subject to the exact same
+// lock/correction-reason rule as a score cell, since a remark is still
+// part of the subject result record a reviewer has already signed off
+// on. An empty Remark clears it rather than deleting the row, so the
+// student keeps a (now-empty) remark history entry rather than
+// silently reverting to "no remark ever written".
+func (s *ExamService) SaveScoreRegisterRemark(ctx context.Context, schoolID, actorID string, isPlatformOwner bool, req *dto.SaveScoreRegisterRemarkRequest) error {
+	if err := s.authorizeClassTenant(ctx, req.ClassID, schoolID, isPlatformOwner); err != nil {
+		return err
+	}
+	class, err := s.getClassByID(ctx, req.ClassID)
+	if err != nil {
+		return err
+	}
+	submission, _ := s.findSubjectResultSubmission(ctx, class.SchoolID, req.ClassID, req.SubjectID, req.TermID, req.SessionID)
+	if submission != nil && submission.IsLocked() && strings.TrimSpace(req.CorrectionReason) == "" {
+		return errors.New("these results have already been reviewed/approved - a correction_reason is required to edit them now")
+	}
+
+	var existing models.ScoreRegisterRemark
+	err = s.db.WithContext(ctx).
+		Where("student_id = ? AND subject_id = ? AND term_id = ? AND session_id = ?", req.StudentID, req.SubjectID, req.TermID, req.SessionID).
+		First(&existing).Error
+	switch {
+	case err == nil:
+		existing.Remark = req.Remark
+		err = s.db.WithContext(ctx).Save(&existing).Error
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		err = s.db.WithContext(ctx).Create(&models.ScoreRegisterRemark{
+			SchoolID: class.SchoolID, StudentID: req.StudentID, ClassID: req.ClassID,
+			SubjectID: req.SubjectID, TermID: req.TermID, SessionID: req.SessionID, Remark: req.Remark,
+		}).Error
+	}
+	if err != nil {
+		return err
+	}
+
+	action := "remark_saved"
+	if submission != nil && submission.IsLocked() {
+		action = "corrected"
+	}
+	s.writeSubjectResultAudit(ctx, &models.SubjectResultAuditLog{
+		SchoolID: class.SchoolID, ActorID: actorID, Action: action,
+		ClassID: req.ClassID, SubjectID: req.SubjectID, TermID: req.TermID, SessionID: req.SessionID,
+		StudentID: &req.StudentID, Notes: "teacher remark updated reason=" + req.CorrectionReason,
+	})
+	return nil
 }
 
 // saveOneScoreCell writes (or clears) one student's one cell. A plain

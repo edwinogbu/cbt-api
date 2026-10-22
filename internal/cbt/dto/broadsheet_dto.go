@@ -168,6 +168,11 @@ type ScoreRegisterRow struct {
 	Percentage      *float64    `json:"percentage"`
 	Grade           string      `json:"grade,omitempty"`
 	IsComplete      bool        `json:"is_complete"`
+	// Remark is the teacher's free-text comment on this student's
+	// subject result (template A's "Teacher remark" column) - nil
+	// means none has been written yet, distinct from an empty string
+	// (a remark that was written and then cleared).
+	Remark *string `json:"remark,omitempty"`
 }
 
 // ScoreRegisterResponse is the full Subject Teacher Score Register for
@@ -211,6 +216,21 @@ type SaveScoreRegisterRequest struct {
 	// CorrectionReason is required only when this save targets a
 	// locked (reviewed/approved) SubjectResultSubmission - see
 	// ExamService.SaveScoreRegister.
+	CorrectionReason string `json:"correction_reason,omitempty"`
+}
+
+// SaveScoreRegisterRemarkRequest sets (or clears, with an empty
+// Remark) one student's teacher remark for a subject/term/session -
+// kept as its own small request rather than folded into
+// SaveScoreRegisterRequest, since a remark isn't a score component and
+// has no MaxMarks/ReadOnly semantics to validate against.
+type SaveScoreRegisterRemarkRequest struct {
+	ClassID          string `json:"class_id" binding:"required,uuid"`
+	SubjectID        string `json:"subject_id" binding:"required,uuid"`
+	TermID           string `json:"term_id" binding:"required,uuid"`
+	SessionID        string `json:"session_id" binding:"required,uuid"`
+	StudentID        string `json:"student_id" binding:"required,uuid"`
+	Remark           string `json:"remark"`
 	CorrectionReason string `json:"correction_reason,omitempty"`
 }
 
@@ -290,6 +310,7 @@ type ClassBroadSheetRow struct {
 type ClassBroadSheetResponse struct {
 	ClassID          string               `json:"class_id"`
 	ClassName        string               `json:"class_name"`
+	ClassTeacherName string               `json:"class_teacher_name,omitempty"`
 	TermID           string               `json:"term_id"`
 	SessionID        string               `json:"session_id"`
 	ReportType       string               `json:"report_type"`
@@ -299,6 +320,52 @@ type ClassBroadSheetResponse struct {
 	StudentCount     int                  `json:"student_count"`
 	AllSubjectsSubmitted bool             `json:"all_subjects_submitted"`
 	StudentsWithIncompleteResults int     `json:"students_with_incomplete_results"`
+	// Review is this broad sheet's own actionable workflow state
+	// (template B, page 4) - nil only if ClassBroadSheetReview lookup
+	// itself failed (never blocks the read-only matrix above it from
+	// rendering).
+	Review *ClassBroadSheetReviewResponse `json:"review,omitempty"`
+}
+
+// ClassBroadSheetReviewResponse is the Class Teacher Broad Sheet's own
+// workflow state - template B page 4's summary/signature/next-action
+// block.
+type ClassBroadSheetReviewResponse struct {
+	ID             string     `json:"id,omitempty"`
+	ClassID        string     `json:"class_id"`
+	ReportType     string     `json:"report_type"`
+	TermID         string     `json:"term_id,omitempty"`
+	SessionID      string     `json:"session_id"`
+	Status         string     `json:"status"`
+	Summary        string     `json:"summary"`
+	ClassTeacherID string     `json:"class_teacher_id,omitempty"`
+	SubmittedAt    *time.Time `json:"submitted_at,omitempty"`
+	ReviewerID     string     `json:"reviewer_id,omitempty"`
+	ReviewedAt     *time.Time `json:"reviewed_at,omitempty"`
+	ReturnNotes    string     `json:"return_notes,omitempty"`
+	NextAction     string     `json:"next_action,omitempty"`
+}
+
+// SaveClassBroadSheetReviewRequest saves (without submitting) the
+// class teacher's draft summary text.
+type SaveClassBroadSheetReviewRequest struct {
+	ClassID    string `json:"class_id" binding:"required,uuid"`
+	ReportType string `json:"report_type" binding:"required"`
+	TermID     string `json:"term_id"`
+	SessionID  string `json:"session_id" binding:"required,uuid"`
+	Summary    string `json:"summary"`
+	NextAction string `json:"next_action"`
+}
+
+// ClassBroadSheetReviewActionRequest is the shared shape for
+// submit/return/approve - Notes is the reviewer's return reason when
+// returning, otherwise optional.
+type ClassBroadSheetReviewActionRequest struct {
+	ClassID    string `json:"class_id" binding:"required,uuid"`
+	ReportType string `json:"report_type" binding:"required"`
+	TermID     string `json:"term_id"`
+	SessionID  string `json:"session_id" binding:"required,uuid"`
+	Notes      string `json:"notes"`
 }
 
 // SubjectBroadSheetRow is one class's standing for the HOD/
@@ -357,4 +424,32 @@ type SchoolBroadSheetResponse struct {
 	AwaitingReview      int                   `json:"awaiting_review"`
 	Approved            int                   `json:"approved"`
 	Published           int                   `json:"published"`
+	// GeneratedAt and OverallStatus are template C's "GENERATED ON" and
+	// "OVERALL STATUS" header fields - computed fresh on every read,
+	// never stored, so they always reflect this exact response's own
+	// figures rather than a stale cached rollup.
+	GeneratedAt   time.Time `json:"generated_at"`
+	OverallStatus string    `json:"overall_status"` // "In progress" | "Ready for review" | "Published"
+	// PromotionReview is template C's "Section C" - populated only when
+	// ReportType == "promotion"; nil for termly/midterm reports, which
+	// have no eligibility decision to monitor.
+	PromotionReview *SchoolPromotionReviewSummary `json:"promotion_review,omitempty"`
+}
+
+// SchoolPromotionReviewSummary is the VP Academics / School General
+// Broad Sheet's "C. PROMOTION REVIEW" section - a school-wide tally of
+// the same per-student SystemRecommendation/FinalDecision the
+// Promotion Examination Report Card already computes (internal/cbt/
+// service/promotion_report_service.go), never a second, independently
+// computed eligibility check.
+type SchoolPromotionReviewSummary struct {
+	EligibilityRulesApplied string `json:"eligibility_rules_applied"`
+	EligibleCount           int    `json:"eligible_count"`
+	RequiresReviewCount     int    `json:"requires_review_count"`
+	IncompleteBlockedCount  int    `json:"incomplete_blocked_count"`
+	// DecisionStatus is "Approved" once every evaluated student in
+	// scope has a recorded FinalDecision, else "Pending" - mirrors
+	// FinalDecision's own rule that only a human-recorded decision
+	// (never the system recommendation) can ever make this "Approved".
+	DecisionStatus string `json:"decision_status"`
 }

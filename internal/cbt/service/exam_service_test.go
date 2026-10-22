@@ -219,6 +219,20 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			term_id TEXT, session_id TEXT, student_id TEXT, notes TEXT,
 			content_hash TEXT, created_at DATETIME
 		)`,
+		`CREATE TABLE score_register_remarks (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, student_id TEXT, class_id TEXT, subject_id TEXT,
+			term_id TEXT, session_id TEXT, remark TEXT,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE class_broadsheet_reviews (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_id TEXT, report_type TEXT, term_id TEXT, session_id TEXT,
+			status TEXT DEFAULT 'draft', summary TEXT, class_teacher_id TEXT,
+			submitted_at DATETIME, reviewer_id TEXT, reviewed_at DATETIME,
+			return_notes TEXT, next_action TEXT,
+			created_at DATETIME, updated_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
+	"time"
 
 	"cbt-api/internal/cbt/dto"
 	"cbt-api/internal/models"
@@ -23,6 +25,7 @@ func (s *ExamService) GetClassBroadSheet(ctx context.Context, schoolID string, i
 	if err != nil {
 		return nil, err
 	}
+	_, classTeacherName, _ := s.resolveClassWithTeacher(ctx, classID)
 
 	type subjectHeader struct{ code, name string }
 	var headers []subjectHeader
@@ -42,7 +45,7 @@ func (s *ExamService) GetClassBroadSheet(ctx context.Context, schoolID string, i
 	}
 
 	resp := &dto.ClassBroadSheetResponse{
-		ClassID: classID, ClassName: className, TermID: normalizedTermID, SessionID: sessionID,
+		ClassID: classID, ClassName: className, ClassTeacherName: classTeacherName, TermID: normalizedTermID, SessionID: sessionID,
 		ReportType: reportType, StudentCount: len(entries),
 	}
 	resp.SubjectCodes = make([]string, len(headers))
@@ -111,6 +114,8 @@ func (s *ExamService) GetClassBroadSheet(ctx context.Context, schoolID string, i
 			resp.AllSubjectsSubmitted = allSubmitted
 		}
 	}
+
+	resp.Review = s.GetClassBroadSheetReview(ctx, classID, reportType, termID, sessionID)
 
 	return resp, nil
 }
@@ -325,5 +330,91 @@ func (s *ExamService) GetSchoolBroadSheet(ctx context.Context, schoolID string, 
 		}
 		return resp.Rows[i].SubjectName < resp.Rows[j].SubjectName
 	})
+
+	resp.GeneratedAt = time.Now()
+	resp.OverallStatus = schoolBroadSheetOverallStatus(resp)
+	if reportType == "promotion" {
+		classIDs := make([]string, 0, len(classesSeen))
+		for id := range classesSeen {
+			classIDs = append(classIDs, id)
+		}
+		resp.PromotionReview = s.buildSchoolPromotionReview(ctx, effSchool, sessionID, classIDs)
+	}
 	return resp, nil
+}
+
+// schoolBroadSheetOverallStatus is template C's "OVERALL STATUS"
+// header field, computed fresh from this exact response's own figures
+// - never a separately stored/stale status.
+func schoolBroadSheetOverallStatus(resp *dto.SchoolBroadSheetResponse) string {
+	switch {
+	case resp.SubjectResultSets > 0 && resp.Published == resp.SubjectResultSets:
+		return "Published"
+	case resp.AwaitingReview > 0 || resp.SubmissionsComplete > 0:
+		return "Ready for review"
+	default:
+		return "In progress"
+	}
+}
+
+// buildSchoolPromotionReview is template C's "Section C" - a
+// school-wide tally of the exact same per-student SystemRecommendation/
+// FinalDecision the Promotion Examination Report Card already computes
+// (collectClassReportCards -> GetPromotionReportCard), never a second,
+// independently computed eligibility check. Never returns an error:
+// an aggregation failure on one class is skipped rather than failing
+// the whole School Broad Sheet.
+func (s *ExamService) buildSchoolPromotionReview(ctx context.Context, schoolID, sessionID string, classIDs []string) *dto.SchoolPromotionReviewSummary {
+	summary := &dto.SchoolPromotionReviewSummary{EligibilityRulesApplied: s.describeSchoolPromotionPolicy(ctx, schoolID)}
+	totalEvaluated, decided := 0, 0
+	for _, classID := range classIDs {
+		entries, _, err := s.collectClassReportCards(ctx, schoolID, true, classID, "promotion", "", sessionID)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.err != nil || e.promotion == nil {
+				summary.IncompleteBlockedCount++
+				continue
+			}
+			totalEvaluated++
+			switch e.promotion.SystemRecommendation {
+			case "ELIGIBLE FOR REVIEW":
+				summary.EligibleCount++
+			case "NOT ELIGIBLE FOR REVIEW":
+				summary.RequiresReviewCount++
+			default: // "INCOMPLETE RESULTS - CANNOT EVALUATE" and any unrecognized value
+				summary.IncompleteBlockedCount++
+				continue
+			}
+			if e.promotion.FinalDecision != "" {
+				decided++
+			}
+		}
+	}
+	summary.DecisionStatus = "Pending"
+	if totalEvaluated > 0 && decided == totalEvaluated {
+		summary.DecisionStatus = "Approved"
+	}
+	return summary
+}
+
+// describeSchoolPromotionPolicy renders the school-wide PromotionPolicy
+// (ClassLevelID nil) as a short human-readable line for template C's
+// "ELIGIBILITY RULES APPLIED" field - the built-in default description
+// when the school hasn't configured one, exactly mirroring
+// grading.BuiltinPromotionThreshold's own fallback semantics.
+func (s *ExamService) describeSchoolPromotionPolicy(ctx context.Context, schoolID string) string {
+	var policy models.PromotionPolicy
+	err := s.db.WithContext(ctx).
+		Where("school_id = ? AND class_level_id IS NULL AND is_active = ?", schoolID, true).
+		First(&policy).Error
+	if err != nil {
+		return "Built-in default (50% overall pass threshold)"
+	}
+	desc := fmt.Sprintf("Overall ≥ %.1f%%", policy.OverallThreshold)
+	if len(policy.CoreSubjectIDs) > 0 {
+		desc += fmt.Sprintf(", core subjects ≥ %.1f%%", policy.CoreSubjectPassMark)
+	}
+	return desc
 }
