@@ -21,8 +21,9 @@ type MidTermReportCardResponse struct {
 	Session  SessionInfo             `json:"session"`
 	Subjects []MidTermSubjectResult  `json:"subjects"`
 	Summary  ReportCardSummary       `json:"summary"`
-	// Attendance is nil until attendance tracking exists in this
-	// codebase (it does not yet) - never a fabricated figure.
+	// Attendance is nil until this class/term has had at least one
+	// day's register taken (see ExamService.attendanceSummary) - never
+	// an all-zero fabricated figure.
 	Attendance          *MidTermAttendance `json:"attendance"`
 	ClassTeacherComment string             `json:"class_teacher_comment"`
 	NextSteps           string             `json:"next_steps"`
@@ -54,6 +55,10 @@ type MidTermAttendance struct {
 	DaysPossible int    `json:"days_possible"`
 	DaysPresent  int    `json:"days_present"`
 	DaysAbsent   int    `json:"days_absent"`
+	// HomeworkNote is always empty for now - homework/assignment
+	// tracking is a separate, not-yet-built feature this field
+	// anticipates; attendance tracking (ExamService.attendanceSummary)
+	// only ever populates DaysPossible/DaysPresent/DaysAbsent above.
 	HomeworkNote string `json:"homework_note"`
 }
 

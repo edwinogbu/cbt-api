@@ -300,6 +300,7 @@ func setupStudentExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHan
 		student.GET("/report-card/midterm/pdf", handler.DownloadMidTermProgressReportForUser)
 		student.GET("/report-card/promotion", handler.GetPromotionReportCardForUser)
 		student.GET("/report-card/promotion/pdf", handler.DownloadPromotionReportCardForUser)
+		student.GET("/attendance/summary", handler.GetMyAttendanceSummary)
 		student.POST("/practice", handler.StartPracticeForUser)
 		// Reuses the exact same handler/service/tenant-scoping as the
 		// teacher/admin-only GET /questions/academic/current (both end
@@ -470,6 +471,17 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			reportCardBatch.GET("", handler.GetClassReportCardSummary)
 			reportCardBatch.GET("/batch-pdf", handler.DownloadClassReportCardsZIP)
 			reportCardBatch.GET("/export", handler.ExportClassReportCards)
+		}
+
+		// Attendance: a teacher marks/reads their own class's register;
+		// the tenant boundary is enforced inside
+		// ExamService.authorizeClassTenant, same as reportCardBatch above.
+		attendance := exams.Group("/attendance")
+		attendance.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner"))
+		{
+			attendance.POST("/mark", handler.MarkClassAttendance)
+			attendance.GET("/class/:classId", handler.GetClassAttendanceForDate)
+			attendance.GET("/summary", handler.GetStudentAttendanceSummary)
 		}
 	}
 }

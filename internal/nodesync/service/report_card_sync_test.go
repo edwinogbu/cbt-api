@@ -147,3 +147,82 @@ func TestPush_ReportCardAuditLog_InsertOnlyIdempotent(t *testing.T) {
 		t.Errorf("stored row count = %d, want exactly 1 (no duplicate from the retried push)", count)
 	}
 }
+
+func TestPush_AttendanceRecord_RejectsOtherSchool(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+
+	schoolA := uuid.NewString()
+	schoolB := uuid.NewString()
+
+	req := &dto.PushRequest{
+		AttendanceRecords: []dto.AttendanceRecordPush{
+			{ID: uuid.NewString(), SchoolID: schoolA, StudentID: uuid.NewString(), ClassID: uuid.NewString(), TermID: uuid.NewString(), SessionID: uuid.NewString(), Date: time.Now(), Status: "present", MarkedBy: uuid.NewString()},
+			{ID: uuid.NewString(), SchoolID: schoolB, StudentID: uuid.NewString(), ClassID: uuid.NewString(), TermID: uuid.NewString(), SessionID: uuid.NewString(), Date: time.Now(), Status: "present", MarkedBy: uuid.NewString()},
+		},
+	}
+
+	resp, err := svc.Push(context.Background(), schoolA, req)
+	if err != nil {
+		t.Fatalf("Push returned an error: %v", err)
+	}
+	if resp.AttendanceRecordsAccepted != 1 {
+		t.Errorf("AttendanceRecordsAccepted = %d, want 1 (only School A's own)", resp.AttendanceRecordsAccepted)
+	}
+	if len(resp.Rejected) != 1 || resp.Rejected[0].Reason != "school_id does not match authenticated node's school" {
+		t.Fatalf("Rejected = %+v, want exactly 1 rejection for School B's record", resp.Rejected)
+	}
+
+	var count int64
+	db.Model(&models.AttendanceRecord{}).Where("school_id = ?", schoolB).Count(&count)
+	if count != 0 {
+		t.Error("School B's attendance record was written despite being rejected")
+	}
+}
+
+// TestPush_AttendanceRecord_LaterPushCorrectsEarlierMark verifies
+// attendance's deliberately different conflict rule from Session/
+// Result: unlike those, there is no "more final" state to protect, so a
+// later push for the same (student, term, date) is accepted as a
+// correction and replaces the stored status, never rejected as a
+// conflict.
+func TestPush_AttendanceRecord_LaterPushCorrectsEarlierMark(t *testing.T) {
+	db := setupTestDB(t)
+	repo := repository.NewNodeSyncRepository(db)
+	svc := NewNodeSyncService(repo)
+	ctx := context.Background()
+
+	schoolID := uuid.NewString()
+	recordID := uuid.NewString()
+	studentID := uuid.NewString()
+	termID := uuid.NewString()
+	date := time.Now().Truncate(24 * time.Hour)
+
+	push := func(status string) *dto.PushResponse {
+		req := &dto.PushRequest{AttendanceRecords: []dto.AttendanceRecordPush{
+			{ID: recordID, SchoolID: schoolID, StudentID: studentID, ClassID: uuid.NewString(),
+				TermID: termID, SessionID: uuid.NewString(), Date: date, Status: status, MarkedBy: uuid.NewString()},
+		}}
+		resp, err := svc.Push(ctx, schoolID, req)
+		if err != nil {
+			t.Fatalf("Push failed: %v", err)
+		}
+		return resp
+	}
+
+	if resp := push("absent"); resp.AttendanceRecordsAccepted != 1 {
+		t.Fatalf("first push: AttendanceRecordsAccepted = %d, want 1", resp.AttendanceRecordsAccepted)
+	}
+	if resp := push("present"); resp.AttendanceRecordsAccepted != 1 {
+		t.Fatalf("correction push: AttendanceRecordsAccepted = %d, want 1", resp.AttendanceRecordsAccepted)
+	}
+
+	var stored models.AttendanceRecord
+	if err := db.Where("id = ?", recordID).First(&stored).Error; err != nil {
+		t.Fatalf("failed to load stored record: %v", err)
+	}
+	if stored.Status != "present" {
+		t.Errorf("stored status = %q, want present (the correction must have replaced the original absent mark)", stored.Status)
+	}
+}

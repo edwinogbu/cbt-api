@@ -1141,11 +1141,12 @@ type TermlyReportCardResponse struct {
 	Attendance *AttendanceSummary `json:"attendance"`
 }
 
-// AttendanceSummary - a term's attendance figures for one student.
-// Not yet populated by any endpoint (no attendance-tracking feature
-// exists in this codebase yet) - the type exists so report-card
-// consumers have a stable shape to render once that feature lands,
-// instead of inventing their own ad hoc fields.
+// AttendanceSummary - a term's attendance figures for one student,
+// computed from models.AttendanceRecord by ExamService.
+// attendanceSummary. Populated (a non-nil *AttendanceSummary) only once
+// this class/term has had at least one day's register taken - a report
+// card leaves this nil rather than render an all-zero table for a
+// school that has not started tracking attendance yet.
 type AttendanceSummary struct {
 	DaysPresent  int `json:"days_present"`
 	DaysAbsent   int `json:"days_absent"`

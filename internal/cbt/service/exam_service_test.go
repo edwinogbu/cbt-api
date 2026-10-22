@@ -192,6 +192,13 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			provisioned_at DATETIME, provisioned_by TEXT,
 			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
 		)`,
+		`CREATE TABLE attendance_records (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, student_id TEXT, class_id TEXT, term_id TEXT, session_id TEXT,
+			date DATE NOT NULL, status TEXT, marked_by TEXT, notes TEXT,
+			synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME,
+			UNIQUE(student_id, term_id, date)
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {

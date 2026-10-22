@@ -137,6 +137,21 @@ func (r *NodeSyncRepository) CreateReportCardAuditLogIfAbsent(ctx context.Contex
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(e).Error
 }
 
+// UpsertAttendanceRecord has no "more final" state to protect unlike
+// Session/Result (see Push's own doc comment on those) - a later mark
+// for the same (student, term, date) is a legitimate correction (a
+// teacher fixing a mistake), not a conflict to reject, so this always
+// applies the incoming write, keyed on the same (student_id, term_id,
+// date) unique index ExamService.MarkClassAttendance itself upserts on.
+func (r *NodeSyncRepository) UpsertAttendanceRecord(ctx context.Context, a *models.AttendanceRecord) error {
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "student_id"}, {Name: "term_id"}, {Name: "date"}},
+			DoUpdates: clause.AssignmentColumns([]string{"status", "notes", "marked_by", "class_id", "session_id", "school_id", "synced_to_cloud_at", "updated_at"}),
+		}).
+		Create(a).Error
+}
+
 // ============================================================
 // Pull: entities changed since a cursor, scoped to one school.
 // ============================================================
@@ -301,6 +316,20 @@ func (r *NodeSyncRepository) MarkReportCardAuditLogsSynced(ctx context.Context, 
 	}
 	now := time.Now()
 	return r.db.WithContext(ctx).Model(&models.ReportCardAuditLog{}).Where("id IN ?", ids).Update("synced_to_cloud_at", now).Error
+}
+
+func (r *NodeSyncRepository) UnsyncedAttendanceRecords(ctx context.Context) ([]models.AttendanceRecord, error) {
+	var rows []models.AttendanceRecord
+	err := r.db.WithContext(ctx).Where("synced_to_cloud_at IS NULL").Limit(outboxBatchSize).Find(&rows).Error
+	return rows, err
+}
+
+func (r *NodeSyncRepository) MarkAttendanceRecordsSynced(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	now := time.Now()
+	return r.db.WithContext(ctx).Model(&models.AttendanceRecord{}).Where("id IN ?", ids).Update("synced_to_cloud_at", now).Error
 }
 
 // ============================================================

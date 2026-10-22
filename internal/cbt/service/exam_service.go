@@ -5493,9 +5493,19 @@ func (s *ExamService) GetTermlyReportCardForStudent(ctx context.Context, student
         PrincipalRemarks: principalRemarks,
         Conduct:          conduct,
         NextTermBegins:   s.findNextTermStart(ctx, term),
-        // No attendance-tracking feature exists in this codebase yet -
-        // nil rather than a fabricated figure.
-        Attendance: nil,
+        // nil (not a zero-valued struct) until this class/term has had
+        // at least one day's register taken - "0 days open, 0 present,
+        // 0 absent" would be indistinguishable from a real student who
+        // was absent every single day, so the frontend's own "not
+        // available" fallback (rather than a misleading all-zero table)
+        // depends on this staying nil until real attendance exists.
+        Attendance: func() *dto.AttendanceSummary {
+            present, absent, open, aErr := s.attendanceSummary(ctx, student.ID, student.ClassID, termID)
+            if aErr != nil || open == 0 {
+                return nil
+            }
+            return &dto.AttendanceSummary{DaysPresent: present, DaysAbsent: absent, DaysSchoolOpen: open}
+        }(),
     }, nil
 }
 

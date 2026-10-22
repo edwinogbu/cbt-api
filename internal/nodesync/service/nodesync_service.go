@@ -312,6 +312,26 @@ func (s *NodeSyncService) Push(ctx context.Context, schoolID string, req *dto.Pu
 		resp.ReportCardAuditLogsAccepted++
 	}
 
+	for _, r := range req.AttendanceRecords {
+		if r.SchoolID != schoolID {
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "attendance_record", ID: r.ID, Reason: "school_id does not match authenticated node's school"})
+			continue
+		}
+
+		now := time.Now()
+		record := &models.AttendanceRecord{
+			ID: r.ID, SchoolID: r.SchoolID, StudentID: r.StudentID, ClassID: r.ClassID,
+			TermID: r.TermID, SessionID: r.SessionID, Date: r.Date, Status: r.Status,
+			MarkedBy: r.MarkedBy, Notes: r.Notes, SyncedToCloudAt: &now,
+		}
+		if err := s.repo.UpsertAttendanceRecord(ctx, record); err != nil {
+			logger.Error("upsert attendance record failed", zap.String("id", r.ID), zap.Error(err))
+			resp.Rejected = append(resp.Rejected, dto.RejectedPush{Type: "attendance_record", ID: r.ID, Reason: "write failed"})
+			continue
+		}
+		resp.AttendanceRecordsAccepted++
+	}
+
 	return resp, nil
 }
 

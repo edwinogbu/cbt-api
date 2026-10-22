@@ -95,9 +95,13 @@ func (c *SyncClient) push(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load unsynced report-card audit logs: %w", err)
 	}
+	attendanceRecords, err := c.repo.UnsyncedAttendanceRecords(ctx)
+	if err != nil {
+		return fmt.Errorf("load unsynced attendance records: %w", err)
+	}
 
 	if len(sessions) == 0 && len(answers) == 0 && len(results) == 0 && len(events) == 0 &&
-		len(reportCardApprovals) == 0 && len(reportCardAuditLogs) == 0 {
+		len(reportCardApprovals) == 0 && len(reportCardAuditLogs) == 0 && len(attendanceRecords) == 0 {
 		return nil
 	}
 
@@ -139,6 +143,13 @@ func (c *SyncClient) push(ctx context.Context) error {
 			ID: l.ID, SchoolID: l.SchoolID, ActorID: l.ActorID, Action: l.Action, ReportType: l.ReportType,
 			StudentID: l.StudentID, ClassID: l.ClassID, TermID: l.TermID, SessionID: l.SessionID,
 			Notes: l.Notes, ContentHash: l.ContentHash, CreatedAt: l.CreatedAt,
+		})
+	}
+	for _, a := range attendanceRecords {
+		req.AttendanceRecords = append(req.AttendanceRecords, dto.AttendanceRecordPush{
+			ID: a.ID, SchoolID: a.SchoolID, StudentID: a.StudentID, ClassID: a.ClassID,
+			TermID: a.TermID, SessionID: a.SessionID, Date: a.Date, Status: a.Status,
+			MarkedBy: a.MarkedBy, Notes: a.Notes,
 		})
 	}
 
@@ -206,6 +217,13 @@ func (c *SyncClient) push(ctx context.Context) error {
 	if err := c.repo.MarkReportCardAuditLogsSynced(ctx, synced(reportCardAuditLogIDs)); err != nil {
 		return err
 	}
+	attendanceRecordIDs := make([]string, len(attendanceRecords))
+	for i, a := range attendanceRecords {
+		attendanceRecordIDs[i] = a.ID
+	}
+	if err := c.repo.MarkAttendanceRecordsSynced(ctx, synced(attendanceRecordIDs)); err != nil {
+		return err
+	}
 
 	zap.L().Info("nodesync push complete",
 		zap.Int("sessions_accepted", pushResp.Data.SessionsAccepted),
@@ -214,6 +232,7 @@ func (c *SyncClient) push(ctx context.Context) error {
 		zap.Int("events_accepted", pushResp.Data.EventsAccepted),
 		zap.Int("report_card_approvals_accepted", pushResp.Data.ReportCardApprovalsAccepted),
 		zap.Int("report_card_audit_logs_accepted", pushResp.Data.ReportCardAuditLogsAccepted),
+		zap.Int("attendance_records_accepted", pushResp.Data.AttendanceRecordsAccepted),
 		zap.Int("rejected", len(pushResp.Data.Rejected)),
 	)
 	return nil

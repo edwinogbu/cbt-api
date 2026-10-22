@@ -179,9 +179,24 @@ func (s *ExamService) GetMidTermProgressReport(ctx context.Context, student *mod
 			OverallPercentage: overallPercentage,
 			NumberPassed:      passedCount, NumberFailed: completeCount - passedCount,
 		},
-		// No attendance-tracking feature exists in this codebase yet -
-		// nil rather than a fabricated figure.
-		Attendance:          nil,
+		// nil until this class/term has had at least one day's register
+		// taken - see GetTermlyReportCardForStudent's identical comment
+		// on why this must stay nil rather than an all-zero struct.
+		Attendance: func() *dto.MidTermAttendance {
+			present, absent, open, aErr := s.attendanceSummary(ctx, student.ID, student.ClassID, termID)
+			if aErr != nil || open == 0 {
+				return nil
+			}
+			// DaysPossible is "school days so far this term" - exactly
+			// what attendanceSummary's own openDays count already is
+			// (every date with a register, which for a Mid-Term report
+			// built partway through the term is naturally only the days
+			// that have actually happened). HomeworkNote is left empty:
+			// homework/assignment tracking is a separate, not-yet-built
+			// feature this struct's field anticipates but this task
+			// does not implement.
+			return &dto.MidTermAttendance{DaysPossible: open, DaysPresent: present, DaysAbsent: absent}
+		}(),
 		ClassTeacherComment: teacherComment,
 		NextSteps:           nextSteps,
 	}, nil

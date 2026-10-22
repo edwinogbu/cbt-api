@@ -21,6 +21,30 @@ type PushRequest struct {
 	// the cloud opportunistically like everything else in this file.
 	ReportCardApprovals []ReportCardApprovalPush `json:"report_card_approvals"`
 	ReportCardAuditLogs []ReportCardAuditLogPush `json:"report_card_audit_logs"`
+	// AttendanceRecords falls under this rule's own "audit" category
+	// too - a class's daily register, taken entirely locally (see
+	// ExamService.MarkClassAttendance), reconciled to the cloud
+	// opportunistically like everything else in this file. Feeds the
+	// cloud's own copy of the same report-card Attendance section this
+	// data was built for.
+	AttendanceRecords []AttendanceRecordPush `json:"attendance_records"`
+}
+
+// AttendanceRecordPush mirrors models.AttendanceRecord. SchoolID travels
+// with the record for the same reason ReportCardApprovalPush's does -
+// Push verifies it against the authenticated node's own school rather
+// than trusting it.
+type AttendanceRecordPush struct {
+	ID        string    `json:"id" binding:"required,uuid"`
+	SchoolID  string    `json:"school_id" binding:"required,uuid"`
+	StudentID string    `json:"student_id" binding:"required,uuid"`
+	ClassID   string    `json:"class_id" binding:"required,uuid"`
+	TermID    string    `json:"term_id" binding:"required,uuid"`
+	SessionID string    `json:"session_id" binding:"required,uuid"`
+	Date      time.Time `json:"date" binding:"required"`
+	Status    string    `json:"status" binding:"required"`
+	MarkedBy  string    `json:"marked_by" binding:"required,uuid"`
+	Notes     string    `json:"notes"`
 }
 
 // ReportCardApprovalPush mirrors models.ReportCardApproval. SchoolID
@@ -141,12 +165,13 @@ type PushResponse struct {
 	EventsAccepted              int            `json:"events_accepted"`
 	ReportCardApprovalsAccepted int            `json:"report_card_approvals_accepted"`
 	ReportCardAuditLogsAccepted int            `json:"report_card_audit_logs_accepted"`
+	AttendanceRecordsAccepted   int            `json:"attendance_records_accepted"`
 	Rejected                    []RejectedPush `json:"rejected,omitempty"`
 	ServerTimestamp             time.Time      `json:"server_timestamp"`
 }
 
 type RejectedPush struct {
-	Type   string `json:"type"` // "session" | "answer" | "result" | "event" | "report_card_approval" | "report_card_audit_log"
+	Type   string `json:"type"` // "session" | "answer" | "result" | "event" | "report_card_approval" | "report_card_audit_log" | "attendance_record"
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
 }
