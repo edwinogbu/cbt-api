@@ -200,6 +200,25 @@ func setupExamTestDB(t *testing.T) *gorm.DB {
 			synced_to_cloud_at DATETIME, created_at DATETIME, updated_at DATETIME,
 			UNIQUE(student_id, term_id, date)
 		)`,
+		`CREATE TABLE teacher_subject_assignments (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, teacher_id TEXT, subject_id TEXT, class_id TEXT, session_id TEXT,
+			is_active INTEGER DEFAULT 1, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE subject_result_submissions (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, class_id TEXT, subject_id TEXT, term_id TEXT, session_id TEXT,
+			status TEXT DEFAULT 'draft', version INTEGER DEFAULT 0, teacher_id TEXT,
+			submitted_at DATETIME, reviewed_by TEXT, reviewed_at DATETIME,
+			approved_by TEXT, approved_at DATETIME, notes TEXT,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE subject_result_audit_logs (
+			id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+			school_id TEXT, actor_id TEXT, action TEXT, class_id TEXT, subject_id TEXT,
+			term_id TEXT, session_id TEXT, student_id TEXT, notes TEXT,
+			content_hash TEXT, created_at DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		if err := db.Exec(stmt).Error; err != nil {

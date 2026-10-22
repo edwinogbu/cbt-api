@@ -98,6 +98,13 @@ func init() {
 	Register(&AttendanceRecord{})
 
 	// ============================================
+	// ACADEMIC BROAD SHEET MODELS
+	// ============================================
+	Register(&TeacherSubjectAssignment{})
+	Register(&SubjectResultSubmission{})
+	Register(&SubjectResultAuditLog{})
+
+	// ============================================
 	// OFFLINE-FIRST SYNC MODELS
 	// ============================================
 	Register(&SyncOperation{})

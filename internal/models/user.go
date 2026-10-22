@@ -16,6 +16,21 @@ const (
     RoleParent    UserRole = "parent"
     RoleSuperAdmin UserRole = "super_admin"
 
+    // RoleHOD/RoleExamOfficer/RoleVPAcademics are Academic Broad Sheet
+    // approval-chain roles (teacher submits -> HOD reviews -> exam
+    // officer checks completeness -> VP Academics/admin approves),
+    // granted the same way as any additional role - via UserRoleGrant/
+    // AuthService.GrantRole, never a user's primary Role at
+    // registration (RegisterRequest.Role's oneof allowlist is
+    // unchanged). A user holding one of these almost always also holds
+    // RoleTeacher as their primary role (see UserRoleGrant's own doc
+    // comment, which already anticipated "an HOD also granted
+    // teacher") - these are additive school-scoped responsibilities,
+    // not a replacement for being a teacher.
+    RoleHOD          UserRole = "hod"
+    RoleExamOfficer  UserRole = "examination_officer"
+    RoleVPAcademics  UserRole = "vp_academics"
+
     // RolePlatformOwner is a distinct tier above every school-scoped role,
     // including super_admin (which today is - and remains - a school-level
     // elevated admin, not a platform-wide authority). A platform owner is

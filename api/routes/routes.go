@@ -483,6 +483,36 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			attendance.GET("/class/:classId", handler.GetClassAttendanceForDate)
 			attendance.GET("/summary", handler.GetStudentAttendanceSummary)
 		}
+
+		// Academic Broad Sheet / Student Score Register system.
+		// Assessment settings (weighted components, grading boundaries)
+		// and teacher-subject assignments are school-policy
+		// configuration - admin-tier, same as every other academic
+		// configuration group (classes/sessions/terms), plus
+		// vp_academics (an academic administrator per the spec, granted
+		// the same way as hod/examination_officer - see
+		// models.RoleVPAcademics's own doc comment).
+		assessmentSettings := exams.Group("/academic")
+		assessmentSettings.Use(middleware.RoleMiddleware("admin", "super_admin", "platform_owner", "vp_academics"))
+		{
+			assessmentSettings.POST("/assessment-schemes", handler.UpsertAssessmentScheme)
+			assessmentSettings.GET("/assessment-schemes", handler.ListAssessmentSchemes)
+			assessmentSettings.DELETE("/assessment-schemes/:id", handler.DeactivateAssessmentScheme)
+			assessmentSettings.POST("/grading-scales", handler.UpsertGradingScale)
+			assessmentSettings.GET("/grading-scales", handler.ListGradingScales)
+			assessmentSettings.DELETE("/grading-scales/:id", handler.DeactivateGradingScale)
+			assessmentSettings.POST("/teacher-subject-assignments", handler.CreateTeacherSubjectAssignment)
+			assessmentSettings.GET("/teacher-subject-assignments", handler.ListTeacherSubjectAssignments)
+			assessmentSettings.DELETE("/teacher-subject-assignments/:id", handler.DeleteTeacherSubjectAssignment)
+		}
+
+		// A teacher's own "my subjects" landing view - open to every
+		// staff role that might BE an assigned subject teacher or need
+		// to see one's own assignments, same role set as the score
+		// register below.
+		mySubjects := exams.Group("")
+		mySubjects.Use(middleware.RoleMiddleware("teacher", "admin", "super_admin", "platform_owner", "hod", "examination_officer", "vp_academics"))
+		mySubjects.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
 	}
 }
 
