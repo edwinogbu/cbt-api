@@ -520,7 +520,33 @@ func setupExamRoutes(rg *gin.RouterGroup, handler *cbtExamHandler.ExamHandler, s
 			scoreRegister.GET("/teacher/my-subjects", handler.GetMySubjectAssignments)
 			scoreRegister.GET("/score-register", handler.GetScoreRegister)
 			scoreRegister.POST("/score-register/save", handler.SaveScoreRegister)
+			scoreRegister.GET("/score-register/status", handler.GetSubjectResultSubmissionStatus)
+			// Submit is the subject teacher's own action - same broad
+			// staff-role gate as the group above (ExamService.
+			// authorizeClassTenant still enforces the tenant boundary);
+			// narrower than that for who may actually be a subject
+			// teacher would need per-assignment enforcement this
+			// iteration doesn't add (see GetMySubjectAssignments' own
+			// doc comment on that same gap).
+			scoreRegister.POST("/score-register/submit", handler.SubmitSubjectResults)
 		}
+
+		// Review/return is HOD/Examination Officer tier (plus admin, who
+		// can always stand in); approve is the academic-administrator
+		// tier - admin/super_admin/vp_academics/platform_owner. Two
+		// separate groups, not scoreRegister above, since these must
+		// never be reachable by a plain "teacher" (a teacher approving
+		// their own submission would defeat the whole approval chain).
+		subjectResultReview := exams.Group("/score-register")
+		subjectResultReview.Use(middleware.RoleMiddleware("hod", "examination_officer", "admin", "super_admin", "platform_owner"))
+		{
+			subjectResultReview.POST("/review", handler.ReviewSubjectResults)
+			subjectResultReview.POST("/return", handler.ReturnSubjectResults)
+		}
+
+		subjectResultApproval := exams.Group("/score-register")
+		subjectResultApproval.Use(middleware.RoleMiddleware("admin", "super_admin", "vp_academics", "platform_owner"))
+		subjectResultApproval.POST("/approve", handler.ApproveSubjectResults)
 	}
 }
 
